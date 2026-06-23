@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart TB
-    subgraph Frontend[" 前端 (React) "]
+    subgraph Frontend[" 前端 - React "]
         direction LR
         F1[博主管理]
         F2[内容日历]
@@ -14,31 +14,31 @@ flowchart TB
         F4[系统设置]
     end
 
-    subgraph Backend[" 后端 (Python FastAPI) "]
+    subgraph Backend[" 后端 - Python FastAPI "]
         subgraph M1[" 博主蒸馏模块 "]
             direction LR
-            M1A[yt-dlp<br/>视频下载] --> M1B[Whisper<br/>音频转写] --> M1C[Claude<br/>内容蒸馏]
+            M1A[yt-dlp 下载] --> M1B[Whisper 转写] --> M1C[Claude 蒸馏]
         end
         subgraph M2[" 文案生成模块 "]
-            M2A[Claude API<br/>原创文案生成]
+            M2A[Claude API 文案生成]
         end
         subgraph M3[" TTS 模块 "]
-            M3A[Edge-TTS<br/>语音合成]
+            M3A[Edge-TTS 语音合成]
         end
         subgraph M4[" 视频合成模块 "]
             direction LR
-            M4A[FFmpeg<br/>视频合成] --> M4B[ASS<br/>字幕渲染]
+            M4A[FFmpeg 视频合成] --> M4B[ASS 字幕渲染]
         end
     end
 
     subgraph Queue[" 任务队列 "]
-        Q[Celery + Redis<br/>异步处理: 下载 / 转写 / 蒸馏 / 视频合成]
+        Q["Celery + Redis 异步处理: 下载 转写 蒸馏 合成"]
     end
 
-    subgraph Storage[" 数据 & 存储层 "]
+    subgraph Storage[" 数据与存储层 "]
         direction LR
-        D[(SQLite<br/>数据库)]
-        F[(本地文件<br/>存储)]
+        D[(SQLite 数据库)]
+        F[(本地文件存储)]
     end
 
     Frontend -->|"REST API"| Backend
