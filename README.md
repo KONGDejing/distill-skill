@@ -4,32 +4,66 @@
 
 ## 系统架构总览
 
-```mermaid
-graph TB
-    subgraph Frontend[" 前端 - React "]
-        F1[博主管理] --- F2[内容日历] --- F3[视频库] --- F4[系统设置]
-    end
+```
+                            ┌──────────────────────────┐
+                            │     表现层 Presentation    │
+                            │                           │
+                            │  React + Vite + Tailwind   │
+                            │                           │
+                            │  博主管理 · 内容日历        │
+                            │  视频库   · 系统设置        │
+                            └────────────┬─────────────┘
+                                         │  REST API
+                            ┌────────────┴─────────────┐
+                            │     业务层 Business Logic  │
+                            │                           │
+                            │  Python FastAPI            │
+                            │                           │
+                            │  ┌──────────────────────┐ │
+                            │  │ 博主蒸馏模块           │ │
+                            │  │ yt-dlp → Whisper →   │ │
+                            │  │ Claude 内容基因提取    │ │
+                            │  └──────────────────────┘ │
+                            │  ┌──────────────────────┐ │
+                            │  │ 文案生成模块           │ │
+                            │  │ Claude API 原创文案    │ │
+                            │  └──────────────────────┘ │
+                            │  ┌──────────────────────┐ │
+                            │  │ TTS 语音合成模块       │ │
+                            │  │ Edge-TTS 中文音色      │ │
+                            │  └──────────────────────┘ │
+                            │  ┌──────────────────────┐ │
+                            │  │ 视频合成模块           │ │
+                            │  │ FFmpeg + Pillow       │ │
+                            │  │ ASS 字幕渲染           │ │
+                            │  └──────────────────────┘ │
+                            └────────────┬─────────────┘
+                                         │  Task Queue
+                            ┌────────────┴─────────────┐
+                            │   任务调度层 Scheduling     │
+                            │                           │
+                            │  Celery Worker + Beat      │
+                            │  Redis Message Broker      │
+                            │                           │
+                            │  异步: 下载/转写/蒸馏/合成   │
+                            └────────────┬─────────────┘
+                                         │  Read/Write
+                            ┌────────────┴─────────────┐
+                            │     数据层 Data            │
+                            │                           │
+                            │  SQLite · 本地文件存储      │
+                            │  视频/音频/字幕/图片/转写    │
+                            └──────────────────────────┘
+```
 
-    subgraph Backend[" 后端 - Python FastAPI "]
-        B1[博主蒸馏: yt-dlp + Whisper + Claude]
-        B2[文案生成: Claude API]
-        B3[TTS: Edge-TTS 语音合成]
-        B4[视频合成: FFmpeg + ASS 字幕]
-    end
+### 分层说明
 
-    subgraph Queue[" 任务队列 "]
-        Q[Celery + Redis 异步调度]
-    end
-
-    subgraph Storage[" 数据与存储层 "]
-        D[(SQLite 数据库)]
-        S[(本地文件存储)]
-    end
-
-    Frontend -->|REST API| Backend
-    Backend --> Queue
-    Queue --> Storage
-</mermaid>
+| 层 | 技术栈 | 职责 |
+| --- | --- | --- |
+| **表现层** | React + Vite + TailwindCSS | 管理后台 UI：博主管理、内容日历、视频库、系统设置 |
+| **业务层** | FastAPI + Claude API + FFmpeg | REST API、蒸馏分析、文案生成、TTS 合成、视频渲染 |
+| **调度层** | Celery + Redis | 异步任务队列，处理下载/转写/蒸馏/合成等耗时操作 |
+| **数据层** | SQLite + 本地文件系统 | 元数据存储、视频/音频/字幕/图片文件管理 |
 
 ## 项目定位
 
