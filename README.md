@@ -4,66 +4,103 @@
 
 ## 系统架构总览
 
-```
-                            ┌──────────────────────────┐
-                            │     表现层 Presentation    │
-                            │                           │
-                            │  React + Vite + Tailwind   │
-                            │                           │
-                            │  博主管理 · 内容日历        │
-                            │  视频库   · 系统设置        │
-                            └────────────┬─────────────┘
-                                         │  REST API
-                            ┌────────────┴─────────────┐
-                            │     业务层 Business Logic  │
-                            │                           │
-                            │  Python FastAPI            │
-                            │                           │
-                            │  ┌──────────────────────┐ │
-                            │  │ 博主蒸馏模块           │ │
-                            │  │ yt-dlp → Whisper →   │ │
-                            │  │ Claude 内容基因提取    │ │
-                            │  └──────────────────────┘ │
-                            │  ┌──────────────────────┐ │
-                            │  │ 文案生成模块           │ │
-                            │  │ Claude API 原创文案    │ │
-                            │  └──────────────────────┘ │
-                            │  ┌──────────────────────┐ │
-                            │  │ TTS 语音合成模块       │ │
-                            │  │ Edge-TTS 中文音色      │ │
-                            │  └──────────────────────┘ │
-                            │  ┌──────────────────────┐ │
-                            │  │ 视频合成模块           │ │
-                            │  │ FFmpeg + Pillow       │ │
-                            │  │ ASS 字幕渲染           │ │
-                            │  └──────────────────────┘ │
-                            └────────────┬─────────────┘
-                                         │  Task Queue
-                            ┌────────────┴─────────────┐
-                            │   任务调度层 Scheduling     │
-                            │                           │
-                            │  Celery Worker + Beat      │
-                            │  Redis Message Broker      │
-                            │                           │
-                            │  异步: 下载/转写/蒸馏/合成   │
-                            └────────────┬─────────────┘
-                                         │  Read/Write
-                            ┌────────────┴─────────────┐
-                            │     数据层 Data            │
-                            │                           │
-                            │  SQLite · 本地文件存储      │
-                            │  视频/音频/字幕/图片/转写    │
-                            └──────────────────────────┘
+```mermaid
+flowchart LR
+  User[用户 / 运营人员]
+
+  subgraph FE[前端应用]
+    UI[管理后台 UI]
+    Bloggers[博主管理]
+    Calendar[内容日历]
+    Library[视频库]
+    Settings[系统设置]
+  end
+
+  subgraph API[后端 API]
+    Router[FastAPI Routers]
+    BloggerAPI[博主与源视频接口]
+    ScriptAPI[文案与垃圾站接口]
+    VideoAPI[视频生成与视频库接口]
+    SettingAPI[用户配置与音色接口]
+  end
+
+  subgraph Domain[核心业务能力]
+    Distill[博主内容蒸馏]
+    ScriptGen[原创文案生成]
+    TTS[TTS / 克隆音色合成]
+    Subtitle[字幕切分与时间轴]
+    Composer[数字人口播视频合成]
+  end
+
+  subgraph Async[异步任务]
+    Celery[Celery Worker / Beat]
+    Redis[Redis Broker]
+  end
+
+  subgraph External[外部与本地引擎]
+    Claude[Claude API]
+    Whisper[Whisper]
+    YtDlp[yt-dlp]
+    EdgeTTS[Edge-TTS]
+    FFmpeg[FFmpeg]
+  end
+
+  subgraph Data[数据与文件]
+    DB[(SQLite)]
+    Storage[(本地 Storage)]
+  end
+
+  User --> UI
+  UI --> Bloggers
+  UI --> Calendar
+  UI --> Library
+  UI --> Settings
+
+  UI --> Router
+  Router --> BloggerAPI
+  Router --> ScriptAPI
+  Router --> VideoAPI
+  Router --> SettingAPI
+
+  BloggerAPI --> Distill
+  ScriptAPI --> ScriptGen
+  VideoAPI --> TTS
+  VideoAPI --> Subtitle
+  VideoAPI --> Composer
+  SettingAPI --> Storage
+
+  Distill --> Claude
+  Distill --> Whisper
+  Distill --> YtDlp
+  ScriptGen --> Claude
+  TTS --> EdgeTTS
+  Composer --> FFmpeg
+  Subtitle --> FFmpeg
+
+  Router --> Celery
+  Celery --> Redis
+  Redis --> Celery
+  Celery --> Distill
+  Celery --> ScriptGen
+  Celery --> TTS
+  Celery --> Composer
+
+  Domain --> DB
+  Domain --> Storage
+  API --> DB
+  API --> Storage
 ```
 
-### 分层说明
+### 逻辑视图说明
 
-| 层 | 技术栈 | 职责 |
-| --- | --- | --- |
-| **表现层** | React + Vite + TailwindCSS | 管理后台 UI：博主管理、内容日历、视频库、系统设置 |
-| **业务层** | FastAPI + Claude API + FFmpeg | REST API、蒸馏分析、文案生成、TTS 合成、视频渲染 |
-| **调度层** | Celery + Redis | 异步任务队列，处理下载/转写/蒸馏/合成等耗时操作 |
-| **数据层** | SQLite + 本地文件系统 | 元数据存储、视频/音频/字幕/图片文件管理 |
+| 逻辑模块 | 职责 |
+| --- | --- |
+| **前端应用** | 提供博主管理、内容日历、视频库、系统设置等操作入口 |
+| **后端 API** | 对外提供 REST 接口，承接前端请求并组织业务流程 |
+| **核心业务能力** | 负责内容蒸馏、文案生成、语音合成、字幕时间轴和视频合成 |
+| **异步任务** | 承载下载、转写、蒸馏、TTS、视频渲染等耗时任务 |
+| **外部与本地引擎** | Claude、Whisper、yt-dlp、Edge-TTS、FFmpeg 等能力提供方 |
+| **数据与文件** | SQLite 保存业务元数据，本地 Storage 保存视频、音频、字幕、图片和声音样本 |
 
 ## 项目定位
 
