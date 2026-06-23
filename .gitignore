@@ -1,0 +1,43 @@
+# Environment secrets
+.env
+backend/.env
+
+# Logs
+*.log
+
+# Storage (large media files)
+backend/storage/audio/
+backend/storage/generated_audio/
+backend/storage/generated_videos/
+backend/storage/transcripts/
+backend/storage/user/
+backend/storage/videos/
+
+# Database files
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml

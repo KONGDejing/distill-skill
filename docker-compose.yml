@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/distill.db:/app/distill.db
+    restart: unless-stopped
+
+  celery-worker:
+    build: ./backend
+    command: celery -A tasks.celery_app worker -l info -c 1
+    depends_on:
+      - redis
+      - backend
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/distill.db:/app/distill.db
+    restart: unless-stopped
+
+  celery-beat:
+    build: ./backend
+    command: celery -A tasks.celery_app beat -l info
+    depends_on:
+      - redis
+      - backend
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
