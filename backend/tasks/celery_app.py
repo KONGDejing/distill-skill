@@ -278,13 +278,12 @@ def run_video_generation(script_id: str):
         clone_sample_path = None
 
         # If a clone voice is selected, find the sample path
-        if tts_voice and tts_voice.startswith("clone:"):
-            sample_id = tts_voice.replace("clone:", "", 1)
+        if profile and tts_voice and tts_voice.startswith("clone:"):
+            sample_id = tts_voice.removeprefix("clone:")
             samples = profile.voice_clone_samples or []
             matched = next((s for s in samples if s.get("id") == sample_id), None)
             if matched and matched.get("path"):
                 clone_sample_path = matched["path"]
-            # Fallback to default system voice for TTS API call
             tts_voice = settings.DEFAULT_TTS_VOICE
         elif profile and profile.voice_clone_enabled == "true" and profile.voice_clone_sample_path:
             clone_sample_path = profile.voice_clone_sample_path

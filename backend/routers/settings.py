@@ -9,6 +9,7 @@ from database import get_db, SessionLocal
 from models.user_profile import UserProfile
 from sqlalchemy.orm.attributes import flag_modified
 from config import settings
+from services.tts_service import normalize_reference_audio
 
 router = APIRouter()
 
@@ -31,6 +32,14 @@ def _get_or_create_profile(db: Session) -> UserProfile:
         db.commit()
         db.refresh(profile)
     return profile
+
+
+def _clone_engine_available() -> bool:
+    try:
+        import TTS
+        return True
+    except ImportError:
+        return bool(settings.VOICE_CLONE_COMMAND)
 
 
 def _storage_url(path: Optional[str]) -> Optional[str]:
@@ -85,7 +94,7 @@ def get_settings(db: Session = Depends(get_db)):
         "voice_clone_samples": voice_samples,
         "voice_clone_enabled": selected_clone is not None,
         "voice_clone_ready": any(sample.get("path") and os.path.exists(sample["path"]) for sample in voice_samples),
-        "clone_engine_configured": bool(settings.VOICE_CLONE_COMMAND),
+        "clone_engine_configured": _clone_engine_available(),
     }
 
 
@@ -135,12 +144,21 @@ async def upload_voice_sample(file: UploadFile = File(...), name: str = Form("")
         raise HTTPException(status_code=400, detail="请上传音频文件")
 
     sample_id = str(uuid.uuid4())
-    filename = f"voice_{sample_id}{ext}"
-    filepath = settings.USER_DIR / filename
+    raw_filename = f"voice_{sample_id}_raw{ext}"
+    raw_filepath = settings.USER_DIR / raw_filename
+    filepath = settings.USER_DIR / f"voice_{sample_id}.wav"
 
     content = await file.read()
-    with open(filepath, "wb") as f:
+    with open(raw_filepath, "wb") as f:
         f.write(content)
+
+    error = normalize_reference_audio(str(raw_filepath), str(filepath))
+    try:
+        os.remove(raw_filepath)
+    except OSError:
+        pass
+    if error:
+        raise HTTPException(status_code=400, detail=f"声音样本处理失败: {error}")
 
     label = name.strip() or os.path.splitext(file.filename or "")[0] or "我的克隆音色"
     sample = {
@@ -167,7 +185,7 @@ async def upload_voice_sample(file: UploadFile = File(...), name: str = Form("")
         "voice_clone_samples": _voice_samples(profile),
         "voice_clone_enabled": profile.voice_clone_enabled == "true",
         "voice_clone_ready": True,
-        "clone_engine_configured": bool(settings.VOICE_CLONE_COMMAND),
+        "clone_engine_configured": _clone_engine_available(),
     }
 
 

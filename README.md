@@ -137,10 +137,11 @@ flowchart LR
 | 后端 | FastAPI + SQLAlchemy | REST API、数据模型、业务服务 |
 | 异步任务 | Celery + Redis | 视频下载、转写、蒸馏、视频生成等耗时任务 |
 | 数据库 | SQLite | 本地开发和单机部署使用 |
-| AI 能力 | Claude API | 内容蒸馏与原创文案生成 |
-| 语音转文字 | faster-whisper | 本地音频转写 |
+| AI 能力 | Claude API / 兼容模型网关 | 内容蒸馏与原创文案生成 |
+| 语音转文字 | faster-whisper + Whisper `medium` | 本地音频转写，默认中文识别 |
 | 视频下载 | yt-dlp | 下载对标视频 |
-| 语音合成 | Edge-TTS | 中文 TTS 合成 |
+| 系统语音合成 | Edge-TTS | 中文 TTS 合成，默认 `zh-CN-XiaoxiaoNeural` |
+| 克隆音色合成 | Coqui TTS / XTTS-v2 | 基于用户声音样本生成克隆口播 |
 | 视频合成 | FFmpeg | 音频、画面、字幕合成为 MP4 |
 | 画面生成 | Pillow + NumPy | 生成数字人展示场景 |
 
@@ -249,12 +250,24 @@ distill-skill/
 - 单条字幕保持短行展示，避免长句一次性铺满屏幕。
 - 字幕时间轴来自分段 TTS 音频的真实时长，保证口播和字幕对齐。
 
+## 开源模型与可替换引擎
+
+| 类型 | 当前使用 | 配置位置 | 作用 | 后续替换方向 |
+| --- | --- | --- | --- | --- |
+| 语音转文字 | Whisper `medium` via `faster-whisper` | `backend/config.py` 的 `WHISPER_MODEL` | 对源视频音频做中文转写 | 可替换为 `small` 提速，或 `large-v3` 提升精度 |
+| 系统 TTS | Edge-TTS 中文音色 | `DEFAULT_TTS_VOICE`、`GET /api/settings/tts-voices` | 提供稳定的系统配音音色 | 可替换为其他 TTS 服务或本地中文 TTS 模型 |
+| 声音克隆 | Coqui TTS / XTTS-v2 | `backend/services/tts_service.py`、`backend/services/clone_tts.py` | 基于用户声音样本生成克隆音色 | 可替换为 GPT-SoVITS、CosyVoice、IndexTTS 等更适合中文的高保真克隆模型 |
+| 视频/音频处理 | FFmpeg | `video_composer.py`、`tts_service.py` | 音频格式转换、字幕烧录、竖屏视频合成 | 一般不替换，可按部署环境升级版本 |
+| 图像处理 | Pillow + NumPy | `video_composer.py` | 生成默认数字人场景和背景画面 | 后续可替换为真实数字人、口型同步或图像生成模型 |
+
+> 内容蒸馏与文案生成当前走 Claude API 或兼容模型网关，属于外部大模型能力，不在本地开源模型列表内。若后续要本地化，可在 `CLAUDE_MODEL` 与 API 适配层替换为本地大语言模型服务。
+
 ## 声音与数字人
 
-系统默认使用 Edge-TTS 中文音色，也保留系统音色列表供用户选择。用户可以上传自己的声音样本，后续通过 `VOICE_CLONE_COMMAND` 接入本地或外部声音克隆服务。
+系统默认使用 Edge-TTS 中文音色，也保留系统音色列表供用户选择。用户可以上传自己的声音样本，系统会将样本标准化为 24kHz、单声道 wav，并在生成克隆音色时使用 Coqui XTTS-v2。
 
 ```bash
-VOICE_CLONE_COMMAND='python clone_tts.py --ref {sample_path} --text {text_file} --out {output_path}'
+VOICE_CLONE_COMMAND='python backend/services/clone_tts.py --ref {sample_path} --text {text_file} --out {output_path}'
 ```
 
 当未配置声音克隆命令时，系统会自动回退到 Edge-TTS。
@@ -318,6 +331,9 @@ docker compose up --build
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | 是 | Claude API Key，用于蒸馏和文案生成 |
 | `REDIS_URL` | 否 | Redis 地址，默认本地 Redis |
+| `WHISPER_MODEL` | 否 | faster-whisper 模型，默认 `medium` |
+| `CLAUDE_MODEL` | 否 | 内容蒸馏与文案生成使用的 Claude / 兼容模型名称 |
+| `DEFAULT_TTS_VOICE` | 否 | 默认系统音色，默认 `zh-CN-XiaoxiaoNeural` |
 | `VOICE_CLONE_COMMAND` | 否 | 声音克隆命令模板 |
 
 ## 质量与安全约束
