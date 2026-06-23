@@ -19,6 +19,10 @@ class SettingsUpdate(BaseModel):
     voice_clone_enabled: Optional[bool] = None
 
 
+class VoiceSampleRename(BaseModel):
+    name: str
+
+
 def _get_or_create_profile(db: Session) -> UserProfile:
     profile = db.query(UserProfile).first()
     if not profile:
@@ -105,43 +109,105 @@ async def upload_photo(file: UploadFile = File(...), db: Session = Depends(get_d
 
 
 @router.post("/upload-voice-sample")
-async def upload_voice_sample(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_voice_sample(file: UploadFile = File(...), name: str = "", db: Session = Depends(get_db)):
     profile = _get_or_create_profile(db)
     ext = os.path.splitext(file.filename or "")[1].lower() or ".wav"
     if ext not in {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}:
         raise HTTPException(status_code=400, detail="请上传音频文件")
 
-    filename = f"voice_clone_{profile.id}{ext}"
+    sample_id = str(uuid.uuid4())
+    filename = f"voice_{sample_id}{ext}"
     filepath = settings.USER_DIR / filename
 
     content = await file.read()
     with open(filepath, "wb") as f:
         f.write(content)
 
-    profile.voice_clone_sample_path = str(filepath)
-    samples = _voice_samples(profile)
+    label = name.strip() or os.path.splitext(file.filename or "")[0] or "我的克隆音色"
     sample = {
-        "id": str(uuid.uuid4()),
-        "name": os.path.splitext(file.filename or "我的克隆音色")[0] or "我的克隆音色",
+        "id": sample_id,
+        "name": label,
         "path": str(filepath),
         "url": _storage_url(str(filepath)),
     }
-    samples = [s for s in samples if s.get("path") != str(filepath)] + [sample]
-    profile.voice_clone_samples = samples
-    profile.voice_clone_enabled = "true"
+
+    existing_samples = list(profile.voice_clone_samples or [])
+    existing_samples.append(sample)
+    profile.voice_clone_samples = existing_samples
+
+    # Keep backward-compatible field for legacy code
+    if not profile.voice_clone_sample_path:
+        profile.voice_clone_sample_path = str(filepath)
+        profile.voice_clone_enabled = "true"
+
     db.commit()
     return {
-        "voice_clone_sample_path": str(filepath),
-        "voice_clone_samples": samples,
-        "voice_clone_enabled": True,
+        "sample": sample,
+        "voice_clone_samples": _voice_samples(profile),
+        "voice_clone_enabled": profile.voice_clone_enabled == "true",
         "voice_clone_ready": True,
         "clone_engine_configured": bool(settings.VOICE_CLONE_COMMAND),
     }
 
 
+@router.put("/voice-samples/{sample_id}")
+def rename_voice_sample(sample_id: str, data: VoiceSampleRename, db: Session = Depends(get_db)):
+    profile = _get_or_create_profile(db)
+    samples = list(profile.voice_clone_samples or [])
+    for s in samples:
+        if s.get("id") == sample_id:
+            s["name"] = data.name.strip() or s.get("name", "我的克隆音色")
+            profile.voice_clone_samples = samples
+            db.commit()
+            return {"sample": s, "voice_clone_samples": _voice_samples(profile)}
+    raise HTTPException(status_code=404, detail="声音样本不存在")
+
+
+@router.delete("/voice-samples/{sample_id}")
+def delete_voice_sample(sample_id: str, db: Session = Depends(get_db)):
+    profile = _get_or_create_profile(db)
+    samples = list(profile.voice_clone_samples or [])
+    target = next((s for s in samples if s.get("id") == sample_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="声音样本不存在")
+
+    # Delete file
+    filepath = target.get("path", "")
+    if filepath and os.path.exists(filepath):
+        os.remove(filepath)
+
+    samples = [s for s in samples if s.get("id") != sample_id]
+    profile.voice_clone_samples = samples
+
+    # Fallback: if no samples left, clear legacy fields
+    if not samples:
+        profile.voice_clone_sample_path = None
+        profile.voice_clone_enabled = "false"
+
+    db.commit()
+    return {"deleted": True, "voice_clone_samples": _voice_samples(profile)}
+
+
 @router.get("/tts-voices")
 def list_tts_voices():
-    """Available Edge-TTS Chinese voices"""
+    """Available Edge-TTS Chinese voices + user uploaded voice samples"""
+    db = SessionLocal()
+    try:
+        profile = db.query(UserProfile).first()
+        voice_samples = _voice_samples(profile) if profile else []
+    finally:
+        db.close()
+
+    clone_voices = []
+    for s in voice_samples:
+        if s.get("path") and os.path.exists(s["path"]):
+            clone_voices.append({
+                "id": f"clone:{s['id']}",
+                "name": s.get("name", "我的克隆音色"),
+                "gender": "clone",
+                "is_clone": True,
+            })
+
     return {
         "voices": [
             {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓 (女声-温柔)", "gender": "female"},
@@ -156,5 +222,5 @@ def list_tts_voices():
             {"id": "zh-CN-YunxiaNeural", "name": "云夏 (男声-少年)", "gender": "male"},
             {"id": "zh-CN-YunyeNeural", "name": "云野 (男声-沉稳)", "gender": "male"},
             {"id": "zh-CN-XiaoruNeural", "name": "晓如 (女声-知性)", "gender": "female"},
-        ]
+        ] + clone_voices
     }

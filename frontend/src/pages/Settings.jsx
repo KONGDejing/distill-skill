@@ -1,14 +1,19 @@
-import { useState, useEffect } from 'react'
-import { Upload, Volume2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Upload, Volume2, Trash2, Edit3, Check, X, Mic } from 'lucide-react'
 import { api } from '../api/client'
 
 export default function Settings() {
   const [settings, setSettings] = useState(null)
   const [ttsVoices, setTTSVoices] = useState([])
+  const [voiceSamples, setVoiceSamples] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState('')
+  const [voiceName, setVoiceName] = useState('')
+  const [editingId, setEditingId] = useState(null)
+  const [editName, setEditName] = useState('')
+  const voiceInputRef = useRef(null)
 
   useEffect(() => { loadSettings() }, [])
 
@@ -20,6 +25,7 @@ export default function Settings() {
       ])
       setSettings(settingsRes)
       setTTSVoices(voicesRes.voices || [])
+      setVoiceSamples(settingsRes.voice_clone_samples || [])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -50,15 +56,45 @@ export default function Settings() {
     setSaving(true)
     setError('')
     try {
-      const result = await api.uploadVoiceSample(file)
+      const result = await api.uploadVoiceSample(file, voiceName)
+      setVoiceSamples(result.voice_clone_samples || [])
       await loadSettings()
-      setSuccess(result.clone_engine_configured ? '声音样本上传成功，已启用克隆音色' : '声音样本上传成功，等待配置克隆引擎')
+      setVoiceName('')
+      if (voiceInputRef.current) voiceInputRef.current.value = ''
+      setSuccess('声音样本上传成功')
       setTimeout(() => setSuccess(''), 3000)
     } catch (e) {
       setError(e.message)
     } finally {
       setSaving(false)
       e.target.value = ''
+    }
+  }
+
+  async function handleRename(sampleId) {
+    if (!editName.trim()) return
+    try {
+      const result = await api.renameVoiceSample(sampleId, editName.trim())
+      setVoiceSamples(result.voice_clone_samples || [])
+      await loadSettings()
+      setEditingId(null)
+      setSuccess('重命名成功')
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function handleDelete(sampleId) {
+    if (!confirm('确定删除这个声音样本吗？')) return
+    try {
+      const result = await api.deleteVoiceSample(sampleId)
+      setVoiceSamples(result.voice_clone_samples || [])
+      await loadSettings()
+      setSuccess('已删除')
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (e) {
+      setError(e.message)
     }
   }
 
@@ -78,6 +114,9 @@ export default function Settings() {
   }
 
   if (loading) return <div className="text-gray-500 animate-pulse">加载中...</div>
+
+  const cloneVoices = ttsVoices.filter(v => v.is_clone)
+  const systemVoices = ttsVoices.filter(v => !v.is_clone)
 
   return (
     <div>
@@ -109,12 +148,105 @@ export default function Settings() {
           </div>
         </div>
 
-        {/* TTS Voice */}
+        {/* Voice samples management */}
+        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
+          <h3 className="font-semibold mb-4">我的声音样本</h3>
+          <p className="text-sm text-gray-400 mb-4">上传你的声音样本（30秒以上，环境安静，仅本人说话），命名后可重复使用。</p>
+
+          {/* Upload with name */}
+          <div className="flex items-center gap-3 mb-4">
+            <input
+              value={voiceName}
+              onChange={(e) => setVoiceName(e.target.value)}
+              placeholder="给声音起个名字，如：我的声音"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            />
+            <label className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors flex-shrink-0">
+              <Upload size={16} />
+              {saving ? '上传中...' : '上传'}
+              <input ref={voiceInputRef} type="file" accept="audio/*" onChange={handleVoiceUpload} className="hidden" disabled={saving} />
+            </label>
+          </div>
+
+          {/* Sample list */}
+          {voiceSamples.length === 0 ? (
+            <p className="text-xs text-gray-600">还没有上传声音样本</p>
+          ) : (
+            <div className="space-y-2">
+              {voiceSamples.map((sample) => (
+                <div key={sample.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2.5">
+                  {editingId === sample.id ? (
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                        autoFocus
+                      />
+                      <button onClick={() => handleRename(sample.id)} className="p-1 text-green-400 hover:bg-green-500/10 rounded">
+                        <Check size={14} />
+                      </button>
+                      <button onClick={() => setEditingId(null)} className="p-1 text-gray-400 hover:text-white rounded">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <Mic size={14} className="text-purple-400" />
+                        <span className="text-sm">{sample.name}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => { setEditingId(sample.id); setEditName(sample.name || '') }}
+                          className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors" title="重命名">
+                          <Edit3 size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(sample.id)}
+                          className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors" title="删除">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* TTS Voice selection */}
         <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
           <h3 className="font-semibold mb-4">AI 语音音色</h3>
-          <p className="text-sm text-gray-400 mb-3">选择视频配音的系统音色。上传克隆音色后，仍然可以切回这些系统音色。</p>
+          <p className="text-sm text-gray-400 mb-3">选择视频配音的音色。上传克隆声音后，这里会出现你的声音选项。</p>
+
+          {/* Clone voices */}
+          {cloneVoices.length > 0 && (
+            <>
+              <p className="text-xs text-purple-400 font-medium mb-2">我的克隆音色</p>
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                {cloneVoices.map((v) => (
+                  <button key={v.id} onClick={() => handleUpdate({ tts_voice: v.id })}
+                    className={`flex items-center gap-2 p-3 rounded-lg text-sm text-left transition-colors ${
+                      settings?.tts_voice === v.id
+                        ? 'bg-purple-600/20 border border-purple-500/30 text-purple-400'
+                        : 'bg-gray-800 hover:bg-gray-750 text-gray-300 border border-transparent'
+                    }`}>
+                    <Mic size={16} />
+                    <div>
+                      <p className="font-medium">{v.name}</p>
+                      <p className="text-xs opacity-60">克隆音色</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <p className="text-xs text-blue-400 font-medium mb-2">系统音色</p>
           <div className="grid grid-cols-2 gap-2">
-            {ttsVoices.map((v) => (
+            {systemVoices.map((v) => (
               <button key={v.id} onClick={() => handleUpdate({ tts_voice: v.id })}
                 className={`flex items-center gap-2 p-3 rounded-lg text-sm text-left transition-colors ${
                   settings?.tts_voice === v.id
@@ -129,42 +261,6 @@ export default function Settings() {
               </button>
             ))}
           </div>
-        </div>
-
-        {/* Voice clone */}
-        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-          <h3 className="font-semibold mb-4">我的声音克隆</h3>
-          <p className="text-sm text-gray-400 mb-3">上传你的声音样本，后续视频会优先使用克隆音色。建议上传 30 秒以上、环境安静、只有你本人说话的音频。</p>
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <div className="text-sm">
-              <p className={settings?.voice_clone_ready ? 'text-green-400' : 'text-gray-400'}>
-                {settings?.voice_clone_ready ? '已上传声音样本' : '未上传声音样本'}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                {settings?.voice_clone_enabled ? '当前已启用克隆音色' : '当前未启用克隆音色'}
-              </p>
-            </div>
-            <label className="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors">
-              <Upload size={16} />
-              {saving ? '上传中...' : '上传声音样本'}
-              <input type="file" accept="audio/*" onChange={handleVoiceUpload} className="hidden" disabled={saving} />
-            </label>
-          </div>
-          <div className="flex gap-3">
-            <button
-              onClick={() => handleUpdate({ voice_clone_enabled: true })}
-              disabled={!settings?.voice_clone_ready || saving}
-              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm transition-colors">
-              启用克隆音色
-            </button>
-            <button
-              onClick={() => handleUpdate({ voice_clone_enabled: false })}
-              disabled={saving}
-              className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm transition-colors">
-              使用系统音色
-            </button>
-          </div>
-          <p className="text-xs text-gray-500 mt-3">如果未配置本地克隆引擎，系统会保存样本并自动回退到当前 Edge-TTS 音色。</p>
         </div>
 
         {/* Watermark */}

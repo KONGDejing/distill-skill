@@ -58,9 +58,10 @@ export const api = {
     const res = await fetch(`${BASE}/settings/upload-photo`, { method: 'POST', body: form });
     return res.json();
   },
-  uploadVoiceSample: async (file) => {
+  uploadVoiceSample: async (file, name = '') => {
     const form = new FormData();
     form.append('file', file);
+    if (name) form.append('name', name);
     const res = await fetch(`${BASE}/settings/upload-voice-sample`, { method: 'POST', body: form });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Request failed' }));
@@ -68,5 +69,7 @@ export const api = {
     }
     return res.json();
   },
+  renameVoiceSample: (sampleId, name) => request(`/settings/voice-samples/${sampleId}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  deleteVoiceSample: (sampleId) => request(`/settings/voice-samples/${sampleId}`, { method: 'DELETE' }),
   listTTSSVoices: () => request('/settings/tts-voices'),
 };

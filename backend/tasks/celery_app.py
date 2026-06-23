@@ -276,7 +276,17 @@ def run_video_generation(script_id: str):
 
         tts_voice = profile.tts_voice if profile else settings.DEFAULT_TTS_VOICE
         clone_sample_path = None
-        if profile and profile.voice_clone_enabled == "true" and profile.voice_clone_sample_path:
+
+        # If a clone voice is selected, find the sample path
+        if tts_voice and tts_voice.startswith("clone:"):
+            sample_id = tts_voice.replace("clone:", "", 1)
+            samples = profile.voice_clone_samples or []
+            matched = next((s for s in samples if s.get("id") == sample_id), None)
+            if matched and matched.get("path"):
+                clone_sample_path = matched["path"]
+            # Fallback to default system voice for TTS API call
+            tts_voice = settings.DEFAULT_TTS_VOICE
+        elif profile and profile.voice_clone_enabled == "true" and profile.voice_clone_sample_path:
             clone_sample_path = profile.voice_clone_sample_path
         spoken_segments = split_script_sentences(script.script)
         subtitle_segments, error = generate_segmented_speech(
