@@ -5,43 +5,28 @@
 ## 系统架构总览
 
 ```mermaid
-flowchart TB
+graph TB
     subgraph Frontend[" 前端 - React "]
-        direction LR
-        F1[博主管理]
-        F2[内容日历]
-        F3[视频库]
-        F4[系统设置]
+        F1[博主管理] --- F2[内容日历] --- F3[视频库] --- F4[系统设置]
     end
 
     subgraph Backend[" 后端 - Python FastAPI "]
-        subgraph M1[" 博主蒸馏模块 "]
-            direction LR
-            M1A[yt-dlp 下载] --> M1B[Whisper 转写] --> M1C[Claude 蒸馏]
-        end
-        subgraph M2[" 文案生成模块 "]
-            M2A[Claude API 文案生成]
-        end
-        subgraph M3[" TTS 模块 "]
-            M3A[Edge-TTS 语音合成]
-        end
-        subgraph M4[" 视频合成模块 "]
-            direction LR
-            M4A[FFmpeg 视频合成] --> M4B[ASS 字幕渲染]
-        end
+        B1[博主蒸馏: yt-dlp + Whisper + Claude]
+        B2[文案生成: Claude API]
+        B3[TTS: Edge-TTS 语音合成]
+        B4[视频合成: FFmpeg + ASS 字幕]
     end
 
     subgraph Queue[" 任务队列 "]
-        Q["Celery + Redis 异步处理: 下载 转写 蒸馏 合成"]
+        Q[Celery + Redis 异步调度]
     end
 
     subgraph Storage[" 数据与存储层 "]
-        direction LR
         D[(SQLite 数据库)]
-        F[(本地文件存储)]
+        S[(本地文件存储)]
     end
 
-    Frontend -->|"REST API"| Backend
+    Frontend -->|REST API| Backend
     Backend --> Queue
     Queue --> Storage
 </mermaid>
