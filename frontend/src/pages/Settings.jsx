@@ -61,7 +61,7 @@ export default function Settings() {
       await loadSettings()
       setVoiceName('')
       if (voiceInputRef.current) voiceInputRef.current.value = ''
-      setSuccess('声音样本上传成功')
+      setSuccess('声音样本已保存，并已加入 AI 语音音色')
       setTimeout(() => setSuccess(''), 3000)
     } catch (e) {
       setError(e.message)

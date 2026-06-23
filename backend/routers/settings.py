@@ -73,6 +73,7 @@ def get_settings(db: Session = Depends(get_db)):
     profile = _get_or_create_profile(db)
     voice_samples = _voice_samples(profile)
     selected_clone = _selected_clone_sample(profile)
+    db.commit()
     return {
         "id": profile.id,
         "photo_path": profile.photo_path,
@@ -162,6 +163,7 @@ async def upload_voice_sample(file: UploadFile = File(...), name: str = Form("")
     db.commit()
     return {
         "sample": sample,
+        "selected_tts_voice": profile.tts_voice,
         "voice_clone_samples": _voice_samples(profile),
         "voice_clone_enabled": profile.voice_clone_enabled == "true",
         "voice_clone_ready": True,
@@ -216,7 +218,7 @@ def delete_voice_sample(sample_id: str, db: Session = Depends(get_db)):
         profile.voice_clone_enabled = "false"
 
     db.commit()
-    return {"deleted": True, "voice_clone_samples": _voice_samples(profile)}
+    return {"deleted": True, "voice_clone_samples": _voice_samples(profile), "selected_tts_voice": profile.tts_voice}
 
 
 @router.get("/tts-voices")
@@ -226,6 +228,8 @@ def list_tts_voices():
     try:
         profile = db.query(UserProfile).first()
         voice_samples = _voice_samples(profile) if profile else []
+        if profile:
+            db.commit()
     finally:
         db.close()
 
