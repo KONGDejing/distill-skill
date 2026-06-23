@@ -92,8 +92,8 @@ export default function Settings() {
           <h3 className="font-semibold mb-4">我的照片</h3>
           <div className="flex items-center gap-6">
             <div className="w-24 h-24 rounded-full bg-gray-800 overflow-hidden flex items-center justify-center border-2 border-gray-700">
-              {settings?.photo_path ? (
-                <img src={settings.photo_path.replace('/data/kongdejing/workspace/kdj/distill-skill/backend/', '/storage/')} alt="用户照片" className="w-full h-full object-cover" />
+              {settings?.photo_url ? (
+                <img src={settings.photo_url} alt="用户照片" className="w-full h-full object-cover" />
               ) : (
                 <span className="text-gray-600 text-xs">无照片</span>
               )}
@@ -112,7 +112,7 @@ export default function Settings() {
         {/* TTS Voice */}
         <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
           <h3 className="font-semibold mb-4">AI 语音音色</h3>
-          <p className="text-sm text-gray-400 mb-3">选择视频配音的音色</p>
+          <p className="text-sm text-gray-400 mb-3">选择视频配音的系统音色。上传克隆音色后，仍然可以切回这些系统音色。</p>
           <div className="grid grid-cols-2 gap-2">
             {ttsVoices.map((v) => (
               <button key={v.id} onClick={() => handleUpdate({ tts_voice: v.id })}

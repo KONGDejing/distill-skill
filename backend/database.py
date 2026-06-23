@@ -38,5 +38,7 @@ def _ensure_user_profile_columns():
         existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(user_profile)").fetchall()}
         if "voice_clone_sample_path" not in existing:
             conn.exec_driver_sql("ALTER TABLE user_profile ADD COLUMN voice_clone_sample_path VARCHAR(1024)")
+        if "voice_clone_samples" not in existing:
+            conn.exec_driver_sql("ALTER TABLE user_profile ADD COLUMN voice_clone_samples JSON")
         if "voice_clone_enabled" not in existing:
             conn.exec_driver_sql("ALTER TABLE user_profile ADD COLUMN voice_clone_enabled VARCHAR(20) DEFAULT 'false'")

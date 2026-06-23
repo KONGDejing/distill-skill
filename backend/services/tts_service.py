@@ -10,6 +10,13 @@ from pathlib import Path
 from config import settings
 
 
+def _edge_tts_text(text: str) -> str:
+    text = (text or "").strip()
+    if text.startswith("<speak"):
+        return text
+    return text.replace("AI", "人工智能").replace("ai", "人工智能")
+
+
 def generate_speech(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeural", clone_sample_path: str | None = None) -> str | None:
     """
     Generate speech audio from text. Uses the configured voice-clone command when a sample is available;
@@ -20,10 +27,15 @@ def generate_speech(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeu
         if error is None:
             return None
     try:
+        error = asyncio.run(generate_speech_async(_edge_tts_text(text), output_path, voice))
+        if error is None:
+            return None
         cmd = [
             "edge-tts",
             "--voice", voice,
-            "--text", text,
+            "--rate=+8%",
+            "--pitch=+2Hz",
+            "--text", _edge_tts_text(text),
             "--write-media", output_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -77,7 +89,7 @@ async def generate_speech_async(text: str, output_path: str, voice: str = "zh-CN
     """Async version using edge-tts Python library directly."""
     try:
         import edge_tts
-        communicate = edge_tts.Communicate(text, voice)
+        communicate = edge_tts.Communicate(text, voice, rate="+8%", pitch="+2Hz")
         await communicate.save(output_path)
         if os.path.exists(output_path):
             return None
@@ -91,7 +103,7 @@ def generate_segmented_speech(
     segments: list[str],
     output_path: str,
     voice: str = "zh-CN-XiaoxiaoNeural",
-    pause_ms: int = 140,
+    pause_ms: int = 260,
     clone_sample_path: str | None = None,
 ) -> tuple[list[dict] | None, str | None]:
     """

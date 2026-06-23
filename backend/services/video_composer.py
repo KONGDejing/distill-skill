@@ -93,19 +93,19 @@ def compose_video(
 
 
 def split_script_sentences(text: str) -> list[str]:
-    """Split script into natural spoken sentences; keep punctuation for TTS prosody."""
+    """Split script by natural spoken pauses; keep punctuation for TTS prosody."""
     normalized = re.sub(r"[\r\n]+", "。", text or "")
     normalized = re.sub(r"\s+", "", normalized)
-    parts = re.split(r"(?<=[。！？!?])", normalized)
-    sentences = []
+    parts = re.split(r"(?<=[，,；;：:。！？!?])", normalized)
+    segments = []
     for part in parts:
-        sentence = part.strip()
-        if not sentence:
+        segment = part.strip()
+        if not segment:
             continue
-        sentence = re.sub(r"^[A-Za-z0-9一二三四五六七八九十]+[：:、.．]\s*", "", sentence)
-        if sentence:
-            sentences.append(sentence)
-    return sentences or ([text.strip()] if text and text.strip() else [])
+        segment = re.sub(r"^[A-Za-z0-9一二三四五六七八九十]+[：:、.．]\s*", "", segment)
+        if segment:
+            segments.append(segment)
+    return segments or ([text.strip()] if text and text.strip() else [])
 
 
 def _get_duration(file_path: str) -> float:
@@ -128,7 +128,7 @@ def _generate_subtitles(
     output_path: str,
     subtitle_segments: list[dict] | None = None,
 ):
-    """Generate ASS subtitles: one spoken sentence per cue, no trailing display punctuation."""
+    """Generate ASS subtitles: one natural spoken pause per cue, no trailing display punctuation."""
     segments = subtitle_segments or _estimate_sentence_segments(text, total_duration)
     if not segments:
         return
@@ -184,21 +184,16 @@ def _strip_trailing_punctuation(text: str) -> str:
     return (text or "").strip().rstrip(TRAILING_SUBTITLE_PUNCTUATION).strip()
 
 
-def _wrap_subtitle_text(text: str, max_chars_per_line: int = 13) -> str:
+def _wrap_subtitle_text(text: str, max_chars_per_line: int = 16) -> str:
     text = re.sub(r"\s+", "", text.strip())
     if len(text) <= max_chars_per_line:
         return text
 
-    break_points = [m.end() for m in re.finditer(r"[，,、；;：:]", text)]
-    midpoint = len(text) // 2
-    candidates = [p for p in break_points if 6 <= p <= len(text) - 6]
-    if candidates:
-        split_at = min(candidates, key=lambda p: abs(p - midpoint))
-    else:
-        split_at = midpoint
-
+    split_at = min(max_chars_per_line, len(text))
     first = text[:split_at].rstrip(TRAILING_SUBTITLE_PUNCTUATION)
-    second = text[split_at:].lstrip("，,、；;：:").rstrip(TRAILING_SUBTITLE_PUNCTUATION)
+    second = text[split_at:].lstrip("，,；;：:").rstrip(TRAILING_SUBTITLE_PUNCTUATION)
+    if len(second) > max_chars_per_line:
+        second = second[:max_chars_per_line].rstrip(TRAILING_SUBTITLE_PUNCTUATION)
     return f"{first}\\N{second}"
 
 

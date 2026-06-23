@@ -3,6 +3,7 @@ Script generation service using Claude API.
 Generates original short-video scripts based on blogger content DNA.
 """
 import json
+import re
 import anthropic
 from config import settings
 
@@ -32,6 +33,9 @@ SCRIPT_GEN_PROMPT = """你是一位资深短视频内容策划。请基于以下
 3. 模仿话术风格，但不能照搬原话和金句
 4. 选题要符合内容偏好中的方向
 5. 每条文案控制在 40-90 秒口播时长（约 150-350 字）
+6. 严禁生成或复用原博主的任何个人信息、身份标识或署名话术，包括姓名、昵称、账号名、地域身份、公司/学校、家庭成员、联系方式、个人经历细节、"我是XXX"、"感谢大家观看"、"关注XXX"等
+7. 如果内容基因里带有个人信息，只能学习其表达结构和节奏，必须替换成完全中性的泛化表达
+8. 文案必须像一个独立原创账号发布，不能让观众感觉是在冒充、搬运或延续原博主本人
 
 请严格按以下 JSON 数组格式输出：
 [
@@ -45,6 +49,29 @@ SCRIPT_GEN_PROMPT = """你是一位资深短视频内容策划。请基于以下
 ]
 
 只输出 JSON，不要加任何额外文字。"""
+
+
+PERSONAL_INFO_PATTERNS = [
+    r"我是[^，。！？!?\n]{1,12}",
+    r"我叫[^，。！？!?\n]{1,12}",
+    r"这里是[^，。！？!?\n]{1,16}",
+    r"感谢(?:大家|你们)?(?:的)?观看",
+    r"谢谢(?:大家|你们)?(?:的)?观看",
+    r"关注[^，。！？!?\n]{1,16}",
+]
+
+
+def _contains_personal_info(text: str) -> bool:
+    return any(re.search(pattern, text or "") for pattern in PERSONAL_INFO_PATTERNS)
+
+
+def _filter_personal_info_scripts(scripts: list[dict]) -> list[dict]:
+    clean = []
+    for script in scripts:
+        combined = "\n".join(str(script.get(key, "")) for key in ("title", "hook", "script"))
+        if not _contains_personal_info(combined):
+            clean.append(script)
+    return clean
 
 
 def generate_scripts(
@@ -86,7 +113,7 @@ def generate_scripts(
         json_end = response_text.rfind("]") + 1
         if json_start >= 0 and json_end > json_start:
             json_str = response_text[json_start:json_end]
-            return json.loads(json_str)
+            return _filter_personal_info_scripts(json.loads(json_str))
         return None
     except Exception as e:
         print(f"Script generation error: {e}")

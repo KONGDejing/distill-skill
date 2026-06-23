@@ -29,6 +29,8 @@ def list_scripts(
         q = q.filter(GeneratedScript.blogger_id == blogger_id)
     if status:
         q = q.filter(GeneratedScript.status == status)
+    else:
+        q = q.filter(GeneratedScript.status != "trashed")
 
     scripts = q.limit(50).all()
     return {
@@ -80,8 +82,40 @@ def update_script(script_id: str, data: ScriptUpdate, db: Session = Depends(get_
     return {"updated": True}
 
 
+@router.delete("/trash/empty")
+def empty_trash(db: Session = Depends(get_db)):
+    deleted = db.query(GeneratedScript).filter(GeneratedScript.status == "trashed").delete(synchronize_session=False)
+    db.commit()
+    return {"deleted": deleted}
+
+
 @router.delete("/{script_id}")
 def delete_script(script_id: str, db: Session = Depends(get_db)):
+    script = db.query(GeneratedScript).filter(GeneratedScript.id == script_id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="文案不存在")
+    if script.status == "trashed":
+        db.delete(script)
+        db.commit()
+        return {"deleted": True}
+    script.status = "trashed"
+    db.commit()
+    return {"trashed": True}
+
+
+@router.post("/{script_id}/restore")
+def restore_script(script_id: str, db: Session = Depends(get_db)):
+    script = db.query(GeneratedScript).filter(GeneratedScript.id == script_id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail="文案不存在")
+    if script.status == "trashed":
+        script.status = "pending"
+        db.commit()
+    return {"status": script.status}
+
+
+@router.delete("/{script_id}/permanent")
+def permanently_delete_script(script_id: str, db: Session = Depends(get_db)):
     script = db.query(GeneratedScript).filter(GeneratedScript.id == script_id).first()
     if not script:
         raise HTTPException(status_code=404, detail="文案不存在")

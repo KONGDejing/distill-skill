@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+from pathlib import Path
 from database import get_db, SessionLocal
 from models.user_profile import UserProfile
 from config import settings
@@ -28,18 +29,44 @@ def _get_or_create_profile(db: Session) -> UserProfile:
     return profile
 
 
+def _storage_url(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    try:
+        rel = Path(path).resolve().relative_to(settings.STORAGE_DIR.resolve())
+        return f"/storage/{rel.as_posix()}"
+    except ValueError:
+        return None
+
+
+def _voice_samples(profile: UserProfile) -> list[dict]:
+    samples = profile.voice_clone_samples or []
+    if not samples and profile.voice_clone_sample_path:
+        samples = [{
+            "id": "default",
+            "name": "我的克隆音色",
+            "path": profile.voice_clone_sample_path,
+            "url": _storage_url(profile.voice_clone_sample_path),
+        }]
+    return [{**sample, "url": sample.get("url") or _storage_url(sample.get("path"))} for sample in samples]
+
+
 @router.get("")
 def get_settings(db: Session = Depends(get_db)):
     profile = _get_or_create_profile(db)
+    voice_samples = _voice_samples(profile)
     return {
         "id": profile.id,
         "photo_path": profile.photo_path,
+        "photo_url": _storage_url(profile.photo_path),
         "tts_voice": profile.tts_voice,
         "watermark": profile.watermark,
         "video_style": profile.video_style,
         "voice_clone_sample_path": profile.voice_clone_sample_path,
+        "voice_clone_samples": voice_samples,
         "voice_clone_enabled": profile.voice_clone_enabled == "true",
-        "voice_clone_ready": bool(profile.voice_clone_sample_path and os.path.exists(profile.voice_clone_sample_path)),
+        "voice_clone_ready": any(sample.get("path") and os.path.exists(sample["path"]) for sample in voice_samples),
+        "clone_engine_configured": bool(settings.VOICE_CLONE_COMMAND),
     }
 
 
@@ -53,7 +80,8 @@ def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     if data.video_style is not None:
         profile.video_style = data.video_style
     if data.voice_clone_enabled is not None:
-        if data.voice_clone_enabled and not profile.voice_clone_sample_path:
+        voice_samples = _voice_samples(profile)
+        if data.voice_clone_enabled and not any(sample.get("path") and os.path.exists(sample["path"]) for sample in voice_samples):
             raise HTTPException(status_code=400, detail="请先上传声音样本")
         profile.voice_clone_enabled = "true" if data.voice_clone_enabled else "false"
     db.commit()
@@ -73,7 +101,7 @@ async def upload_photo(file: UploadFile = File(...), db: Session = Depends(get_d
 
     profile.photo_path = str(filepath)
     db.commit()
-    return {"photo_path": str(filepath)}
+    return {"photo_path": str(filepath), "photo_url": _storage_url(str(filepath))}
 
 
 @router.post("/upload-voice-sample")
@@ -91,15 +119,28 @@ async def upload_voice_sample(file: UploadFile = File(...), db: Session = Depend
         f.write(content)
 
     profile.voice_clone_sample_path = str(filepath)
+    samples = _voice_samples(profile)
+    sample = {
+        "id": str(uuid.uuid4()),
+        "name": os.path.splitext(file.filename or "我的克隆音色")[0] or "我的克隆音色",
+        "path": str(filepath),
+        "url": _storage_url(str(filepath)),
+    }
+    samples = [s for s in samples if s.get("path") != str(filepath)] + [sample]
+    profile.voice_clone_samples = samples
     profile.voice_clone_enabled = "true"
     db.commit()
     return {
         "voice_clone_sample_path": str(filepath),
+        "voice_clone_samples": samples,
         "voice_clone_enabled": True,
         "voice_clone_ready": True,
         "clone_engine_configured": bool(settings.VOICE_CLONE_COMMAND),
     }
 
+
+@router.get("/tts-voices")
+def list_tts_voices():
     """Available Edge-TTS Chinese voices"""
     return {
         "voices": [
