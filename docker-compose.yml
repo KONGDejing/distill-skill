@@ -18,6 +18,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./backend/storage:/app/storage
+      - ./backend/engines:/app/engines
       - ./backend/distill.db:/app/distill.db
     restart: unless-stopped
 
@@ -32,6 +33,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./backend/storage:/app/storage
+      - ./backend/engines:/app/engines
       - ./backend/distill.db:/app/distill.db
     restart: unless-stopped
 

@@ -31,7 +31,12 @@ class Settings(BaseSettings):
 
     # TTS
     DEFAULT_TTS_VOICE: str = "zh-CN-XiaoxiaoNeural"
-    VOICE_CLONE_COMMAND: str = os.getenv("VOICE_CLONE_COMMAND", "")
+    COSYVOICE_DIR: Path = BASE_DIR / "engines" / "CosyVoice"
+    COSYVOICE_MODEL_DIR: Path = STORAGE_DIR / "models" / "CosyVoice2-0.5B"
+    VOICE_CLONE_COMMAND: str = os.getenv(
+        "VOICE_CLONE_COMMAND",
+        f"python {BASE_DIR / 'services' / 'clone_tts.py'} --ref {{sample_path}} --text {{text_file}} --out {{output_path}}",
+    )
 
     # Video output
     VIDEO_WIDTH: int = 1080

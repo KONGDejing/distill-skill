@@ -35,11 +35,7 @@ def _get_or_create_profile(db: Session) -> UserProfile:
 
 
 def _clone_engine_available() -> bool:
-    try:
-        import TTS
-        return True
-    except ImportError:
-        return bool(settings.VOICE_CLONE_COMMAND)
+    return bool(settings.VOICE_CLONE_COMMAND) and settings.COSYVOICE_DIR.exists() and settings.COSYVOICE_MODEL_DIR.exists()
 
 
 def _storage_url(path: Optional[str]) -> Optional[str]:

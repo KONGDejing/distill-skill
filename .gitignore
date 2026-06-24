@@ -13,6 +13,10 @@ backend/storage/transcripts/
 backend/storage/user/
 backend/storage/videos/
 
+# Local model engines
+backend/engines/
+backend/storage/models/**/.cache/
+
 # Database files
 *.db
 

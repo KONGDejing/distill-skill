@@ -141,7 +141,7 @@ flowchart LR
 | 语音转文字 | faster-whisper + Whisper `medium` | 本地音频转写，默认中文识别 |
 | 视频下载 | yt-dlp | 下载对标视频 |
 | 系统语音合成 | Edge-TTS | 中文 TTS 合成，默认 `zh-CN-XiaoxiaoNeural` |
-| 克隆音色合成 | Coqui TTS / XTTS-v2 | 基于用户声音样本生成克隆口播 |
+| 克隆音色合成 | CosyVoice2 | 基于用户声音样本生成克隆口播 |
 | 视频合成 | FFmpeg | 音频、画面、字幕合成为 MP4 |
 | 画面生成 | Pillow + NumPy | 生成数字人展示场景 |
 
@@ -256,7 +256,7 @@ distill-skill/
 | --- | --- | --- | --- | --- |
 | 语音转文字 | Whisper `medium` via `faster-whisper` | `backend/config.py` 的 `WHISPER_MODEL` | 对源视频音频做中文转写 | 可替换为 `small` 提速，或 `large-v3` 提升精度 |
 | 系统 TTS | Edge-TTS 中文音色 | `DEFAULT_TTS_VOICE`、`GET /api/settings/tts-voices` | 提供稳定的系统配音音色 | 可替换为其他 TTS 服务或本地中文 TTS 模型 |
-| 声音克隆 | Coqui TTS / XTTS-v2 | `backend/services/tts_service.py`、`backend/services/clone_tts.py` | 基于用户声音样本生成克隆音色 | 可替换为 GPT-SoVITS、CosyVoice、IndexTTS 等更适合中文的高保真克隆模型 |
+| 声音克隆 | CosyVoice2 | `backend/services/tts_service.py`、`backend/services/clone_tts.py`、`VOICE_CLONE_COMMAND` | 基于用户声音样本生成克隆音色 | 可替换为 GPT-SoVITS、IndexTTS 等更适合中文的高保真克隆模型 |
 | 视频/音频处理 | FFmpeg | `video_composer.py`、`tts_service.py` | 音频格式转换、字幕烧录、竖屏视频合成 | 一般不替换，可按部署环境升级版本 |
 | 图像处理 | Pillow + NumPy | `video_composer.py` | 生成默认数字人场景和背景画面 | 后续可替换为真实数字人、口型同步或图像生成模型 |
 
@@ -264,9 +264,13 @@ distill-skill/
 
 ## 声音与数字人
 
-系统默认使用 Edge-TTS 中文音色，也保留系统音色列表供用户选择。用户可以上传自己的声音样本，系统会将样本标准化为 24kHz、单声道 wav，并在生成克隆音色时使用 Coqui XTTS-v2。
+系统默认使用 Edge-TTS 中文音色，也保留系统音色列表供用户选择。用户可以上传自己的声音样本，系统会将样本标准化为 24kHz、单声道 wav，并在生成克隆音色时通过 `VOICE_CLONE_COMMAND` 调用 CosyVoice2。
+
+建议将 CosyVoice 仓库放在 `backend/engines/CosyVoice`，模型文件放在 `backend/storage/models/CosyVoice2-0.5B`。这两个目录都属于本地大文件目录，不提交到 Git。
 
 ```bash
+COSYVOICE_DIR=backend/engines/CosyVoice
+COSYVOICE_MODEL_DIR=backend/storage/models/CosyVoice2-0.5B
 VOICE_CLONE_COMMAND='python backend/services/clone_tts.py --ref {sample_path} --text {text_file} --out {output_path}'
 ```
 
@@ -334,6 +338,8 @@ docker compose up --build
 | `WHISPER_MODEL` | 否 | faster-whisper 模型，默认 `medium` |
 | `CLAUDE_MODEL` | 否 | 内容蒸馏与文案生成使用的 Claude / 兼容模型名称 |
 | `DEFAULT_TTS_VOICE` | 否 | 默认系统音色，默认 `zh-CN-XiaoxiaoNeural` |
+| `COSYVOICE_DIR` | 否 | CosyVoice 本地仓库路径，建议 `backend/engines/CosyVoice` |
+| `COSYVOICE_MODEL_DIR` | 否 | CosyVoice2 模型目录，建议 `backend/storage/models/CosyVoice2-0.5B` |
 | `VOICE_CLONE_COMMAND` | 否 | 声音克隆命令模板 |
 
 ## 质量与安全约束

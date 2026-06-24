@@ -6,21 +6,13 @@ import asyncio
 import subprocess
 import os
 import tempfile
+import shlex
 import re
 from pathlib import Path
 from config import settings
 
-_xtts_model = None
-
-
-def _get_xtts():
-    """Lazily load XTTS-v2 model once per process (preserves CUDA context)."""
-    global _xtts_model
-    if _xtts_model is None:
-        os.environ["COQUI_TOS_AGREED"] = "1"
-        from TTS.api import TTS
-        _xtts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", gpu=True)
-    return _xtts_model
+os.environ.setdefault("COSYVOICE_DIR", str(settings.COSYVOICE_DIR))
+os.environ.setdefault("COSYVOICE_MODEL_DIR", str(settings.COSYVOICE_MODEL_DIR))
 
 
 def _edge_tts_text(text: str) -> str:
@@ -85,7 +77,7 @@ def _generate_whole_cloned_speech(segments: list[str], output_path: str, clone_s
 
 def generate_speech(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeural", clone_sample_path: str | None = None) -> str | None:
     """
-    Generate speech audio from text. Uses the configured voice-clone command when a sample is available;
+    Generate speech audio from text. Uses CosyVoice through the configured clone command when a sample is available;
     otherwise falls back to Edge-TTS.
     """
     if clone_sample_path:
@@ -117,43 +109,40 @@ def generate_speech(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeu
 
 
 def _generate_cloned_speech(text: str, output_path: str, clone_sample_path: str) -> str | None:
-    """Generate speech using Coqui TTS XTTS-v2 directly in-process (preserves CUDA)."""
+    """Generate cloned speech through the configured CosyVoice command."""
     if not os.path.exists(clone_sample_path):
         return "Voice clone sample not found"
+    if not settings.VOICE_CLONE_COMMAND:
+        return "VOICE_CLONE_COMMAND not configured"
 
+    text_file_path = None
     try:
-        tts = _get_xtts()
-        output_is_mp3 = Path(output_path).suffix.lower() == ".mp3"
-        tts_out = output_path
-        if output_is_mp3:
-            tts_out = output_path + ".wav"
-        tts.tts_to_file(
-            text=text,
-            speaker_wav=str(clone_sample_path),
-            language="zh-cn",
-            file_path=tts_out,
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as text_file:
+            text_file.write(text)
+            text_file_path = text_file.name
+
+        command = settings.VOICE_CLONE_COMMAND.format(
+            sample_path=shlex.quote(str(clone_sample_path)),
+            text_file=shlex.quote(text_file_path),
+            output_path=shlex.quote(str(output_path)),
         )
-        if output_is_mp3:
-            convert_cmd = [
-                "ffmpeg", "-y",
-                "-i", tts_out,
-                "-vn",
-                "-acodec", "libmp3lame",
-                "-q:a", "2",
-                output_path,
-            ]
-            convert = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=60)
-            try:
-                os.remove(tts_out)
-            except OSError:
-                pass
-            if convert.returncode != 0 or not os.path.exists(output_path):
-                return convert.stderr[:500] if convert.stderr else "Failed to convert cloned audio to mp3"
-        if os.path.exists(output_path):
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=600)
+        if result.returncode == 0 and os.path.exists(output_path):
             return None
-        return "XTTS did not produce output file"
+        return result.stderr[:500] if result.stderr else "CosyVoice clone command failed"
+    except subprocess.TimeoutExpired:
+        return "CosyVoice clone timeout"
     except Exception as e:
         return str(e)[:500]
+    finally:
+        if text_file_path:
+            try:
+                os.remove(text_file_path)
+            except OSError:
+                pass
 
 
 async def generate_speech_async(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeural") -> str | None:
