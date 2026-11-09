@@ -33,7 +33,9 @@ def test_missing_qr_is_reported_as_network_error_not_authentication():
 ])
 def test_real_qr_or_confirmation_does_not_mean_logged_in(body, status):
     client = adapter(body)
-    with patch.object(client, "_qr_panel", return_value=Mock()), patch.object(client, "_qr_ready", return_value=True):
+    panel = Mock()
+    panel.inner_text.return_value = body
+    with patch.object(client, "_qr_panel", return_value=panel), patch.object(client, "_qr_ready", return_value=True):
         state = client.inspect()
     assert state["status"] == status
     assert state["authenticated"] is False
@@ -73,3 +75,23 @@ def test_untrusted_domain_cannot_report_authenticated():
     state = client.inspect()
     assert state["authenticated"] is False
     assert state["status"] == "unknown"
+
+
+@pytest.mark.parametrize("panel_text,expected", [
+    ("扫码登录 打开抖音APP", "waiting_scan"),
+    ("二维码已过期 点击刷新", "qr_expired"),
+])
+def test_expiry_follows_active_qr_instead_of_background_landing_qr(panel_text, expected):
+    client = adapter("首页：二维码已过期 弹窗：" + panel_text)
+    panel = Mock()
+    panel.inner_text.return_value = panel_text
+    with patch.object(client, "_qr_panel", return_value=panel), patch.object(client, "_qr_ready", return_value=True):
+        assert client.inspect()["status"] == expected
+
+
+def test_official_verification_still_takes_priority_over_ready_modal_qr():
+    client = adapter("请完成验证")
+    panel = Mock()
+    panel.inner_text.return_value = "扫码登录"
+    with patch.object(client, "_qr_panel", return_value=panel), patch.object(client, "_qr_ready", return_value=True):
+        assert client.inspect()["status"] == "needs_verification"

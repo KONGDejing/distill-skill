@@ -77,14 +77,19 @@ class Adapter(BaseAdapter):
             return state
         try:
             body = self.page.locator("body").inner_text(timeout=5000)
+            panel = self._qr_panel()
+            # The landing QR remains visible in the DOM behind the modal and
+            # can expire independently. Classify the same QR that we capture,
+            # rather than treating another panel's expiry as this QR's expiry.
+            qr_text = panel.inner_text(timeout=5000) if panel is not None else body
         except BrowserTimeout:
             state.update(status="network_error", error="抖音官方页面尚未加载完成")
             return state
         if any(text in body for text in ("请完成验证", "安全验证", "扫码成功", "请在手机上确认", "请在抖音上确认")):
             state.update(status="needs_verification", error="请按抖音官方页面或手机提示完成确认")
-        elif any(text in body for text in ("二维码已失效", "二维码已过期", "二维码过期", "二维码失效")):
+        elif any(text in qr_text for text in ("二维码已失效", "二维码已过期", "二维码过期", "二维码失效")):
             state["status"] = "qr_expired"
-        elif self._qr_ready(self._qr_panel()):
+        elif self._qr_ready(panel):
             state["status"] = "waiting_scan"
         elif self.visible([self.page.get_by_text("退出登录", exact=True)]) is not None:
             state.update(status="authenticated", authenticated=True)
