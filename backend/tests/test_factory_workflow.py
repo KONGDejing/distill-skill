@@ -79,6 +79,29 @@ def test_json_extraction_preserves_nested_objects_and_rejects_non_json():
         factory_llm.parse_json("本次没有有效的结构化结果，只有 { 一个括号")
 
 
+@pytest.mark.parametrize("second_valid", [True, False])
+def test_invalid_model_json_gets_one_budgeted_retry_without_fabricating_approval(isolated_factory, monkeypatch, second_valid):
+    from types import SimpleNamespace
+    run_id, _ = _seed_item(isolated_factory)
+    def response(text):
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)],
+                               usage=SimpleNamespace(input_tokens=10, output_tokens=5), stop_reason="end_turn")
+    client = Mock()
+    client.messages.create.side_effect = [response('not valid JSON'), response(
+        '{"approved":false,"score":30,"issues":["证据不足"]}' if second_valid else 'still invalid')]
+    monkeypatch.setattr(factory_llm.anthropic, "Anthropic", Mock(return_value=client))
+    if second_valid:
+        assert factory_llm.call_agent(run_id, "reviewer", {"script": "test"})["approved"] is False
+    else:
+        with pytest.raises(ValueError, match="JSON"):
+            factory_llm.call_agent(run_id, "reviewer", {"script": "test"})
+    assert client.messages.create.call_count == 2
+    assert "format_feedback" in client.messages.create.call_args_list[1].kwargs["messages"][0]["content"]
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        assert (run.llm_calls, run.input_tokens, run.output_tokens) == (2, 20, 10)
+
+
 def test_source_validation_rejects_mixed_invented_ids_and_wrong_shape():
     assert factory_service._sources_for([SOURCE["id"]], [SOURCE]) == [SOURCE]
     for source_ids in (["invented"], [SOURCE["id"], "invented"], SOURCE["id"], []):

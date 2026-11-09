@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from models.factory import FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
+from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
 from services.factory_resources import MemoryPressure, ensure_memory_available
 
@@ -15,12 +15,56 @@ def utc(value):
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def catch_up_until(db, slot):
+    run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
+    policy = (run.settings_snapshot or {}).get("authorized_catch_up", {}) if run else {}
+    if slot.id not in policy.get("release_ids", []):
+        return None
+    try:
+        return utc(datetime.fromisoformat(policy["until"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def deadline(db, slot):
+    return max(slot.due_at + LATE_WINDOW, catch_up_until(db, slot) or slot.due_at)
+
+
+def authorize_catch_up(db, run, config, now=None):
+    """An explicit request permits today's assigned releases until midnight.
+
+    It neither creates past slots nor retries an uncertain submit. Future due
+    times, platform settings, quality gates and memory protection still apply.
+    """
+    now = now or datetime.now(ZoneInfo(config.timezone))
+    start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
+    end = utc((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
+    slots = db.query(FactoryRelease).filter(FactoryRelease.run_id == run.id,
+        FactoryRelease.due_at >= start, FactoryRelease.due_at < end,
+        FactoryRelease.status.notin_(["submitted", "cancelled"])).all()
+    if not slots:
+        raise ValueError("本轮没有今天待补齐的排期")
+    until = end.replace(tzinfo=timezone.utc).isoformat()
+    run.settings_snapshot = {**run.settings_snapshot, "authorized_catch_up": {
+        "until": until, "release_ids": [slot.id for slot in slots], "requested_at": now.isoformat()}}
+    for slot in slots:
+        if slot.status in {"missed", "partial"}:
+            slot.status = "scheduled"
+    db.add(FactoryEvent(run_id=run.id, agent_id="director", stage="catch_up", status="completed",
+        message="按本次明确要求补齐今日排期，补发授权截至今天结束；已提交和结果不明的作品仍保留防重保护。",
+        detail={"until": until, "release_ids": [slot.id for slot in slots]}))
+    db.commit()
+    return {"run_id": run.id, "until": until, "release_ids": [slot.id for slot in slots]}
+
+
 def release_dict(db, slot):
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
+    until = catch_up_until(db, slot)
     return {"id": slot.id, "due_at": slot.due_at.replace(tzinfo=timezone.utc).isoformat(),
             "item_id": slot.item_id, "run_id": slot.run_id, "status": slot.status,
             "title": (item.content or {}).get("title") if item else None,
-            "platforms": slot.platforms, "results": slot.results or {}}
+            "platforms": slot.platforms, "results": slot.results or {},
+            "catch_up_until": until.replace(tzinfo=timezone.utc).isoformat() if until else None}
 
 
 def upcoming_releases(db, config):
@@ -108,8 +152,10 @@ def step_platform(db, slot, item, platform, now, enabled):
         return _result("uploading", "正在上传视频", prepared)
     if not enabled:
         return _result("paused", "当前发行计划已暂停此平台")
-    if now > slot.due_at + LATE_WINDOW:
-        return _result("missed", "已超过发布时间 15 分钟，保留作品，不集中补发")
+    if now >= deadline(db, slot):
+        message = ("今日补发授权已到期，保留作品，未跨日自动补发" if catch_up_until(db, slot)
+                   else "已超过发布时间 15 分钟，保留作品，不集中补发")
+        return _result("missed", message)
     if prepared and prepared.status == "failed":
         return _result("blocked", "上传未完成，请检查任务结果后处理", prepared)
     if now < slot.due_at - PREPARE_LEAD:
@@ -122,7 +168,9 @@ def step_platform(db, slot, item, platform, now, enabled):
             return _result("blocked", "平台仍在处理上一条任务")
     state = publishing._connection_state(platform)
     if not state.get("authenticated"):
-        return _result("blocked", "需要重新登录账号")
+        message = ("请在官方窗口完成额外身份验证，保留当前会话" if state.get("state_code") == "needs_verification"
+                   else "需要重新登录账号")
+        return _result("blocked", message)
     if platform != "xiaohongshu" and not all(state.get("capabilities", {}).get(a) for a in ("prepare", "publish")):
         return _result("blocked", "账号已登录，上传与提交仍待联调")
     try:
@@ -147,7 +195,7 @@ def advance_slot(db, slot, config, now):
             db.commit()
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
     if item is None or item.status != "completed":
-        slot.status = "missed" if now > slot.due_at + LATE_WINDOW else "waiting_media"
+        slot.status = "missed" if now >= deadline(db, slot) else "waiting_media"
         slot.results = {p: _result(slot.status, "成片未就绪或未通过质检，未发布") for p in slot.platforms}
     else:
         # An explicit memory pause stops new publishing even if other clips are ready.
@@ -159,7 +207,7 @@ def advance_slot(db, slot, config, now):
             slot.status = "submitted"
         elif statuses & {"uploading", "publishing"}:
             slot.status = "publishing"
-        elif now > slot.due_at + LATE_WINDOW:
+        elif now >= deadline(db, slot):
             slot.status = "partial" if "submitted" in statuses else "missed"
         elif "blocked" in statuses:
             slot.status = "blocked"

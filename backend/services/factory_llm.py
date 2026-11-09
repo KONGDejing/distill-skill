@@ -41,7 +41,7 @@ def _reserve_call(run_id):
         run.llm_calls += 1
         run.heartbeat_at = datetime.utcnow()
         db.commit()
-def call_agent(run_id, agent_id, payload, max_tokens=2400):
+def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=False):
     instruction = EDIT_REVIEW_INSTRUCTION if agent_id == "reviewer" and payload.get("task_mode") == "edit_review" else INSTRUCTIONS[agent_id]
     client = None
     response = None
@@ -97,8 +97,12 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400):
         return parse_json(text)
     except ValueError:
         with SessionLocal() as db:
-            db.add(FactoryEvent(run_id=run_id, agent_id=agent_id, stage="invalid_output", status="failed",
-                message="模型输出未满足 JSON 交付约定，已停止该步骤",
+            db.add(FactoryEvent(run_id=run_id, agent_id=agent_id, stage="invalid_output", status="failed" if _format_retry else "warning",
+                message="模型输出仍不是有效 JSON，已停止该步骤" if _format_retry else "模型输出格式无效，要求按原职责重新交付一次；重试计入调用预算",
                 detail={"response_preview": text[:1200], "stop_reason": response.stop_reason}))
             db.commit()
+        if not _format_retry:
+            return call_agent(run_id, agent_id, {**payload, "format_feedback":
+                "上次输出不是合法JSON。请重新执行同一岗位任务，严格返回完整JSON对象。字符串内部的双引号必须转义，或使用中文引号；不要输出Markdown代码围栏。不得改变事实、审核标准或编造通过结果。"},
+                max_tokens=max_tokens, _format_retry=True)
         raise

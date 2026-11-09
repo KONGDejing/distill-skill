@@ -140,6 +140,16 @@ def cancel_run(run_id: str, db: Session = Depends(get_db)):
     return run_dict(run)
 
 
+@router.post("/runs/{run_id}/catch-up")
+def catch_up_run(run_id: str, db: Session = Depends(get_db)):
+    from services.factory_schedule import authorize_catch_up
+    run = require_run(db, run_id)
+    try:
+        return authorize_catch_up(db, run, get_config(db))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
 @router.post("/runs/{run_id}/retry", status_code=202)
 def retry_run(run_id: str, db: Session = Depends(get_db)):
     run = require_run(db, run_id)

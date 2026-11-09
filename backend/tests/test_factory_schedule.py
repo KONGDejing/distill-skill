@@ -104,6 +104,51 @@ def test_upload_lead_and_late_window(env, minutes, status):
     assert env.begin.call_count == (1 if status == "uploading" else 0)
 
 
+def test_explicit_catch_up_reopens_only_todays_assigned_slots_and_expires(env):
+    db, slot = env.db, env.slot
+    slot.run_id, slot.status = "run", "missed"
+    other = FactoryRelease(run_id="run", due_at=slot.due_at - timedelta(days=1), status="missed")
+    db.add(other)
+    db.commit()
+    result = schedule.authorize_catch_up(db, db.get(FactoryRun, "run"), env.config,
+                                       datetime(2026, 11, 9, 20, tzinfo=TZ))
+    assert result["release_ids"] == [slot.id]
+    assert slot.status == "scheduled" and other.status == "missed"
+    assert schedule.catch_up_until(db, other) is None
+    item = db.get(FactoryItem, "item")
+    assert schedule.step_platform(db, slot, item, "xiaohongshu", datetime(2026, 11, 9, 15, 59), True)["status"] == "uploading"
+    env.begin.reset_mock()
+    assert schedule.step_platform(db, slot, item, "xiaohongshu", datetime(2026, 11, 9, 16), True)["status"] == "missed"
+    env.begin.assert_not_called()
+
+
+def test_catch_up_does_not_replay_uncertain_submits_or_bypass_pause(env):
+    db, slot = env.db, env.slot
+    slot.run_id = "run"
+    db.add(FactoryPublication(item_id="item", platform="douyin", action="publish", status="failed",
+                             result={"submission_attempted": True, "submission_uncertain": True}))
+    db.add(FactoryPublication(item_id="item", platform="xiaohongshu", action="publish", status="submitted"))
+    db.commit()
+    schedule.authorize_catch_up(db, db.get(FactoryRun, "run"), env.config, datetime(2026, 11, 9, 20, tzinfo=TZ))
+    item = db.get(FactoryItem, "item")
+    now = datetime(2026, 11, 9, 12)
+    assert schedule.step_platform(db, slot, item, "douyin", now, True)["status"] == "blocked"
+    assert schedule.step_platform(db, slot, item, "xiaohongshu", now, True)["status"] == "submitted"
+    assert schedule.step_platform(db, slot, item, "kuaishou", now, False)["status"] == "paused"
+    env.begin.assert_not_called()
+
+
+def test_catch_up_does_not_publish_future_slot_early(env):
+    db, slot = env.db, env.slot
+    slot.run_id, slot.due_at = "run", datetime(2026, 11, 9, 14)
+    db.add(FactoryPublication(item_id="item", platform="xiaohongshu", action="prepare", status="prepared"))
+    db.commit()
+    schedule.authorize_catch_up(db, db.get(FactoryRun, "run"), env.config, datetime(2026, 11, 9, 20, tzinfo=TZ))
+    assert schedule.step_platform(db, slot, db.get(FactoryItem, "item"), "xiaohongshu",
+                                  slot.due_at - timedelta(seconds=1), True)["status"] == "prepared"
+    env.begin.assert_not_called()
+
+
 def test_failed_or_unreviewed_media_is_never_published(env):
     env.db.get(FactoryItem, "item").status = "failed"
     env.db.commit()
