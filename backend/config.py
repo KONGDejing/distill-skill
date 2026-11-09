@@ -11,8 +11,11 @@ class Settings(BaseSettings):
 
     # Claude API (via Anthropic-compatible gateway)
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_AUTH_TOKEN: str = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
     ANTHROPIC_BASE_URL: str = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-    CLAUDE_MODEL: str = "deepseek-v4-pro"
+    HTTPS_PROXY: str = os.getenv("HTTPS_PROXY", "")
+    CLAUDE_MODEL: str = "claude-sonnet-4-6"
+    FACTORY_FALLBACK_MODEL: str = "claude-sonnet-4-5-20250929"
 
     # Redis (for Celery)
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -45,13 +48,16 @@ class Settings(BaseSettings):
 
     # Scheduler
     DAILY_GENERATION_TIME: str = "08:00"
-    SCRIPTS_PER_DAY: int = 5
+    SCRIPTS_PER_DAY: int = 3
 
     class Config:
-        env_file = ".env"
+        env_file = str(BASE_DIR / ".env")
 
 
 settings = Settings()
+
+if settings.HTTPS_PROXY:
+    os.environ.setdefault("HTTPS_PROXY", settings.HTTPS_PROXY)
 
 # Ensure storage dirs exist
 for d in [settings.VIDEO_DIR, settings.AUDIO_DIR, settings.TRANSCRIPT_DIR,

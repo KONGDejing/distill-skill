@@ -15,7 +15,7 @@ from models.generated_video import GeneratedVideo
 from models.user_profile import UserProfile
 
 celery_app = Celery(
-    "distill_tasks",
+    "short_video_ai_factory",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
 )
@@ -29,6 +29,9 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_default_queue="short_video_ai_factory",
+    imports=("tasks.factory_tasks",),
+    broker_connection_retry_on_startup=True,
 )
 
 
@@ -366,8 +369,8 @@ def generate_scripts_for_all_active():
 from celery.schedules import crontab
 
 celery_app.conf.beat_schedule = {
-    "daily-script-generation": {
-        "task": "generate_scripts_for_all_active",
-        "schedule": crontab(hour=8, minute=0),
+    "factory-daily-plan-and-recovery": {
+        "task": "factory.schedule",
+        "schedule": 60.0,
     },
 }

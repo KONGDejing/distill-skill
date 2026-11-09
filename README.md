@@ -1,4 +1,101 @@
-# 短视频 AI 内容工厂
+# 短视频 AI 内容工厂 · Short Video AI Factory
+
+工程名：`short-video-ai-factory`。第一版专注 AI 科技，每天生产 3 条原创视频，为抖音、小红书、快手、哔哩哔哩准备最多 12 份发布素材包。日产量可在看板调整为 1–10 条。
+
+## v0.2：七岗位协作工厂
+
+| 岗位 | 职责 |
+| --- | --- |
+| 工厂负责人 | 从有来源的候选选题中决策、安排交接、返工、预算与交付 |
+| 科技情报员 | 获取官方资料与真实演示视频，记录来源与发布时间，区分新闻和常青教程 |
+| 策划编剧 | 原创口播、分镜、根据独立审核结果返工 |
+| 视频制作员 | 按口播规划真实演示镜头、剪辑与标注，生成配音、字幕、封面与1080×1920成片 |
+| 质量审核员 | 文案事实检查与媒体文件、编码、音量等技术检查 |
+| 平台运营员 | 四平台标题、说明、标签及ZIP素材包 |
+| 数据分析员 | 根据实际生产记录复盘；未接入平台指标时不推断流量表现 |
+
+模型负责需要判断的步骤；后端控制阶段、预算、工具调用、验收和持久化。每个选题最多一次文案返工，仍未通过时负责人可为该位置更换一次备用选题；默认32次模型调用（提高产量时按目标调整上限），服务错误自动有限重试并计入预算。批次失败可以从已保存步骤继续，已完成视频不会重复生成。
+
+首页是工厂工作台，保留 `/overview`、`/bloggers`、`/calendar`、`/videos`、`/settings` 原有功能。工厂接口位于 `/api/factory`，API文档位于 `/docs`。
+
+**交付与发布口径**：`package_ready` 只表示素材包就绪，不表示发布成功。小红书支持官方创作后台扫码登录、上传准备、AI合成内容声明与提交回执核验；其余三平台目前交付素材包，等待账号授权与发布接入。`prepared` 表示已上传待提交，`submitted` 表示平台确认接收，最终公开状态仍以平台审核为准。素材包包含MP4、音频、字幕、封面、脚本和各平台元数据。
+
+**声音与画面**：默认使用 `tech_montage` 科技演示混剪。从已引用官方页面采集真实动态素材，制作员按口播选择镜头，输出竖屏剪辑、重点标注、字幕和来源说明。至少需要3份独立动态素材；不足时该条停止制作，不会静默改用文字卡片。旧版 `cards` 可在设置中明确选择。官方演示与自制示意画面分别标注，不宣称为本工程亲测。
+
+配音优先尝试 Edge-TTS；不可用时使用本机 CosyVoice2 自带参考音色，返回实际 `tts_engine`。数字、单位与部分型号使用确定性读法，较长的中英混合规格句按片段合成，字幕保留原文。镜头锚点依赖真实句子/字幕时间及文字插值，不能声称达到逐词对齐。视频质检包括音轨、编码、时长、动态帧差及素材覆盖，画面语义仍需复核。
+
+已提交作品的新版本保存在独立 `media.preview` 中，工作台显示“新版演示混剪样片 · 未发布”；原交付文件和提交记录保留。当前质量迭代已关闭自动提交，新版样片不会自动发布。
+
+## 当前机器部署
+
+依赖 Python、Node、Redis、FFmpeg、Noto CJK中文字体和可用模型网关。该机器使用 `/usr/bin/python3`，避免误用其他工程的虚拟环境。模型网关配置放在 **`backend/.env`**（不提交Git，权限600）。支持 API Key 或兼容网关的 `ANTHROPIC_AUTH_TOKEN`；需要出站代理时设置 `HTTPS_PROXY`。常驻服务必须具备与交互终端一致的认证和网络配置。
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+/usr/bin/python3 -m pip install -r backend/requirements.txt
+/usr/bin/python3 scripts/factoryctl.py install --port 3000
+/usr/bin/python3 scripts/factoryctl.py start
+```
+
+生产服务在同一端口提供前端和API：`http://localhost:3000`。
+
+```bash
+/usr/bin/python3 scripts/factoryctl.py status
+/usr/bin/python3 scripts/factoryctl.py restart
+/usr/bin/python3 scripts/factoryctl.py stop
+```
+
+四个用户级 systemd 服务分别运行 API、Celery Worker、Celery Beat 和小红书浏览器连接器，日志在 `.runtime/`。连接器使用独立的 `short-video-ai-factory-xiaohongshu.service` 与进程组，API 或 Worker 重启不会关闭登录浏览器。`factoryctl.py install/start/stop/restart/status` 统一管理四个服务。要在退出登录后继续运行，用户级systemd需要启用linger。调度每分钟读取数据库计划，每天北京时间08:00启动；当天手动批次也计入当日计划，避免再次自动开工。队列名为 `short_video_ai_factory`。
+
+本机旧目录 `distill-skill` 是新目录的兼容符号链接，用于保持历史素材绝对路径有效。历史数据库文件 `backend/distill.db` 继续使用，新增 `factory_*` 表；部署前备份保存在 `.runtime/backups/`。
+
+## 开发与验证
+
+```bash
+cd backend
+/usr/bin/python3 -m uvicorn main:app --reload --port 8002
+# 另一个终端，backend目录
+/usr/bin/python3 -m celery -A tasks.celery_app worker -l info -c 1
+# 仓库根目录，另一个终端
+npm --prefix frontend run dev
+# 仓库根目录
+/usr/bin/python3 -m pytest backend/tests -q
+npm --prefix frontend run build
+```
+
+Vite的后端地址由 `VITE_API_TARGET` 配置，默认 `http://127.0.0.1:8002`。Docker Compose 中使用 `http://backend:8000`。Compose是可选部署模板；本次验证部署使用上述systemd方式。容器使用本地CosyVoice时，还需要容器内可执行的模型引擎环境，不能直接假设宿主虚拟环境可搬运。
+
+新增核心文件：
+
+- `backend/agents/registry.py`：七岗位职责、可用工具、提示词与四平台定义。
+- `backend/services/factory_service.py`：持久化生产流程、检查点、审核、打包与复盘。
+- `backend/services/factory_llm.py`：模型适配、调用预算、有限重试与用量记录。
+- `backend/services/factory_research.py`：真实官方来源采集。
+- `backend/services/factory_media.py`：真实语音、卡片视频、字幕及技术质检。
+- `backend/services/factory_voice.py`：独立配音及原文字幕生成与缓存。
+- `backend/services/factory_visuals.py`：有界采集官方动态视频、保留出处并验证真实运动。
+- `backend/services/factory_montage.py`：演示混剪、镜头清单、标注与动态画面验收。
+- `backend/models/factory.py`：生产设置、批次、作品、事件。
+- `backend/tasks/factory_tasks.py`：常驻任务与每日计划。
+- `frontend/src/pages/FactoryDashboard.jsx`：工作台与成果预览。
+
+## 小红书连接与提交
+
+工作台“发布渠道 → 小红书 → 扫码登录”打开真实官方登录会话。浏览器配置与命令队列保存在 `.runtime/` 私有目录；不保存平台原始密码，也不将登录凭据放入Git或素材包。
+
+连接器异常退出由独立 systemd 服务重启，并重新检查保存的登录会话。连接器自身重启后，需要重新上传准备尚未提交的作品；已记录过提交尝试的作品继续受防重账本约束。仅更新 API 时可运行 `systemctl --user restart short-video-ai-factory-api.service`，保留当前浏览器编辑页。
+
+成片支持“上传并准备发布 → 提交小红书”。发布前核对同一作品的标题、正文和AI合成内容声明；重复请求复用已有任务。发布点击前写入提交账本，必须取得成功页或明确回执才记录 `submitted`。只有明确记录为未尝试提交的失败可以重试；若点击后状态不明，则停止自动重发，保留待核对记录。
+
+生产设置中的“自动提交小红书”可控制后续批次通过审核后自动提交；未登录时保留素材包并记录原因。当前上传封面使用平台的视频首帧，独立封面图片仍包含在素材包中。平台有额外验证时需要在官方页面完成。
+
+发布API：`POST /api/factory/items/{id}/platforms/xiaohongshu/prepare`、`POST /api/factory/platform-jobs/{id}/publish`、`GET /api/factory/platform-jobs/{id}`。
+
+## 原有博主内容蒸馏功能
+
+下文介绍仍保留的博主管理、内容基因、旧文案与数字人展示流程；新的自动生产使用上面的工厂流程。
+
 
 一个面向短视频运营的 AI 内容生产系统。系统通过分析对标博主视频，蒸馏内容风格与爆款结构，再自动生成原创口播文案、合成语音、渲染字幕，并产出适合抖音 / 小红书 / 快手的竖屏 MP4 视频。
 
@@ -192,7 +289,7 @@ storage/
 ## 目录结构
 
 ```text
-distill-skill/
+short-video-ai-factory/
 ├── backend/
 │   ├── main.py
 │   ├── config.py

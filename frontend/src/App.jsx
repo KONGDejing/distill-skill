@@ -6,12 +6,14 @@ import BloggerDetail from './pages/BloggerDetail'
 import ContentCalendar from './pages/ContentCalendar'
 import VideoLibrary from './pages/VideoLibrary'
 import Settings from './pages/Settings'
+import FactoryDashboard from './pages/FactoryDashboard'
 
 export default function App() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<FactoryDashboard />} />
+        <Route path="/overview" element={<Dashboard />} />
         <Route path="/bloggers" element={<BloggerList />} />
         <Route path="/bloggers/:id" element={<BloggerDetail />} />
         <Route path="/calendar" element={<ContentCalendar />} />

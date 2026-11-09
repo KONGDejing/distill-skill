@@ -96,7 +96,7 @@ def generate_scripts(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, base_url=settings.ANTHROPIC_BASE_URL)
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, auth_token=settings.ANTHROPIC_AUTH_TOKEN or None, base_url=settings.ANTHROPIC_BASE_URL)
         message = client.messages.create(
             model=settings.CLAUDE_MODEL,
             max_tokens=8192,

@@ -27,8 +27,21 @@ def init_db():
     from models.generated_script import GeneratedScript
     from models.generated_video import GeneratedVideo
     from models.user_profile import UserProfile
+    from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
     Base.metadata.create_all(bind=engine)
     _ensure_user_profile_columns()
+    _ensure_factory_columns()
+
+
+def _ensure_factory_columns():
+    if "sqlite" not in settings.DATABASE_URL:
+        return
+    with engine.begin() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(factory_config)").fetchall()}
+        if "auto_publish_xiaohongshu" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN auto_publish_xiaohongshu BOOLEAN NOT NULL DEFAULT 0")
+        if "visual_style" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN visual_style VARCHAR(30) NOT NULL DEFAULT 'cards'")
 
 
 def _ensure_user_profile_columns():

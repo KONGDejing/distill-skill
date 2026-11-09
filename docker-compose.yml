@@ -1,4 +1,4 @@
-version: "3.8"
+name: short-video-ai-factory
 
 services:
   redis:
@@ -13,8 +13,9 @@ services:
       - "8000:8000"
     depends_on:
       - redis
+    env_file:
+      - ./backend/.env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./backend/storage:/app/storage
@@ -28,8 +29,9 @@ services:
     depends_on:
       - redis
       - backend
+    env_file:
+      - ./backend/.env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./backend/storage:/app/storage
@@ -43,9 +45,13 @@ services:
     depends_on:
       - redis
       - backend
+    env_file:
+      - ./backend/.env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/distill.db:/app/distill.db
     restart: unless-stopped
 
   frontend:
@@ -54,4 +60,6 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+    environment:
+      - VITE_API_TARGET=http://backend:8000
     restart: unless-stopped
