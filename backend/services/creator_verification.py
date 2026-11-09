@@ -79,7 +79,14 @@ def _official_page(platform):
 
 
 def _panel(page):
-    for title in ("身份验证", "安全验证", "验证身份"):
+    # Observed official second-verification component keeps this panel while
+    # its heading changes from identity selection to SMS-code entry.
+    for element in page.locator("[class*=second_verify_panel_new-]").element_handles():
+        box = element.bounding_box()
+        if element.is_visible() and box and 280 <= box["width"] <= 1000 and 160 <= box["height"] <= 900:
+            return element, box
+        element.dispose()
+    for title in ("身份验证", "安全验证", "验证身份", "接收短信验证码"):
         for label in page.get_by_text(title, exact=True).all():
             if not label.is_visible():
                 continue

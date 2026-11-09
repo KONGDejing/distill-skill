@@ -12,6 +12,7 @@ from services.creator_login_status import douyin_verification
     ("需在手机上进行确认", "phone"),
     ("需在手机上进行确认 身份验证 为保障账号安全，请先完成身份验证", "identity"),
     ("接收短信验证码 验证登录密码", "identity"),
+    ("需在手机上进行确认 接收短信验证码 短信已发送至 重新发送 取消 验证", "identity"),
     ("安全验证", "identity"),
     ("扫码登录 二维码失效 点击刷新", None),
 ])
