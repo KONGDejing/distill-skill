@@ -88,6 +88,25 @@ class Adapter(BaseAdapter):
         temporary.replace(directory / "login-ui.json")
         self._last_ui_snapshot = signature
 
+    def _account_logged_in(self):
+        logout = self.visible([self.page.get_by_text("退出账号", exact=True),
+                               self.page.get_by_text("退出登录", exact=True)])
+        if logout is not None:
+            return True
+        # The observed signed-in portal hides its logout control in the avatar
+        # dropdown. Opening that menu is read-only; never click the logout item.
+        if not urlsplit(self.page.url).path.startswith("/creator-micro/"):
+            return False
+        avatar = self.visible([self.page.locator("[class*=avatar-wrapper-]")])
+        if avatar is None:
+            return False
+        try:
+            avatar.hover(timeout=3000)
+            self.page.get_by_text("退出账号", exact=True).wait_for(state="visible", timeout=2000)
+            return True
+        except BrowserTimeout:
+            return False
+
     def inspect(self):
         state = {"authenticated": False, "status": "unknown", "display_name": None,
                  "url": clean_url(self.page.url), "error": None}
@@ -111,7 +130,7 @@ class Adapter(BaseAdapter):
             state["status"] = "qr_expired"
         elif self._qr_ready(panel):
             state["status"] = "waiting_scan"
-        elif self.visible([self.page.get_by_text("退出登录", exact=True)]) is not None:
+        elif self._account_logged_in():
             state.update(status="authenticated", authenticated=True)
         else:
             state.update(status="network_error", error="官方登录界面已打开，但尚未取得可扫描二维码；请刷新或检查网络")
@@ -136,11 +155,17 @@ class Adapter(BaseAdapter):
         elif reset or urlsplit(self.page.url).hostname != "creator.douyin.com":
             self.page.goto(HOME_URL, wait_until="commit", timeout=45000)
         if self.visible([self.page.locator(".douyin-creator-master-modal-content")]) is None:
-            entry = self.page.get_by_role("button", name="登录后使用丰富的作品体裁", exact=True)
-            try:
-                entry.wait_for(state="visible", timeout=90000)
-                entry.click()
-            except BrowserTimeout:
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                current = self.inspect()
+                if current["authenticated"] or current["status"] == "needs_verification":
+                    return current
+                entry = self.visible([self.page.get_by_role("button", name="登录后使用丰富的作品体裁", exact=True)])
+                if entry is not None:
+                    entry.click()
+                    break
+                self.page.wait_for_timeout(500)
+            else:
                 self._diagnostics()
                 return self.inspect()
         deadline = time.monotonic() + 90

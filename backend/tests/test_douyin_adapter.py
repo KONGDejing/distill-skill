@@ -97,3 +97,31 @@ def test_official_verification_still_takes_priority_over_ready_modal_qr():
     panel.inner_text.return_value = "扫码登录"
     with patch.object(client, "_qr_panel", return_value=panel), patch.object(client, "_qr_ready", return_value=True):
         assert client.inspect()["status"] == "needs_verification"
+
+
+def test_signed_in_portal_checks_observed_avatar_logout_without_clicking_it():
+    client = adapter("作品发布 首页 内容管理 数据中心")
+    client.page.url = "https://creator.douyin.com/creator-micro/home"
+    avatar = Mock()
+    with patch.object(client, "visible", side_effect=[None, avatar]):
+        assert client._account_logged_in()
+    avatar.hover.assert_called_once()
+    client.page.get_by_text.return_value.click.assert_not_called()
+
+
+def test_creator_route_alone_does_not_prove_login():
+    client = adapter("作品发布 首页 内容管理 数据中心")
+    client.page.url = "https://creator.douyin.com/creator-micro/home"
+    with patch.object(client, "visible", return_value=None):
+        assert not client._account_logged_in()
+
+
+def test_restored_session_does_not_wait_for_a_logged_out_login_button():
+    client = adapter()
+    client.page.url = "about:blank"
+    client.inspect = Mock(side_effect=[{"authenticated": False, "status": "unknown"},
+                                       {"authenticated": True, "status": "authenticated"}])
+    with patch.object(client, "visible", return_value=None):
+        assert client.login()["authenticated"]
+    client.page.goto.assert_called_once()
+    client.page.get_by_role.assert_not_called()

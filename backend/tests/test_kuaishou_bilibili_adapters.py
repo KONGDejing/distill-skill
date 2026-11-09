@@ -140,7 +140,7 @@ def test_douyin_refresh_reopens_official_modal_without_reloading_portal():
     adapter.page = Mock(url='https://creator.douyin.com/')
     adapter.inspect = Mock(return_value={'authenticated': False, 'status': 'waiting_scan'})
     modal = Mock()
-    adapter.visible = Mock(side_effect=[modal, None])
+    adapter.visible = Mock(side_effect=[modal, None, adapter.page.get_by_role.return_value])
     adapter._diagnostics = Mock()
     assert adapter.login(refresh=True)['status'] == 'waiting_scan'
     adapter.page.goto.assert_not_called()
