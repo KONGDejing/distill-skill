@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.creator_adapters.bilibili import Adapter as Bilibili
 from services.creator_adapters.kuaishou import Adapter as Kuaishou
+from services.creator_adapters.douyin import Adapter as Douyin
 
 
 class Locator:
@@ -99,3 +100,59 @@ def test_lookalike_domain_cannot_prove_login(adapter_type, login_url, creator_ur
     state = adapter_type(SimpleNamespace(pages=[page])).inspect()
     assert state["authenticated"] is False
     assert state["status"] == "unknown"
+
+
+@pytest.mark.parametrize('adapter_type', [Bilibili, Kuaishou, Douyin])
+@pytest.mark.parametrize('state', [
+    {'authenticated': True, 'status': 'authenticated'},
+    {'authenticated': False, 'status': 'needs_verification'},
+])
+def test_refresh_preserves_logged_in_or_phone_confirmation_session(adapter_type, state):
+    from unittest.mock import Mock
+    adapter = object.__new__(adapter_type)
+    adapter.page = Mock()
+    adapter.inspect = Mock(return_value=state)
+    assert adapter.login(refresh=True) == state
+    adapter.page.goto.assert_not_called()
+    adapter.page.reload.assert_not_called()
+
+
+@pytest.mark.parametrize('adapter_type,url', [
+    (Bilibili, 'https://passport.bilibili.com/login'),
+    (Kuaishou, 'https://passport.kuaishou.com/pc/account/login/'),
+    (Douyin, 'https://creator.douyin.com/'),
+])
+def test_browser_crash_is_not_swallowed_as_loading_timeout(adapter_type, url):
+    from unittest.mock import Mock
+    from playwright.sync_api import Error, TimeoutError
+    adapter = object.__new__(adapter_type)
+    adapter.page = Mock(url=url)
+    adapter.page.locator.return_value.inner_text.side_effect = TimeoutError('loading')
+    assert adapter.inspect()['status'] == 'network_error'
+    adapter.page.locator.return_value.inner_text.side_effect = Error('Target crashed')
+    with pytest.raises(Error, match='Target crashed'):
+        adapter.inspect()
+
+
+def test_douyin_refresh_reopens_official_modal_without_reloading_portal():
+    from unittest.mock import Mock
+    adapter = object.__new__(Douyin)
+    adapter.page = Mock(url='https://creator.douyin.com/')
+    adapter.inspect = Mock(return_value={'authenticated': False, 'status': 'waiting_scan'})
+    modal = Mock()
+    adapter.visible = Mock(side_effect=[modal, None])
+    adapter._diagnostics = Mock()
+    assert adapter.login(refresh=True)['status'] == 'waiting_scan'
+    adapter.page.goto.assert_not_called()
+    modal.wait_for.assert_called_once_with(state='hidden', timeout=10000)
+    adapter.page.get_by_role.return_value.click.assert_called_once()
+
+
+@pytest.mark.parametrize('adapter_type', [Bilibili, Kuaishou])
+def test_expired_qr_is_not_captured_as_scannable(adapter_type):
+    from unittest.mock import Mock
+    adapter = object.__new__(adapter_type)
+    adapter.inspect = Mock(return_value={'authenticated': False, 'status': 'qr_expired'})
+    adapter.save_login_region = Mock()
+    assert adapter.capture_login_image(Path('unused.png')) is False
+    adapter.save_login_region.assert_not_called()

@@ -102,6 +102,8 @@ Vite的后端地址由 `VITE_API_TARGET` 配置，默认 `http://127.0.0.1:8002`
 
 工作台各平台的“打开扫码登录页”连接官方持久浏览器会话。二维码过期后，用户准备好扫码时点击“启动登录 / 刷新二维码”；不会定时自动重启二维码、打断正在进行的登录。官方额外验证必须在官方页面或对应 App 中完成。
 
+刷新期间会隐藏旧码、显示等待进度，并持续查询后台任务，直到新二维码可用或返回明确错误。重复点击会合并到同一个登录任务，重新打开页面也能继续查看进度。二维码只在有效、未扫码且会话状态新鲜时展示；手机确认期间保留原会话。抖音通过关闭并重新打开官方弹窗换码，快手与B站优先使用官方过期刷新控件。浏览器崩溃交由连接器服务恢复，上传与提交任务不会自动重放。
+
 三个连接器位于 `backend/services/creator_connector.py` 和 `creator_adapters/`。登录态、二维码、私有后台结构、命令队列和提交账本分别保存在 `.runtime/creator-connectors/{platform}/`，不进入Git。连接器读取部署环境中的代理配置，源码不包含代理地址和认证信息。
 
 通用接口：`GET /api/factory/platforms/{platform}/login-state`、`POST /api/factory/platforms/{platform}/connect`、`POST /api/factory/items/{id}/platforms/{platform}/prepare`、`POST /api/factory/platform-jobs/{id}/publish`。状态包含独立的 `capabilities.login/prepare/publish`。上传和提交只有在相应真实控件核验后才启用；按作品、平台和操作分别防重，无法确认的提交不会自动重试。

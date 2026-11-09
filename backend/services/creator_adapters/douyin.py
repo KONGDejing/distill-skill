@@ -1,10 +1,11 @@
 """Observed Douyin creator login UI; upload/publish require later live testing."""
-import base64
 from collections import deque
 import json
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from playwright.sync_api import TimeoutError as BrowserTimeout
 
 from .base import BaseAdapter, clean_url
 
@@ -76,7 +77,7 @@ class Adapter(BaseAdapter):
             return state
         try:
             body = self.page.locator("body").inner_text(timeout=5000)
-        except Exception:
+        except BrowserTimeout:
             state.update(status="network_error", error="抖音官方页面尚未加载完成")
             return state
         if any(text in body for text in ("请完成验证", "安全验证", "扫码成功", "请在手机上确认", "请在抖音上确认")):
@@ -91,18 +92,28 @@ class Adapter(BaseAdapter):
             state.update(status="network_error", error="官方登录界面已打开，但尚未取得可扫描二维码；请刷新或检查网络")
         return state
 
-    def login(self):
+    def login(self, *, refresh=False):
         current = self.inspect()
-        if current["authenticated"] or current["status"] in {"waiting_scan", "needs_verification"}:
+        if current["authenticated"] or current["status"] == "needs_verification":
             return current
-        if urlsplit(self.page.url).hostname != "creator.douyin.com" or current["status"] == "qr_expired":
+        if current["status"] == "waiting_scan" and not refresh:
+            return current
+        reset = refresh or current["status"] == "qr_expired"
+        modal = self.visible([self.page.locator(".douyin-creator-master-modal-content")])
+        if reset and modal is not None:
+            # The observed official dialog has no close button. Clicking its
+            # surrounding mask dismisses it; reopening requests a fresh QR
+            # without reloading the entire creator portal and login SDK.
+            self.page.locator(".douyin-creator-master-modal-wrap").click(position={"x": 10, "y": 10})
+            modal.wait_for(state="hidden", timeout=10000)
+        elif reset or urlsplit(self.page.url).hostname != "creator.douyin.com":
             self.page.goto(HOME_URL, wait_until="commit", timeout=45000)
         if self.visible([self.page.locator(".douyin-creator-master-modal-content")]) is None:
             entry = self.page.get_by_role("button", name="登录后使用丰富的作品体裁", exact=True)
             try:
                 entry.wait_for(state="visible", timeout=90000)
                 entry.click()
-            except Exception:
+            except BrowserTimeout:
                 self._diagnostics()
                 return self.inspect()
         deadline = time.monotonic() + 90
@@ -117,24 +128,7 @@ class Adapter(BaseAdapter):
     def capture_login_image(self, path: Path):
         state = self.inspect()
         panel = self._qr_panel()
-        if state["authenticated"] or not self._qr_ready(panel):
+        if state["authenticated"] or state["status"] != "waiting_scan" or not self._qr_ready(panel):
             return False
-        panel.scroll_into_view_if_needed()
-        box = panel.bounding_box()
-        if not box:
-            return False
-        # Read pixels through the browser, avoiding screenshot font-loading waits
-        # on unrelated marketing resources. Only the QR column is exposed.
-        session = self.context.new_cdp_session(self.page)
-        try:
-            viewport = session.send("Page.getLayoutMetrics")["layoutViewport"]
-            screenshot = session.send("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True,
-                "clip": {"x": box["x"] + viewport["pageX"], "y": box["y"] + viewport["pageY"],
-                         "width": box["width"], "height": box["height"], "scale": 1}})
-        finally:
-            session.detach()
-        temporary = Path(path).with_name(Path(path).name + ".tmp")
-        temporary.write_bytes(base64.b64decode(screenshot["data"]))
-        temporary.chmod(0o600)
-        temporary.replace(path)
-        return True
+        region = self.visible([panel.locator(".YJz68tAT")])
+        return self.save_login_region(region, path)

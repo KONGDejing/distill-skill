@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>连接__NAME__ · 短视频 AI 内容工厂</title>
+<style>
+body{margin:0;background:#0b121a;color:#e5edf4;font:16px system-ui,sans-serif}
+main{max-width:760px;margin:30px auto;padding:20px}h1{font-size:25px}
+p{color:#a8bac7;line-height:1.8;overflow-wrap:anywhere}a,strong{color:#73edc7}
+button{padding:12px 20px;margin:12px 0;cursor:pointer;border:0;border-radius:10px;background:#73edc7;color:#10251e;font:inherit}
+button:disabled{opacity:.6;cursor:wait}#error{color:#fbbf24}#progress{min-height:29px}
+#qr{width:320px;max-width:calc(100% - 24px);height:auto;padding:12px;border-radius:12px;background:white;image-rendering:pixelated}
+[hidden]{display:none!important}
+</style>
+<main>
+<a href="/">← 返回工厂</a><h1>连接__NAME__创作平台</h1>
+<p>点击刷新，等新二维码出现后，用__NAME__ App 扫描并在手机上确认登录。</p>
+<p>登录状态：<strong id="state">正在读取</strong></p>
+<button id="connect" type="button">启动登录 / 刷新二维码</button>
+<p id="progress" role="status" aria-live="polite"></p><p id="error" role="alert"></p>
+<img id="qr" hidden alt="__NAME__官方登录二维码">
+<p>过期二维码会自动隐藏。刷新期间无需重复点击；手机正在确认登录时不会重新生成二维码。</p>
+<p>账号登录后，再验证视频上传与提交；实际结果以平台回执为准。</p>
+</main>
+<script>
+'use strict';
+const base='/api/factory/platforms/__PLATFORM__';
+const button=document.getElementById('connect'), qr=document.getElementById('qr');
+const label=document.getElementById('state'), progress=document.getElementById('progress'), error=document.getElementById('error');
+let pending=null, posting=false, polling=false, startedAt=0, imageVersion=null, showImage=false, commandError='';
+function hideQR(){showImage=false;qr.hidden=true;qr.removeAttribute('src');imageVersion=null}
+async function getJSON(url, options={}){
+  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),12000);
+  try{
+    const response=await fetch(url,{cache:'no-store',...options,signal:controller.signal});
+    const value=await response.json();
+    if(!response.ok)throw new Error(value.detail||'请求未完成');
+    return value;
+  }finally{clearTimeout(timeout)}
+}
+function paint(state){
+  if(!pending && state.login_command && ['queued','running'].includes(state.login_command.status)){
+    pending=state.login_command.command_id;
+    startedAt=Date.parse(state.login_command.created_at)||Date.now();
+  }
+  const busy=posting||Boolean(pending);
+  button.disabled=busy||state.state_code==='needs_verification';
+  button.textContent=busy?'正在刷新，请稍候…':state.authenticated?'检查登录状态':'启动登录 / 刷新二维码';
+  if(busy){
+    hideQR();label.textContent='正在获取新的官方二维码';
+    const seconds=Math.max(0,Math.floor((Date.now()-startedAt)/1000));
+    progress.textContent=seconds<20?`后台正在刷新，已等待 ${seconds} 秒。`:`官方页面加载较慢，已等待 ${seconds} 秒；完成后会自动显示新码。`;
+    error.textContent='';return;
+  }
+  label.textContent=state.status+(state.display_name?' · '+state.display_name:'');
+  error.textContent=commandError||state.error||'';
+  if(state.authenticated){hideQR();progress.textContent='登录已确认，可以返回工厂继续。';return}
+  if(state.state_code==='needs_verification'){
+    hideQR();progress.textContent='已暂停刷新，请先在手机或官方页面完成登录确认。';return;
+  }
+  if(state.state_code==='waiting_scan' && state.qr_ready && state.qr_version){
+    showImage=true;commandError='';error.textContent='';progress.textContent='新二维码已就绪，请用__NAME__ App 立即扫描。';
+    if(imageVersion!==state.qr_version){
+      imageVersion=state.qr_version;qr.hidden=true;qr.src=base+'/login-image?v='+encodeURIComponent(imageVersion);
+    }
+  }else{
+    hideQR();progress.textContent=state.state_code==='qr_expired'?'二维码已过期，请点击刷新后立即扫码。':commandError?'本次刷新未完成，可以再次点击重试。':'尚未取得可扫描二维码，请点击启动或刷新。';
+  }
+}
+qr.addEventListener('load',()=>{if(showImage&&!pending&&!posting)qr.hidden=false});
+qr.addEventListener('error',()=>{qr.hidden=true;imageVersion=null;error.textContent='二维码图片加载失败，正在重新获取。'});
+async function poll(){
+  if(polling)return;polling=true;
+  try{
+    if(pending){
+      const result=await getJSON(base+'/login-commands/'+encodeURIComponent(pending));
+      if(!['queued','running'].includes(result.status)){
+        pending=null;commandError=result.status==='failed'?(result.message||'刷新未完成'):'';
+      }
+    }
+    paint(await getJSON(base+'/login-state'));
+  }catch(exception){error.textContent=exception.name==='AbortError'?'连接超时，正在重试。':exception.message;label.textContent='连接暂时中断，正在重试'}
+  finally{polling=false}
+}
+button.addEventListener('click',async()=>{
+  if(posting||pending)return;
+  posting=true;startedAt=Date.now();commandError='';button.disabled=true;hideQR();
+  label.textContent='正在提交刷新任务';progress.textContent='请保持页面打开，新二维码就绪后会自动显示。';error.textContent='';
+  try{
+    const result=await getJSON(base+'/connect',{method:'POST'});
+    if(!result.command_id)throw new Error('后台没有返回刷新任务编号');
+    pending=result.command_id;
+  }catch(exception){commandError=exception.name==='AbortError'?'提交响应超时，正在核对后台任务，请勿连续点击。':exception.message;error.textContent=commandError}
+  finally{posting=false;button.disabled=Boolean(pending);poll()}
+});
+poll();setInterval(poll,1500);
+</script>
+</html>

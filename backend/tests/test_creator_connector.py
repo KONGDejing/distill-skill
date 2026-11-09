@@ -131,3 +131,85 @@ def test_stopped_daemon_never_looks_authenticated(monkeypatch, tmp_path):
     monkeypatch.setattr(connector, "_alive", lambda platform: False)
     state = connector.connection_state("douyin")
     assert not state["authenticated"] and not state["session_active"] and not state["qr_ready"]
+
+
+def test_expired_stale_and_refreshing_qr_are_hidden(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
+    monkeypatch.setattr(connector, '_alive', lambda _: True)
+    directory = connector._directories('bilibili')
+    (directory / 'login.png').write_bytes(b'official-image-fixture')
+    state = {'authenticated': False, 'session_active': True, 'qr_ready': True,
+             'state_code': 'waiting_scan', 'updated_at': connector._now()}
+    connector._write(directory / 'state.json', state)
+    assert connector.connection_state('bilibili')['qr_ready']
+    assert connector.connection_state('bilibili')['qr_version']
+    for update in ({'state_code': 'qr_expired'}, {'authenticated': True},
+                   {'updated_at': (datetime.now(timezone.utc)-timedelta(minutes=2)).isoformat()}):
+        connector._write(directory / 'state.json', {**state, **update})
+        assert not connector.connection_state('bilibili')['qr_ready']
+    connector._write(directory / 'state.json', state)
+    monkeypatch.setattr(connector, '_ensure_daemon', lambda _: None)
+    command = connector.submit_command('bilibili', 'login')
+    assert not connector.connection_state('bilibili')['qr_ready']
+    assert connector.connection_state('bilibili')['login_command']['command_id'] == command['command_id']
+    connector._write(directory / 'results' / (command['command_id']+'.json'), {**command, 'status': 'completed'})
+    assert connector.connection_state('bilibili')['qr_ready']
+
+
+def test_multiple_refresh_requests_share_one_pending_login(monkeypatch, tmp_path):
+    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
+    monkeypatch.setattr(connector, '_ensure_daemon', lambda _: None)
+    first = connector.submit_command('douyin', 'login')
+    assert connector.submit_command('douyin', 'login')['command_id'] == first['command_id']
+    directory = connector.platform_directory('douyin')
+    assert len(list((directory / 'commands').glob('*.json'))) == 1
+    connector._write(directory / 'results' / (first['command_id']+'.json'), {**first, 'status': 'completed'})
+    assert connector.submit_command('douyin', 'login')['command_id'] != first['command_id']
+
+
+def test_browser_hides_expired_picture_without_recapturing_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
+    browser = object.__new__(connector._Browser)
+    browser.platform, browser.directory = 'douyin', connector._directories('douyin')
+    browser.prepared = None
+    browser.adapter = Mock()
+    browser.adapter.inspect.return_value = {'authenticated': False, 'status': 'qr_expired', 'url': 'https://creator.douyin.com/'}
+    browser.adapter.supports_prepare = browser.adapter.supports_publish = False
+    (browser.directory / 'login.png').write_bytes(b'expired')
+    result = browser.inspect()
+    assert not result['qr_ready']
+    browser.adapter.capture_login_image.assert_not_called()
+    assert not (browser.directory / 'login.png').exists()
+
+
+def test_login_failure_is_not_reported_as_ready(monkeypatch, tmp_path):
+    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
+    browser = object.__new__(connector._Browser)
+    browser.platform, browser.directory = 'douyin', connector._directories('douyin')
+    browser.adapter = Mock()
+    browser.adapter.inspect.return_value = {'authenticated': False, 'status': 'network_error'}
+    browser.inspect = Mock(return_value={'authenticated': False, 'state_code': 'network_error', 'qr_ready': False, 'error': '官方页面尚未生成二维码'})
+    monkeypatch.setattr(connector.time, 'monotonic', Mock(side_effect=[0,26]))
+    result = browser.login()
+    assert result['status'] == 'failed' and '尚未生成' in result['message']
+    browser.adapter.login.assert_called_once_with(refresh=True)
+
+
+def test_login_routes_never_expose_upload_payload_or_expired_image(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers.creator_platforms import router
+    app = FastAPI()
+    app.include_router(router, prefix='/api/factory')
+    monkeypatch.setattr(connector, 'connection_state', lambda _: {'qr_ready': False, 'state_code': 'qr_expired'})
+    with TestClient(app) as client:
+        response = client.get('/api/factory/platforms/bilibili/login-state')
+        assert response.status_code == 200 and 'no-store' in response.headers['cache-control']
+        assert client.get('/api/factory/platforms/bilibili/login-image').status_code == 404
+        result = {'action': 'login', 'command_id': 'test', 'status': 'running', 'payload': {'private': 'must-not-be-returned'}}
+        monkeypatch.setattr(connector, 'command_result', lambda *args: result)
+        response = client.get('/api/factory/platforms/bilibili/login-commands/test')
+        assert response.status_code == 200 and 'payload' not in response.json()
+        result['action'] = 'publish'
+        assert client.get('/api/factory/platforms/bilibili/login-commands/test').status_code == 404

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import importlib
 import json
 import os
@@ -137,16 +138,48 @@ def _alive(platform):
         return False
 
 
+def _recent(timestamp, seconds=45):
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(timestamp)).total_seconds()
+        return 0 <= age <= seconds
+    except (TypeError, ValueError):
+        return False
+
+
+def _latest_login(platform):
+    identifier = _read(platform_directory(platform) / "login-request.json").get("command_id")
+    if not identifier:
+        return None
+    try:
+        result = command_result(platform, identifier)
+    except ValueError:
+        return None
+    if result.get("action") != "login":
+        return None
+    return {key: result.get(key) for key in ("command_id", "status", "message", "created_at", "updated_at")}
+
+
 def connection_state(platform) -> dict:
     directory = platform_directory(platform)
     state, active = _read(directory / "state.json"), _alive(platform)
+    login = _latest_login(platform)
+    refreshing = bool(active and login and login["status"] in {"queued", "running"})
+    qr_ready = (active and not refreshing and state.get("qr_ready") is True
+                and state.get("state_code") == "waiting_scan" and _recent(state.get("updated_at"))
+                and not state.get("authenticated") and (directory / "login.png").is_file())
+    version = None
+    if qr_ready:
+        try:
+            version = hashlib.sha256((directory / "login.png").read_bytes()).hexdigest()[:24]
+        except OSError:
+            qr_ready = False
     return {"platform": platform, "status": state.get("status", "未连接") if active else "连接器未运行",
             "state_code": state.get("state_code", "unknown") if active else "stopped",
             "authenticated": state.get("authenticated") is True and active,
             "session_active": active and state.get("session_active") is True,
             "display_name": state.get("display_name"), "url": state.get("url"),
             "error": state.get("error"), "updated_at": state.get("updated_at"),
-            "qr_ready": active and state.get("qr_ready") is True and (directory / "login.png").is_file(),
+            "qr_ready": bool(qr_ready), "qr_version": version, "login_command": login,
             "prepared_item_id": state.get("prepared_item_id") if active else None,
             "capabilities": state.get("capabilities", {"login": True, "prepare": False, "publish": False})}
 
@@ -247,6 +280,21 @@ def submit_command(platform, action, payload=None) -> dict:
     clean = _payload(platform, action, payload)
     _ensure_daemon(platform)
     directory = _directories(platform)
+    if action == "login":
+        with (directory / "login-request.lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            previous = _latest_login(platform)
+            if previous and previous["status"] in {"queued", "running"}:
+                return command_result(platform, previous["command_id"])
+            result = _enqueue_command(platform, action, clean)
+            _write(directory / "login-request.json", {"command_id": result["command_id"]})
+            return result
+    return _enqueue_command(platform, action, clean)
+
+
+def _enqueue_command(platform, action, clean):
+    directory = _directories(platform)
     identifier = str(uuid.uuid4())
     result = {"platform": platform, "command_id": identifier, "action": action,
               "status": "queued", "message": "已加入官方创作后台操作队列",
@@ -293,7 +341,32 @@ class _Browser:
         self.prepared, self.submission_attempted = None, None
         # Each portal has its own observed login entry. Some authenticated-home
         # URLs stall when logged out; let the adapter choose its official route.
-        self.adapter.login()
+        queued_login = any(_read(path).get("action") == "login" and _read(path).get("status") == "queued"
+                           for path in (self.directory / "results").glob("*.json"))
+        if not queued_login:
+            self.adapter.login()
+
+    def login(self):
+        current = self.adapter.inspect()
+        if not current.get("authenticated") and current.get("status") != "needs_verification":
+            login_image_path(self.platform).unlink(missing_ok=True)
+            state = _read(self.directory / "state.json")
+            state.update(status="正在刷新官方二维码", state_code="refreshing", qr_ready=False,
+                         authenticated=False, session_active=True, error=None, updated_at=_now())
+            _write(self.directory / "state.json", state)
+        self.adapter.login(refresh=True)
+        deadline = time.monotonic() + 25
+        while True:
+            state = self.inspect()
+            if state["authenticated"]:
+                return {"status": "completed", "message": "账号已登录，无需重新扫码"}
+            if state["state_code"] == "needs_verification":
+                return {"status": "completed", "message": "请在对应 App 或官方页面完成登录确认"}
+            if state["state_code"] == "waiting_scan" and state["qr_ready"]:
+                return {"status": "completed", "message": "新的官方二维码已就绪，请立即扫码"}
+            if time.monotonic() >= deadline:
+                return {"status": "failed", "message": state.get("error") or "官方页面未返回可扫描的新二维码，请稍后重试"}
+            self.adapter.page.wait_for_timeout(500)
 
     def inspect(self):
         value = self.adapter.inspect()
@@ -302,7 +375,7 @@ class _Browser:
         if not isinstance(name, str) or len(name) > 60 or re.search(r"1[3-9]\d{9}", name):
             name = None
         qr_ready = False
-        if authenticated:
+        if authenticated or value.get("status") != "waiting_scan":
             login_image_path(self.platform).unlink(missing_ok=True)
         else:
             qr_ready = self.adapter.capture_login_image(login_image_path(self.platform)) is True
@@ -313,7 +386,7 @@ class _Browser:
                 login_image_path(self.platform).unlink(missing_ok=True)
         code = value.get("status", "authenticated" if authenticated else "waiting_scan")
         labels = {"authenticated": "已登录", "waiting_scan": "等待扫码", "qr_expired": "二维码已过期",
-                  "needs_verification": "需要官方验证", "network_error": "官方页面连接失败", "unknown": "等待核验"}
+                  "needs_verification": "需要官方验证", "network_error": "官方页面连接失败", "unknown": "等待核验", "refreshing": "正在刷新官方二维码"}
         state = {"platform": self.platform, "status": labels.get(code, code), "state_code": code,
                  "authenticated": authenticated, "session_active": True, "display_name": name,
                  "url": _clean_url(value.get("url") or self.adapter.page.url), "error": value.get("error"),
@@ -430,8 +503,7 @@ def _serve(platform):
                         try:
                             action = command["action"]
                             if action == "login":
-                                browser.adapter.login()
-                                value = {"status": "prepared", "message": "官方登录页面已检查", "connection": browser.inspect()}
+                                value = browser.login()
                             elif action == "inspect":
                                 value = {"status": "prepared", "message": "官方账号状态已检查", "connection": browser.inspect()}
                             else:
@@ -442,7 +514,7 @@ def _serve(platform):
                             result.update(status="failed", message=message[:400], updated_at=_now(),
                                           **_failure_fields(command.get("action"), browser))
                         _write(result_path, result)
-                    if time.monotonic() - checked >= 15:
+                    if time.monotonic() - checked >= 3:
                         browser.inspect()
                         checked = time.monotonic()
                     browser.adapter.page.wait_for_timeout(1000)

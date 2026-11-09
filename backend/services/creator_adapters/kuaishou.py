@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from playwright.sync_api import TimeoutError as BrowserTimeout
+
 from .base import BaseAdapter, clean_url
 
 HOME_URL = "https://cp.kuaishou.com/"
@@ -36,7 +38,7 @@ class Adapter(BaseAdapter):
             return state
         try:
             body = self.page.locator("body").inner_text(timeout=5000)
-        except Exception:
+        except BrowserTimeout:
             state.update(status="network_error", error="快手官方页面尚未加载完成")
             return state
         if any(word in body for word in ("安全验证", "身份验证", "验证身份", "请完成验证", "异常访问", "请在手机上确认", "扫码成功", "扫描成功", "登录确认")):
@@ -66,10 +68,21 @@ class Adapter(BaseAdapter):
             state.update(status="network_error", error="官方登录组件尚未生成可扫描二维码")
         return state
 
-    def login(self):
+    def login(self, *, refresh=False):
         current = self.inspect()
-        if current["authenticated"] or current["status"] in {"waiting_scan", "needs_verification"}:
+        if current["authenticated"] or current["status"] == "needs_verification":
             return current
+        if current["status"] == "waiting_scan" and not refresh:
+            return current
+        if current["status"] == "qr_expired":
+            button = self.visible([self.page.get_by_text("点击刷新", exact=True)])
+            if button is not None:
+                button.click()
+                for _ in range(30):
+                    self.page.wait_for_timeout(500)
+                    current = self.inspect()
+                    if current["status"] in {"waiting_scan", "needs_verification", "authenticated"}:
+                        return current
         host = urlsplit(self.page.url).hostname
         if host != "passport.kuaishou.com":
             self.page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45000)
@@ -78,33 +91,27 @@ class Adapter(BaseAdapter):
                 entry.wait_for(state="visible", timeout=20000)
                 entry.click()
                 self.page.wait_for_url("https://passport.kuaishou.com/**", timeout=30000)
-            except Exception:
+            except BrowserTimeout:
                 return self.inspect()
-        elif current["status"] == "qr_expired":
+        elif refresh or current["status"] == "qr_expired":
             self.page.reload(wait_until="domcontentloaded", timeout=45000)
         if self._qr_panel() is None:
             try:
                 switch = self.page.get_by_text("扫码登录", exact=True)
                 switch.wait_for(state="visible", timeout=30000)
                 switch.click()
-            except Exception:
+            except BrowserTimeout:
                 return self.inspect()
         try:
             self.page.locator("#login-form .qr-login .qrcode img").wait_for(state="visible", timeout=20000)
             self.page.wait_for_timeout(1000)
-        except Exception:
+        except BrowserTimeout:
             pass
         return self.inspect()
 
     def capture_login_image(self, path: Path):
         state = self.inspect()
-        if state["authenticated"]:
+        if state["authenticated"] or state["status"] != "waiting_scan":
             return False
-        panel = self._qr_panel()
-        if panel is None:
-            return False
-        temporary = Path(path).with_name(Path(path).name + ".tmp")
-        panel.screenshot(path=str(temporary), type="png")
-        temporary.chmod(0o600)
-        temporary.replace(path)
-        return state["status"] in {"waiting_scan", "qr_expired", "needs_verification"}
+        region = self.visible([self.page.locator("#login-form .qr-login .qrcode")])
+        return self.save_login_region(region, path)
