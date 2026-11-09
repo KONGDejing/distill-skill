@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any
+from services.factory_resources import ensure_memory_available
 
 from services.factory_media import (
     FPS, HEIGHT, WIDTH, _ass_escape, _ass_time, _duration, _font, _probe, _run,
@@ -336,6 +337,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     """Produce a new preview; never alter the source media, database or publish."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item_id):
         raise ValueError("无效内容编号")
+    ensure_memory_available()
     audio_path, subtitle_path = Path(audio_path).resolve(), Path(subtitle_path).resolve()
     duration = _duration(audio_path)
     if not 10 <= duration <= 240:
@@ -385,6 +387,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         shutil.copy2(audio_path, audio)
     annotations = _montage_subtitles(cues, plan, sources, content, subtitle)
     music = target / "original-ambient.wav"
+    ensure_memory_available()
     _ambient_music(duration, [s["timeline_start"] for s in plan], music)
     soundtrack = target / "soundtrack.m4a"
     _run(["ffmpeg", "-y", "-v", "error", "-i", str(audio), "-i", str(music), "-filter_complex",
@@ -394,12 +397,14 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         work = Path(temp)
         entries = []
         for shot in plan:
+            ensure_memory_available()
             part = work / f"shot_{shot['shot_index']:03d}.mp4"
             _render_shot(sources[shot["asset_id"]], shot, part)
             entries.append(f"file '{part.name}'")
             print(f"Montage shot {shot['shot_index'] + 1}/{len(plan)}: {shot['asset_id']}", flush=True)
         (work / "shots.txt").write_text("\n".join(entries))
         shutil.copy2(subtitle, work / "subtitles.ass")
+        ensure_memory_available()
         result = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "2", "-filter_threads", "2",
             "-f", "concat", "-safe", "0", "-i", str(work / "shots.txt"), "-i", str(soundtrack),
             "-vf", "subtitles=subtitles.ass", "-map", "0:v:0", "-map", "1:a:0", "-t", str(duration),

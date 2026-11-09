@@ -6,6 +6,7 @@ import re
 import tempfile
 from pathlib import Path
 from services import factory_media as speech
+from services.factory_resources import ensure_memory_available
 
 
 def synthesize_factory_audio(item_id, content, output_dir, voice="zh-CN-XiaoxiaoNeural"):
@@ -29,12 +30,14 @@ def synthesize_factory_audio(item_id, content, output_dir, voice="zh-CN-Xiaoxiao
         except (ValueError, RuntimeError, OSError):
             pass
     engine, fallback = "edge-tts", None
+    ensure_memory_available()
     with tempfile.TemporaryDirectory(prefix="speech-", dir=directory) as temporary:
         try:
             cues = asyncio.run(speech._edge_speech(spoken, voice, audio))
             timing_method = "speech_word_timestamps"
         except Exception as exc:
             fallback = f"Edge-TTS unavailable ({type(exc).__name__})"
+            ensure_memory_available()
             cues = speech._cosyvoice_speech(spoken, audio, Path(temporary), display_text=display)
             engine = "cosyvoice2-local-reference"
             timing_method = "sentence_audio_duration_with_phrase_interpolation"

@@ -10,11 +10,12 @@ from sqlalchemy.orm import sessionmaker
 
 from database import Base
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRun
-from services import creator_connector, factory_publishing, factory_service, xiaohongshu_connector
+from services import creator_connector, factory_publishing, factory_service, factory_resources, xiaohongshu_connector
 
 
 @pytest.fixture
 def publishing(tmp_path, monkeypatch):
+    monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'publishing.db'}")
     Base.metadata.create_all(engine, tables=[FactoryRun.__table__, FactoryItem.__table__,
                                             FactoryPublication.__table__, FactoryEvent.__table__])
@@ -375,3 +376,15 @@ def test_creator_proven_preclick_failure_can_retry_same_job(creator_publishing):
         assert retried.id == first.id and retried.command_id != old_command
         assert db.query(FactoryPublication).count() == 2
     assert env.creator_submit.call_count == 3
+
+
+def test_memory_pressure_stops_new_submission_without_changing_prepared_job(publishing, monkeypatch):
+    with publishing.sessions() as db:
+        prepared = _prepared_job(publishing, db)
+        publishing.submit.reset_mock()
+        monkeypatch.setattr(factory_resources, 'memory_state', lambda **kwargs: {'blocked': True, 'reason': '内存不足'})
+        with pytest.raises(factory_resources.MemoryPressure):
+            factory_publishing.begin_publication(db, publishing.item_id, 'publish')
+        assert db.get(FactoryPublication, prepared.id).status == 'prepared'
+        assert db.query(FactoryPublication).filter_by(item_id=publishing.item_id, action='publish').count() == 0
+        publishing.submit.assert_not_called()

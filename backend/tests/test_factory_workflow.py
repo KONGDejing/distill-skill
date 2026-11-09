@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from database import Base
 from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryRun
-from services import factory_llm, factory_service
+from services import factory_llm, factory_service, factory_resources
 
 
 PLATFORMS = ["douyin", "xiaohongshu", "kuaishou", "bilibili"]
@@ -26,6 +26,7 @@ SOURCE = {
 
 @pytest.fixture
 def isolated_factory(tmp_path, monkeypatch):
+    monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'workflow-test.db'}",
                            connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine, tables=[FactoryConfig.__table__, FactoryRun.__table__,
@@ -346,3 +347,117 @@ def test_montage_without_real_footage_stops_before_speech_or_card_fallback(isola
     cards.assert_not_called()
     with isolated_factory() as db:
         assert not db.get(FactoryItem, item_id).media
+
+
+def _fake_lock(monkeypatch):
+    import redis
+    lock = Mock()
+    lock.acquire.return_value = True
+    client = Mock()
+    client.lock.return_value = lock
+    monkeypatch.setattr(redis.Redis, 'from_url', Mock(return_value=client))
+
+
+def test_memory_pressure_before_start_records_pause_without_enqueuing(isolated_factory, monkeypatch):
+    from tasks import factory_tasks
+    enqueue = Mock()
+    monkeypatch.setattr(factory_tasks.produce_run, 'delay', enqueue)
+    monkeypatch.setattr(factory_resources, 'memory_state', lambda **kwargs: {'blocked': True, 'reason': '工程内存达到上限'})
+    with isolated_factory() as db:
+        run = factory_service.start_run(db, target_count=1)
+        assert run.status == 'paused_memory' and run.active_slot == 'factory'
+        assert run.llm_calls == 0 and run.finished_at is None
+        with pytest.raises(ValueError, match='内存暂停'):
+            factory_service.start_run(db, target_count=1)
+    enqueue.assert_not_called()
+
+
+def test_memory_pause_preserves_delivery_review_and_lane_until_explicit_resume(isolated_factory, monkeypatch):
+    from fastapi import HTTPException
+    from routers import factory as router
+    from tasks import factory_tasks
+    from datetime import datetime, timedelta
+
+    run_id, completed_id = _seed_item(isolated_factory, status='completed',
+        content={'script': '已完成文案'}, media={'video_path': 'existing-reviewed-video.mp4'},
+        packages=[{'platform': 'xiaohongshu', 'status': 'submitted'}])
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        run.target_count = 2
+        pending = FactoryItem(run_id=run_id, position=1, status='planned', revisions=1,
+            content={'script': '保留这段已审核的文案'}, review={'approved': True}, media={'audio_path': 'verified-voice.mp3'})
+        db.add(pending)
+        db.commit()
+        pending_id = pending.id
+    _fake_lock(monkeypatch)
+    monkeypatch.setattr(factory_service, '_make_plan', lambda _: None)
+    monkeypatch.setattr(factory_service, '_write_and_review', lambda *_: None)
+    pressure = factory_resources.MemoryPressure({'blocked': True, 'reason': '机器可用内存不足'})
+    render = Mock(side_effect=pressure)
+    package, report = Mock(), Mock()
+    monkeypatch.setattr(factory_service, '_render', render)
+    monkeypatch.setattr(factory_service, '_package', package)
+    monkeypatch.setattr(factory_service, '_finish_report', report)
+    assert factory_service.execute_run(run_id)['status'] == 'paused_memory'
+    render.assert_called_once_with(run_id, pending_id)
+    package.assert_not_called()
+    report.assert_not_called()
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        assert run.completed_count == 1 and run.active_slot == 'factory'
+        assert run.finished_at is None
+        assert db.get(FactoryItem, completed_id).media['video_path'] == 'existing-reviewed-video.mp4'
+        assert db.get(FactoryItem, completed_id).packages[0]['status'] == 'submitted'
+        item = db.get(FactoryItem, pending_id)
+        assert item.status == 'planned' and item.revisions == 1 and item.review['approved']
+        assert db.query(FactoryEvent).filter_by(stage='item_failed').count() == 0
+        run.heartbeat_at = datetime.utcnow() - timedelta(hours=1)
+        db.commit()
+    # Broker redelivery and stale-job recovery cannot override a deliberate pause.
+    assert factory_service.execute_run(run_id)['status'] == 'paused_memory'
+    render.assert_called_once()
+    monkeypatch.setattr(factory_tasks, 'SessionLocal', isolated_factory)
+    monkeypatch.setattr(factory_tasks, 'init_db', lambda: None)
+    enqueue = Mock(return_value=Mock(id='resumed-task'))
+    monkeypatch.setattr(factory_tasks.produce_run, 'delay', enqueue)
+    assert factory_tasks.schedule_factory.run()['status'] == 'paused_memory'
+    enqueue.assert_not_called()
+    monkeypatch.setattr(router, 'queue_available', lambda: True)
+    monkeypatch.setattr(factory_resources, 'memory_state', lambda **kwargs: {'blocked': True, 'reason': '内存仍然不足'})
+    with isolated_factory() as db:
+        with pytest.raises(HTTPException) as err:
+            router.retry_run(run_id, db)
+        assert err.value.status_code == 409
+        assert db.get(FactoryRun, run_id).status == 'paused_memory'
+    enqueue.assert_not_called()
+    monkeypatch.setattr(factory_resources, 'memory_state', lambda **kwargs: {'blocked': False})
+    with isolated_factory() as db:
+        assert router.retry_run(run_id, db)['status'] == 'queued'
+        item = db.get(FactoryItem, pending_id)
+        assert item.revisions == 1 and item.review['approved']
+        assert item.media['audio_path'] == 'verified-voice.mp3'
+        assert db.get(FactoryItem, completed_id).status == 'completed'
+    enqueue.assert_called_once_with(run_id)
+
+
+def test_memory_pause_can_be_cancelled_without_discarding_media(isolated_factory):
+    from routers import factory as router
+    run_id, item_id = _seed_item(isolated_factory, media={'audio_path': 'saved-audio.mp3'})
+    with isolated_factory() as db:
+        db.get(FactoryRun, run_id).status = 'paused_memory'
+        db.commit()
+        assert router.cancel_run(run_id, db)['status'] == 'cancelled'
+        assert db.get(FactoryRun, run_id).active_slot is None
+        assert db.get(FactoryItem, item_id).media['audio_path'] == 'saved-audio.mp3'
+
+
+def test_memory_pressure_does_not_spend_model_budget(isolated_factory, monkeypatch):
+    run_id, _ = _seed_item(isolated_factory)
+    monkeypatch.setattr(factory_resources, 'memory_state', lambda **kwargs: {'blocked': True, 'reason': '机器内存不足'})
+    client = Mock()
+    monkeypatch.setattr(factory_llm.anthropic, 'Anthropic', client)
+    with pytest.raises(factory_resources.MemoryPressure):
+        factory_llm.call_agent(run_id, 'writer', {})
+    client.assert_not_called()
+    with isolated_factory() as db:
+        assert db.get(FactoryRun, run_id).llm_calls == 0

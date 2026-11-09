@@ -12,8 +12,9 @@ from database import SessionLocal
 from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
 from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled
+from services.factory_resources import MemoryPressure, ensure_memory_available
 
-TERMINAL = {"completed", "partial", "failed", "cancelled"}
+TERMINAL = {"completed", "partial", "failed", "cancelled", "paused_memory"}
 FACTORY_DIR = settings.STORAGE_DIR / "factory"
 
 
@@ -153,15 +154,29 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None):
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 6 + 8)
     if not queue_available():
         raise RuntimeError("任务队列未连接，请检查 Redis")
+    if db.query(FactoryRun).filter_by(status="paused_memory").first():
+        raise ValueError("存在因内存暂停的批次，请先恢复或取消该批次")
     if db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None)).first():
         raise ValueError("已有生产任务在运行，请等待完成或先取消")
+    pressure = None
+    try:
+        ensure_memory_available()
+    except MemoryPressure as exc:
+        pressure = exc
     run = FactoryRun(target_count=target, trigger=trigger, schedule_key=schedule_key, settings_snapshot=config)
+    if pressure:
+        run.status, run.stage, run.error = "paused_memory", "paused_memory", str(pressure)
     db.add(run)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise ValueError("该生产计划已创建或已有任务在运行") from None
+    if pressure:
+        db.add(FactoryEvent(run_id=run.id, agent_id="director", stage="paused_memory", status="paused",
+            message=f"内存保护未启动本轮：{pressure}。需手动恢复。", detail=pressure.snapshot))
+        db.commit()
+        return run
     try:
         from tasks.factory_tasks import produce_run
         task = produce_run.delay(run.id)
@@ -319,6 +334,7 @@ def _render(run_id, item_id):
         if media.get("video_path") and Path(media["video_path"]).is_file():
             return
     check_cancel(run_id)
+    ensure_memory_available()
     _save_item(item_id, status="rendering")
     directory = FACTORY_DIR / run_id / item_id
     assets = []
@@ -441,7 +457,7 @@ def _finish_report(run_id):
             "failed": "当前尚未完成的作品数量，不是历史失败次数",
             "prohibited_inferences": "没有素材消耗量或素材利用率指标，不得用成片数除以平台版本数推断利用率。"
         }})
-    except RunCancelled:
+    except (RunCancelled, MemoryPressure):
         raise
     except Exception as exc:
         analysis = {"summary": f"完成 {completed} 条原创视频，准备 {packages} 份平台素材包。", "recommendations": ["模型复盘暂不可用，请查看生产日志。"]}
@@ -491,12 +507,14 @@ def execute_run(run_id):
             run.status, run.error = "running", None
             db.commit()
         check_cancel(run_id)
+        ensure_memory_available()
         emit(run_id, "director", "starting", "生产团队已开工，按预算和质量门槛逐步交接")
         _make_plan(run_id)
         with SessionLocal() as db:
             item_ids = [item.id for item in db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position)]
         for item_id in item_ids:
             check_cancel(run_id)
+            ensure_memory_available()
             if stop.is_set():
                 raise RuntimeError("生产锁已失效，停止调度，等待恢复")
             with SessionLocal() as db:
@@ -517,20 +535,30 @@ def execute_run(run_id):
                     try:
                         from services.factory_publishing import auto_submit
                         auto_submit(item_id, run_id)
-                    except RunCancelled:
+                    except (RunCancelled, MemoryPressure):
                         raise
                     except Exception as exc:
                         emit(run_id, "publisher", "platform_submission", f"成片已保留，小红书提交未完成：{str(exc)[:300]}", "warning")
                 with SessionLocal() as db:
                     db.get(FactoryRun, run_id).completed_count = db.query(FactoryItem).filter_by(run_id=run_id, status="completed").count()
                     db.commit()
-            except RunCancelled:
+            except (RunCancelled, MemoryPressure):
                 raise
             except Exception as exc:
                 _save_item(item_id, status="failed", error=str(exc)[:1000])
                 emit(run_id, "director", "item_failed", f"单条生产未完成：{str(exc)[:300]}；继续其他选题", "failed")
         _finish_report(run_id)
         return {"status": "finished", "run_id": run_id}
+    except MemoryPressure as exc:
+        with SessionLocal() as db:
+            run = db.get(FactoryRun, run_id)
+            if run:
+                run.status, run.stage = "paused_memory", "paused_memory"
+                run.error, run.active_slot, run.finished_at = str(exc), "factory", None
+                run.completed_count = db.query(FactoryItem).filter_by(run_id=run_id, status="completed").count()
+                db.commit()
+                emit(run_id, "director", "paused_memory", f"内存保护已暂停本轮：{exc}。已保存进度，需手动恢复。", "paused", exc.snapshot)
+        return {"status": "paused_memory", "run_id": run_id}
     except Exception as exc:
         cancelled = isinstance(exc, RunCancelled)
         with SessionLocal() as db:

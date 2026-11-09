@@ -10,6 +10,7 @@ from config import settings
 from database import SessionLocal
 from models.factory import FactoryRun, FactoryEvent
 from agents.registry import COMMON, INSTRUCTIONS
+from services.factory_resources import ensure_memory_available
 
 
 class RunCancelled(Exception):
@@ -44,6 +45,7 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400):
     client = None
     response = None
     for attempt in range(3):
+        ensure_memory_available()
         _reserve_call(run_id)
         model = settings.CLAUDE_MODEL
         if attempt == 2 and settings.FACTORY_FALLBACK_MODEL:

@@ -181,6 +181,8 @@ async def _edge_speech(text: str, voice: str, audio: Path) -> list[dict]:
 
 
 def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | None = None) -> list[dict]:
+    from services.factory_resources import ensure_memory_available
+    ensure_memory_available()
     engine = Path(os.getenv("COSYVOICE_DIR", str(BACKEND / "engines" / "CosyVoice"))).resolve()
     python = Path(os.getenv("FACTORY_COSYVOICE_PYTHON", str(engine / ".venv" / "bin" / "python")))
     model = Path(os.getenv("COSYVOICE_MODEL_DIR", str(BACKEND / "storage" / "models" / "CosyVoice2-0.5B"))).resolve()
@@ -540,6 +542,8 @@ def inspect_media(video: Path) -> dict:
 def render_factory_video(item_id: str, content: dict, output_dir: Path,
                          voice: str = "zh-CN-XiaoxiaoNeural") -> dict:
     """Return real media artifacts or raise; never report placeholder success."""
+    from services.factory_resources import ensure_memory_available
+    ensure_memory_available()
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item_id):
         raise ValueError("无效的内容编号")
     display_script = str(content.get("script", "")).replace("**", "").strip()

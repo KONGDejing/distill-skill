@@ -10,11 +10,11 @@ const VOICE_LABELS = { 'cosyvoice2-local-reference': '本地标准音色', 'edge
 const PLATFORM_NAMES = { douyin: '抖音', xiaohongshu: '小红书', kuaishou: '快手', bilibili: '哔哩哔哩' }
 const AGENT_ICONS = { director: Workflow, researcher: Search, writer: FileText, producer: Film, reviewer: ShieldCheck, publisher: Radio, analyst: TrendingUp }
 const ACTIVE = new Set(['queued', 'running', 'researching', 'planning', 'writing', 'reviewing', 'rendering', 'adapting', 'reporting', 'cancelling', 'cancel_requested', 'processing'])
-const RETRYABLE = new Set(['failed', 'partial', 'cancelled', 'error', 'interrupted'])
+const RETRYABLE = new Set(['paused_memory', 'failed', 'partial', 'cancelled', 'error', 'interrupted'])
 const STATUS_LABELS = {
   queued: '排队中', planned: '待创作', pending: '待开始', running: '执行中', researching: '采集资料', planning: '选题决策', writing: '创作中', reviewing: '审核中', rendering: '制作中', adapting: '平台适配', reporting: '生成日报', processing: '处理中',
   completed: '已完成', succeeded: '已完成', complete: '已完成', ready: '已就绪', approved: '审核通过', package_ready: '素材包就绪', prepared: '已上传待提交', submitted: '已提交待平台审核', published: '已发布',
-  idle: '待命', active: '工作中', busy: '工作中', working: '工作中', online: '待命', waiting: '待任务', paused: '已暂停', offline: '离线', blocked: '待处理',
+  paused_memory: '内存保护暂停', idle: '待命', active: '工作中', busy: '工作中', working: '工作中', online: '待命', waiting: '待任务', paused: '已暂停', offline: '离线', blocked: '待处理',
   rejected: '需返工', failed: '失败', error: '异常', partial: '部分完成', cancelled: '已取消', cancelling: '正在取消', cancel_requested: '正在取消', interrupted: '执行中断',
   not_configured: '待接入', not_connected: '待接入', awaiting_credentials: '待接入', disconnected: '待接入', connected: '已接入', disabled: '未启用', skipped: '已跳过', warning: '提醒', success: '完成', started: '开始', info: '记录',
 }
@@ -43,7 +43,7 @@ function safeLink(value) {
 function statusColor(status) {
   if (['completed', 'succeeded', 'ready', 'approved', 'package_ready', 'prepared', 'published', 'success', 'connected'].includes(status)) return 'text-emerald-300 bg-emerald-300/10 border-emerald-300/15'
   if (['failed', 'error', 'blocked'].includes(status)) return 'text-rose-300 bg-rose-300/10 border-rose-300/15'
-  if (['partial', 'interrupted', 'warning'].includes(status)) return 'text-amber-300 bg-amber-300/10 border-amber-300/15'
+  if (['partial', 'interrupted', 'warning', 'paused_memory', 'paused'].includes(status)) return 'text-amber-300 bg-amber-300/10 border-amber-300/15'
   if (ACTIVE.has(status) || ['active', 'busy', 'working', 'started', 'submitted'].includes(status)) return 'text-sky-300 bg-sky-300/10 border-sky-300/15'
   return 'text-slate-400 bg-slate-400/5 border-slate-400/10'
 }
@@ -214,7 +214,7 @@ export default function FactoryDashboard() {
         const id = response.id || response.run_id || response.run?.id
         if (id) { setSelectedId(id); setTab('activity'); await refreshDetail(id) }
       } else if (selectedId) await refreshDetail(selectedId)
-      setNotice(message)
+      setNotice(response.status === 'paused_memory' ? '内存保护已暂停本轮，进度已保留。' : message)
       if (key === 'settings') setShowSettings(false)
     } catch (e) { setActionError(e.message) } finally { setBusy('') }
   }
@@ -228,6 +228,9 @@ export default function FactoryDashboard() {
   const target = settings.daily_target || 3
   const configuredPlatforms = Array.isArray(settings.platforms) ? settings.platforms.length : platforms.length
   const hasActiveRun = runs.some(r => ACTIVE.has(r.status))
+  const hasMemoryPaused = runs.some(r => r.status === 'paused_memory')
+  const memory = overview?.runtime?.memory
+  const otherMemoryPaused = runs.some(r => r.status === 'paused_memory' && r.id !== run?.id)
   const completeCount = run?.completed_count || 0
   const runTarget = run?.target_count || target
   const completion = Math.min(100, Math.round(completeCount / Math.max(runTarget, 1) * 100))
@@ -245,11 +248,16 @@ export default function FactoryDashboard() {
 
       <section className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div><div className="mb-3 flex items-center gap-2 text-[10px] font-medium tracking-[0.18em] text-emerald-300/70"><span className="h-px w-5 bg-emerald-300/50" />YOUR AI CONTENT TEAM</div><h2 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">创意开工，内容持续发生。</h2><p className="mt-3 text-sm leading-relaxed text-slate-400">{settings.sector || 'AI 科技'} · 每天 {target} 条原创 · {VISUAL_STYLES[settings.visual_style] || '科技演示混剪'}</p></div>
-        <div className="flex shrink-0 gap-2"><button onClick={() => setShowSettings(!showSettings)} disabled={!overview} className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.025] px-4 py-3 text-xs font-medium text-slate-300 hover:bg-white/5 disabled:opacity-40"><Settings2 size={15} />生产计划</button><button onClick={() => perform('create', () => factoryApi.createRun(target), '生产任务已提交，团队开始协作。')} disabled={Boolean(busy) || !overview || hasActiveRun || queued === false} className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-300 px-5 py-3 text-xs font-bold text-slate-950 shadow-[0_4px_20px_#6ee7b712] transition hover:bg-emerald-200 disabled:opacity-40">{busy === 'create' ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} fill="currentColor" />}{hasActiveRun ? '团队正在生产' : '启动一轮生产'}</button></div>
+        <div className="flex shrink-0 gap-2"><button onClick={() => setShowSettings(!showSettings)} disabled={!overview} className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.025] px-4 py-3 text-xs font-medium text-slate-300 hover:bg-white/5 disabled:opacity-40"><Settings2 size={15} />生产计划</button><button onClick={() => perform('create', () => factoryApi.createRun(target), '生产任务已提交，团队开始协作。')} disabled={Boolean(busy) || !overview || hasActiveRun || hasMemoryPaused || memory?.blocked || queued === false} className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-300 px-5 py-3 text-xs font-bold text-slate-950 shadow-[0_4px_20px_#6ee7b712] transition hover:bg-emerald-200 disabled:opacity-40">{busy === 'create' ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} fill="currentColor" />}{hasMemoryPaused || memory?.blocked ? '内存保护已暂停' : hasActiveRun ? '团队正在生产' : '启动一轮生产'}</button></div>
       </section>
 
       {(displayedError || notice) && <div role={displayedError ? 'alert' : 'status'} className={`flex items-start gap-3 rounded-xl border p-4 text-xs leading-relaxed ${displayedError ? 'border-rose-400/20 bg-rose-400/5 text-rose-300' : 'border-emerald-300/15 bg-emerald-300/5 text-emerald-200'}`}><AlertCircle size={16} className="shrink-0" /><span className="min-w-0 flex-1 break-words">{displayedError || notice}</span>{error && <button onClick={() => refreshOverview().catch(e => setError(e.message))} className="shrink-0 underline">重新连接</button>}<button onClick={() => { setError(''); setActionError(''); setNotice('') }} aria-label="关闭提示"><X size={14} /></button></div>}
       {showSettings && overview && <SettingsPanel settings={settings} busy={busy === 'settings'} onClose={() => setShowSettings(false)} onSave={form => perform('settings', () => factoryApi.updateSettings(form), '生产计划已更新。')} />}
+
+      {memory && <div aria-label="内存保护状态" className={`rounded-xl border px-4 py-3 text-xs leading-relaxed ${memory.blocked || hasMemoryPaused ? 'border-amber-300/20 bg-amber-300/5 text-amber-200' : 'border-white/[0.06] text-slate-400'}`}>
+        <p className="flex flex-wrap items-center gap-x-5 gap-y-1"><span className="font-medium">{memory.blocked ? '内存保护：暂停新任务' : hasMemoryPaused ? '内存已恢复，等待手动恢复批次' : '内存正常'}</span>{memory.project_gib != null && <span>工程 {memory.project_gib} GB / 暂停阈值 {memory.max_project_gib} GB</span>}{memory.available_gib != null && <span>机器可用 {memory.available_gib} GB</span>}</p>
+        {(memory.blocked || hasMemoryPaused) && <p className="mt-1">{memory.blocked ? memory.reason + '。' : ''}已完成的视频和进度会保留；内存恢复后，在暂停批次中点击“恢复本轮”。</p>}
+      </div>}
 
       <section className="grid grid-cols-2 gap-3 xl:grid-cols-4"><Stat icon={Film} label="每日原创目标" value={overview ? target : '—'} suffix="条 / 天" detail="从选题到通过质检的完整成片" /><Stat icon={Bot} label="AI 员工团队" value={overview ? agents.length : '—'} suffix="个岗位" detail="负责人统筹，专业员工逐步交接" /><Stat icon={Layers3} label="平台适配" value={overview ? configuredPlatforms : '—'} suffix="个平台" detail={platforms.map(platform => platform.name || PLATFORM_NAMES[platform.id] || platform.id).join(' · ')} /><Stat icon={Clock3} label="每日自动开工" value={overview ? settings.schedule_enabled ? settings.schedule_time || '08:00' : '已暂停' : '—'} suffix={settings.schedule_enabled ? '北京时间' : ''} detail={settings.schedule_enabled ? `每日生成 ${target} 条，最多 ${target * configuredPlatforms} 个发布素材包` : '可在生产计划中启用定时任务'} /></section>
 
@@ -257,7 +265,7 @@ export default function FactoryDashboard() {
 
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
         <section className="min-w-0 overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0d141e]">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4"><div className="flex items-center gap-2"><Activity size={16} className="text-emerald-300/70" /><h3 className="text-sm font-semibold">生产现场</h3>{run && <Status value={run.cancel_requested && ACTIVE.has(run.status) ? 'cancel_requested' : run.status} small />}</div><div className="flex items-center gap-2">{run && ACTIVE.has(run.status) && <button onClick={() => perform('cancel', () => factoryApi.cancelRun(run.id), '已请求取消，当前步骤结束后停止后续生产。')} disabled={Boolean(busy) || run.cancel_requested || ['cancel_requested', 'cancelling'].includes(run.status)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-slate-400 hover:text-white disabled:opacity-40"><Pause size={12} />{run.cancel_requested ? '正在停止' : '停止本轮'}</button>}{run && RETRYABLE.has(run.status) && <button onClick={() => perform('retry', () => factoryApi.retryRun(run.id), '重试任务已提交。')} disabled={Boolean(busy) || hasActiveRun || queued === false} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300/10 px-2.5 py-1.5 text-[11px] text-emerald-300 disabled:opacity-40"><RefreshCw size={12} />重试未完成内容</button>}</div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4"><div className="flex items-center gap-2"><Activity size={16} className="text-emerald-300/70" /><h3 className="text-sm font-semibold">生产现场</h3>{run && <Status value={run.cancel_requested && ACTIVE.has(run.status) ? 'cancel_requested' : run.status} small />}</div><div className="flex items-center gap-2">{run && (ACTIVE.has(run.status) || run.status === 'paused_memory') && <button onClick={() => perform('cancel', () => factoryApi.cancelRun(run.id), '已请求取消，当前步骤结束后停止后续生产。')} disabled={Boolean(busy) || run.cancel_requested || ['cancel_requested', 'cancelling'].includes(run.status)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-slate-400 hover:text-white disabled:opacity-40"><Pause size={12} />{run.cancel_requested ? '正在停止' : '停止本轮'}</button>}{run && RETRYABLE.has(run.status) && <button onClick={() => perform('retry', () => factoryApi.retryRun(run.id), run.status === 'paused_memory' ? '已从保存的进度恢复本轮。' : '重试任务已提交。')} disabled={Boolean(busy) || hasActiveRun || otherMemoryPaused || memory?.blocked || queued === false} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300/10 px-2.5 py-1.5 text-[11px] text-emerald-300 disabled:opacity-40"><RefreshCw size={12} />{run.status === 'paused_memory' ? '恢复本轮' : '重试未完成内容'}</button>}</div></div>
           {detailError && <p role="alert" className="m-5 rounded-lg bg-rose-400/5 p-3 text-xs text-rose-300">{detailError}</p>}
           {detailLoading ? <div className="flex items-center justify-center gap-2 py-24 text-xs text-slate-400"><Loader2 size={18} className="animate-spin" />读取生产记录…</div> : !run ? <Empty icon={Workflow} title="团队已准备好，等待第一轮生产" description="点击“启动一轮生产”，查看各岗位如何协作，把 AI 科技选题制作成原创视频。" /> : <>
             <div className="px-5 pt-5"><div className="mb-3 flex items-center justify-between text-[11px]"><span className="text-slate-400">{formatDate(run.created_at)} · {run.trigger === 'scheduled' || run.trigger === 'schedule' ? '定时生产' : '手动生产'}</span><span className="text-slate-400"><strong className="font-semibold text-emerald-300">{completeCount}</strong> / {runTarget} 条已完成</span></div><div className="h-1 overflow-hidden rounded-full bg-white/[0.06]"><div className="h-full rounded-full bg-emerald-300 transition-all duration-700" style={{ width: `${completion}%` }} /></div>

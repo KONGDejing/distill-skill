@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models.factory import FactoryPublication
 from services import creator_connector
+from services.factory_resources import MemoryPressure
 
 router = APIRouter()
 
@@ -53,6 +54,8 @@ def creator_action(item_id: str, platform: str, action: str, db: Session = Depen
     from services.factory_publishing import begin_publication, job_dict
     try:
         return job_dict(begin_publication(db, item_id, action, platform=platform))
+    except MemoryPressure as exc:
+        raise HTTPException(409, f"内存保护：{exc}") from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
@@ -76,6 +79,8 @@ def creator_publish(platform: str, job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "该平台任务不存在")
     try:
         return job_dict(begin_publication(db, job.item_id, "publish", platform=platform))
+    except MemoryPressure as exc:
+        raise HTTPException(409, f"内存保护：{exc}") from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 

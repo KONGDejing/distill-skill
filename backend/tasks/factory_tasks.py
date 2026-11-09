@@ -17,6 +17,9 @@ def schedule_factory():
     """Read the live schedule every minute; a daily unique key prevents repeats."""
     init_db()
     with SessionLocal() as db:
+        paused = db.query(FactoryRun).filter_by(status="paused_memory").first()
+        if paused:
+            return {"status": "paused_memory", "run_id": paused.id}
         active = db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None)).first()
         if active:
             if (datetime.utcnow() - active.heartbeat_at).total_seconds() > 600:

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,6 +17,12 @@ class Settings(BaseSettings):
     HTTPS_PROXY: str = os.getenv("HTTPS_PROXY", "")
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
     FACTORY_FALLBACK_MODEL: str = "claude-sonnet-4-5-20250929"
+
+    # Stop admitting work under memory pressure; resume requires user action.
+    FACTORY_MAX_MEMORY_GIB: float = Field(default=8, gt=0)
+    FACTORY_MIN_AVAILABLE_GIB: float = Field(default=2, gt=0)
+    FACTORY_MIN_AVAILABLE_PERCENT: float = Field(default=8, gt=0, lt=100)
+    FACTORY_MAX_MEMORY_STALL_PERCENT: float = Field(default=5, gt=0, le=100)
 
     # Redis (for Celery)
     REDIS_URL: str = "redis://localhost:6379/0"

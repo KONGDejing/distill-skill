@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal
 from models.factory import FactoryItem, FactoryPublication, FactoryEvent
+from services.factory_resources import ensure_memory_available
 
 
 def _platform_name(platform):
@@ -144,6 +145,7 @@ def begin_publication(db, item_id, action, platform="xiaohongshu"):
         if state.get("capabilities", {}).get(action) is not True:
             step = "上传" if action == "prepare" else "发布"
             raise ValueError(f"{platform_name}{step}页面尚未完成真实联调，未创建操作任务")
+    ensure_memory_available()
     payload = {"item_id": item.id}
     if action == "prepare":
         payload.update(video_path=item.media["video_path"], cover_path=item.media["cover_path"],

@@ -11,6 +11,7 @@ from config import settings
 from agents.registry import AGENTS, PLATFORMS
 from models.factory import FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
 from services.factory_service import get_config, config_dict, run_dict, run_detail, start_run, queue_available, FACTORY_DIR, TERMINAL
+from services.factory_resources import MemoryPressure, ensure_memory_available, memory_state
 
 router = APIRouter()
 LOGIN_DIR = Path(__file__).resolve().parents[2] / ".runtime" / "qa"
@@ -68,7 +69,7 @@ def overview(db: Session = Depends(get_db)):
         platform["description"] = ((f"{state.get('display_name') or '账号'} 已登录；" + ("已核验提交回执，公开状态以平台审核为准。" if verified else "上传与提交待实际验证。"))
                                    if state.get("authenticated") else f"{state.get('status', '未连接')}；完成官方扫码后继续验证发布。")
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
-            "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available()}}
+            "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available(), "memory": memory_state()}}
 
 
 @router.patch("/settings")
@@ -102,10 +103,10 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
 @router.post("/runs/{run_id}/cancel")
 def cancel_run(run_id: str, db: Session = Depends(get_db)):
     run = require_run(db, run_id)
-    if run.status in TERMINAL:
+    if run.status in TERMINAL and run.status != "paused_memory":
         return run_dict(run)
     run.cancel_requested = True
-    if run.status == "queued":
+    if run.status in {"queued", "paused_memory"}:
         run.status, run.active_slot, run.finished_at = "cancelled", None, datetime.utcnow()
     db.add(FactoryEvent(run_id=run.id, agent_id="director", stage="cancelling", status="cancelled", message="已请求停止，当前步骤结束后不再分派新任务"))
     db.commit()
@@ -115,20 +116,27 @@ def cancel_run(run_id: str, db: Session = Depends(get_db)):
 @router.post("/runs/{run_id}/retry", status_code=202)
 def retry_run(run_id: str, db: Session = Depends(get_db)):
     run = require_run(db, run_id)
-    if run.status not in {"failed", "partial", "cancelled"}:
-        raise HTTPException(409, "只有失败、部分完成或已取消的批次可以重试")
+    if run.status not in {"failed", "partial", "cancelled", "paused_memory"}:
+        raise HTTPException(409, "只有失败、部分完成、已取消或内存暂停的批次可以恢复")
     if run.llm_calls >= run.settings_snapshot.get("max_llm_calls", 32):
         raise HTTPException(409, "本轮模型调用预算已用完，请创建新批次")
     if not queue_available():
         raise HTTPException(503, "任务队列未连接")
-    if db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None)).first():
+    if db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None), FactoryRun.id != run_id).first():
         raise HTTPException(409, "已有批次在执行")
+    if db.query(FactoryRun).filter(FactoryRun.status == "paused_memory", FactoryRun.id != run_id).first():
+        raise HTTPException(409, "请先恢复或取消因内存暂停的批次")
+    try:
+        ensure_memory_available()
+    except MemoryPressure as exc:
+        raise HTTPException(409, f"暂不能恢复：{exc}") from None
+    was_memory_paused = run.status == "paused_memory"
     run.status, run.stage, run.active_slot = "queued", "queued", "factory"
     run.cancel_requested, run.error, run.finished_at = False, None, None
     run.report = {}
     run.heartbeat_at = datetime.utcnow()
     for item in db.query(FactoryItem).filter_by(run_id=run.id):
-        if item.status != "completed":
+        if item.status != "completed" and not was_memory_paused:
             item.status, item.error, item.revisions = "planned", None, 0
     try:
         db.commit()
@@ -186,6 +194,8 @@ def xiaohongshu_action(item_id: str, action: str, db: Session = Depends(get_db))
     from services.factory_publishing import begin_publication, job_dict
     try:
         return job_dict(begin_publication(db, item_id, action))
+    except MemoryPressure as exc:
+        raise HTTPException(409, f"内存保护：{exc}") from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
@@ -207,6 +217,8 @@ def publish_prepared_job(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "平台任务不存在")
     try:
         return job_dict(begin_publication(db, job.item_id, "publish", platform=job.platform))
+    except MemoryPressure as exc:
+        raise HTTPException(409, f"内存保护：{exc}") from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
