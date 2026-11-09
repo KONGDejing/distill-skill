@@ -1,6 +1,7 @@
 """Observed Douyin creator login UI; upload/publish require later live testing."""
 from collections import deque
 import json
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -88,7 +89,20 @@ class Adapter(BaseAdapter):
         temporary.replace(directory / "login-ui.json")
         self._last_ui_snapshot = signature
 
+    def _profile_identity(self):
+        if not urlsplit(self.page.url).path.startswith("/creator-micro/"):
+            return None
+        identifier = self.visible([self.page.locator("[class*=unique_id-]")])
+        if identifier is None or not re.fullmatch(r"抖音号[：:]\s*\S{1,64}", identifier.inner_text().strip()):
+            return None
+        name = self.visible([identifier.locator("..").locator("[class*=left-]")])
+        return {"name": name.inner_text().strip() if name is not None else None}
+
     def _account_logged_in(self):
+        # The signed-in home exposes the account's own identity card even when
+        # an onboarding tooltip obscures the avatar menu.
+        if self._profile_identity() is not None:
+            return True
         logout = self.visible([self.page.get_by_text("退出账号", exact=True),
                                self.page.get_by_text("退出登录", exact=True)])
         if logout is not None:
@@ -131,7 +145,8 @@ class Adapter(BaseAdapter):
         elif self._qr_ready(panel):
             state["status"] = "waiting_scan"
         elif self._account_logged_in():
-            state.update(status="authenticated", authenticated=True)
+            state.update(status="authenticated", authenticated=True,
+                         display_name=(self._profile_identity() or {}).get("name"))
         else:
             state.update(status="network_error", error="官方登录界面已打开，但尚未取得可扫描二维码；请刷新或检查网络")
         if state["status"] in {"needs_verification", "authenticated", "network_error"}:
