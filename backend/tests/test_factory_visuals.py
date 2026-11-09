@@ -9,6 +9,26 @@ import pytest
 from services import factory_visuals as visuals
 
 
+def test_library_reuses_verified_bytes_but_rejects_corruption(monkeypatch, tmp_path):
+    import hashlib
+    monkeypatch.setattr(visuals, "STORAGE", tmp_path)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"verified video bytes")
+    asset = {"id": "asset1", "path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+             "reference_source_url": "https://example.org/one", "source_title": "One", "bytes": source.stat().st_size}
+    visuals._archive_asset(asset)
+    visuals._archive_asset({**asset, "reference_source_url": "https://example.org/two", "source_title": "Two"})
+    copy = tmp_path / "copy.mp4"
+    visuals._reuse_archived("asset1", copy)
+    assert copy.read_bytes() == source.read_bytes()
+    assert visuals.library_summary()["source_pages"] == 2
+    cached = tmp_path / "factory/asset-library/asset1.mp4"
+    cached.write_bytes(b"corrupt")
+    copy.unlink()
+    visuals._reuse_archived("asset1", copy)
+    assert not copy.exists()
+
+
 @pytest.mark.parametrize("url", [
     "http://allenai.github.io/ToyBlocks/media/a.mp4",
     "https://allenai.github.io.evil.example/ToyBlocks/media/a.mp4",

@@ -24,6 +24,15 @@ FEED_URLS = (
     "https://openai.com/news/rss.xml",
     "https://huggingface.co/blog/feed.xml",
     "https://blog.google/technology/ai/rss/",
+    "https://nvidianews.nvidia.com/rss.xml",
+    "https://about.fb.com/news/feed/",
+)
+VISUAL_SOURCE_URLS = (
+    ("Google DeepMind Veo：视频生成与创作控制", "https://deepmind.google/models/veo/"),
+    ("Google DeepMind Genie：可交互世界模型", "https://deepmind.google/models/genie/"),
+    ("Google DeepMind Gemini Robotics：机器人理解与动作", "https://deepmind.google/models/gemini-robotics/"),
+    ("Ai2 ToyBlocks：机器人仿真与真实积木操作", "https://allenai.github.io/ToyBlocks/"),
+    ("Gradium Phonon：端侧语音合成演示", "https://gradium.ai/blog/release-phonon-open-weight/"),
 )
 EVERGREEN_URLS = (
     ("Hugging Face Transformers：Pipeline 教程", "https://huggingface.co/docs/transformers/en/pipeline_tutorial"),
@@ -36,6 +45,7 @@ ALLOWED_HOSTS = frozenset({
     "huggingface.co", "blog.google", "www.blog.google", "ai.google.dev",
     "aistudio.google.com", "docs.anthropic.com", "platform.claude.com",
     "www.anthropic.com", "anthropic.com",
+    "nvidianews.nvidia.com", "about.fb.com", "deepmind.google", "allenai.github.io", "gradium.ai",
 })
 MAX_BYTES = 2_000_000
 MAX_TEXT_CHARS = 3500
@@ -277,7 +287,10 @@ def collect_sources(limit: int = 12) -> dict:
     # Reserve a small documentation pool for tutorials even on busy news days.
     evergreen_slots = min(len(EVERGREEN_URLS), max(1, limit // 3))
     news_slots = max(0, limit - evergreen_slots)
-    selected = recent[:news_slots]
+    visual_count = min(len(VISUAL_SOURCE_URLS), max(1, limit // 3))
+    selected = recent[:max(0, news_slots - visual_count)]
+    selected.extend({"title": title, "url": url, "kind": "evergreen", "published_at": None}
+                    for title, url in VISUAL_SOURCE_URLS[:visual_count])
     docs_count = min(len(EVERGREEN_URLS), limit - len(selected))
     selected.extend({"title": title, "url": url, "kind": "evergreen", "published_at": None}
                     for title, url in EVERGREEN_URLS[:docs_count])

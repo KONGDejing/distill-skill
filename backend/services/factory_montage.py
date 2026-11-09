@@ -69,6 +69,10 @@ def _source_label(asset: dict) -> str:
     if asset.get("kind") == "schematic_animation":
         return "示意动画"
     tags = set(asset.get("topic_tags", []))
+    if "ai_generated" in tags:
+        return "官方样片 · AI生成"
+    if "world_model" in tags:
+        return "官方演示 · 交互世界"
     if "sim_to_real" in tags:
         return "官方演示 · 实拍 / 仿真对照"
     if "real_robot" in tags:
@@ -201,6 +205,7 @@ def build_shot_plan(content: dict, cues: list[dict], assets: list[dict], duratio
                          "source_url": asset.get("source_url"), "source_sha256": asset["sha256"],
                          "kind": asset["kind"], "display_label": asset["display_label"],
                          "asset_selection": selection, "narration_anchor": scene.get("narration_exact"),
+                         "match_reason": scene.get("match_reason", ""),
                          "timing_basis": timing[index], "heading": str(scene.get("heading", "")),
                          "focus_region": region, "layout": "full_frame_and_detail" if region else "full_frame",
                          "complete_source_frame_preserved": True})
@@ -349,7 +354,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
-        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v2"},
+        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v3"},
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     if (target / "media.json").exists():
         old = json.loads((target / "media.json").read_text())
@@ -413,9 +418,11 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         if result.returncode:
             raise RuntimeError(f"科技混剪合成失败：{result.stderr[-1400:]}")
     cover = target / "cover.png"
-    _run(["ffmpeg", "-y", "-v", "error", "-ss", "1.5", "-i", str(video), "-frames:v", "1", str(cover)], timeout=30)
+    from services.factory_cover import render_cover
+    cover_design = render_cover(content, cover)
     quality.update(inspect_media(video))
-    quality.update({"source_motion_samples": motion, "official_footage_ratio": quality["dynamic_coverage"],
+    quality.update({"cover_design": cover_design, "editorial_review": content.get("editorial_review", {}),
+                    "source_motion_samples": motion, "official_footage_ratio": quality["dynamic_coverage"],
                     "self_made_animation_ratio": round(1 - quality["dynamic_coverage"], 4),
                     "emphasis_annotation_ratio": round(sum(end - start for start, end in annotations) / duration, 4),
                     "complete_source_frames_preserved": True, "source_audio_unchanged_sha256": _sha256(audio),
@@ -425,7 +432,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
                     "review_required": "Motion sampling does not verify scene semantics; inspect the edit list and preview."})
     result = {"video_path": str(video), "audio_path": str(audio), "cover_path": str(cover),
               "subtitle_path": str(subtitle), "mixed_audio_path": str(soundtrack), "duration": quality["duration"],
-              "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 2,
+              "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 3,
               "tts_engine": "existing_verified_narration_reused", "quality": quality,
               "edl_path": str(target / "edit-decision-list.json"),
               "visual_manifest_path": str(target / "visual-sources.json"),

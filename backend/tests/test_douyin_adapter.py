@@ -56,7 +56,7 @@ def test_center_logo_is_not_a_scannable_code():
     assert client._qr_ready(panel) is False
 
 
-def test_diagnostics_are_bounded_and_unverified_publication_stays_disabled():
+def test_diagnostics_are_bounded():
     client = adapter()
     for i in range(1000):
         client._network.append({"host": "creator.douyin.com", "status": 200, "sequence": i})
@@ -64,9 +64,6 @@ def test_diagnostics_are_bounded_and_unverified_publication_stays_disabled():
     assert len(client._network) == 100
     assert len(client._errors) == 20
     assert client._network[0]["sequence"] == 900
-    assert not client.supports_prepare and not client.supports_publish
-    with pytest.raises(ValueError, match="上传联调"):
-        client.prepare({"item_id": "preview"})
     with pytest.raises(ValueError, match="未点击提交"):
         client.publication_control({}, {})
 

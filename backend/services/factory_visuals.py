@@ -7,10 +7,12 @@ images, generated placeholders and a successful HTTP response are not substitute
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import ipaddress
 import json
 import re
 import socket
+import shutil
 import subprocess
 import time
 import uuid
@@ -23,6 +25,7 @@ import httpx
 
 STORAGE = Path(__file__).resolve().parents[1] / "storage"
 PAGE_RULES = {
+    "deepmind.google": ("/models/veo/", "/models/genie/", "/models/gemini-robotics/"),
     "allenai.github.io": ("/ToyBlocks/",),
     "allenai.org": ("/blog/",),
     "huggingface.co": ("/blog/allenai/", "/blog/nvidia/", "/blog/phonon-tts/", "/allenai/", "/nvidia/"),
@@ -43,6 +46,7 @@ MEDIA_RULES = {
     "developer-blogs.nvidia.com": ("/wp-content/uploads/",),
     "images.nvidia.com": ("/aem-dam/",),
     "cdn.openai.com": ("/",),
+    "storage.googleapis.com": ("/gdm-deepmind-com-prod-public/media/", "/deepmind-media/"),
 }
 MAX_FILE_BYTES = 15_000_000
 MAX_TOTAL_BYTES = 60_000_000
@@ -248,6 +252,7 @@ def _probe(path, deadline=None):
 
 
 def _metadata(candidate, metadata):
+    from services.factory_visual_catalog import INSPECTED_ASSETS
     url = candidate["url"]
     name = Path(urlsplit(url).path).stem
     toyblocks = (urlsplit(url).hostname == "allenai.github.io"
@@ -279,10 +284,69 @@ def _metadata(candidate, metadata):
     if urlsplit(url).hostname == "gradium.ai" and name in PHONON_CLIPS:
         clips = [{"start": first, "end": min(last, metadata["duration"]), "description": description}
                  for first, last in PHONON_CLIPS[name] if first + 2 < metadata["duration"]] or clips
+    inspected = INSPECTED_ASSETS.get(hashlib.sha256(url.encode()).hexdigest()[:20])
+    if inspected:
+        description, tags = inspected["description"], inspected["topic_tags"]
+        clips = [{"start": 0, "end": min(inspected["end"], metadata["duration"]), "description": description}]
+        credit = "画面来源：Google DeepMind（官方演示）"
     return {"label": "官方演示", "kind": "official_video", "description": description,
             "topic_tags": tags, "credit": credit, "rights_note": rights, "license_url": license_url,
             "focus_regions": focus_regions,
             "clips": clips}
+
+
+def library_summary():
+    records = []
+    for path in (STORAGE / "factory/asset-library").glob("*.json"):
+        try:
+            entry = json.loads(path.read_text())
+            if Path(entry["path"]).is_file():
+                records.append(entry)
+        except (OSError, ValueError, KeyError):
+            continue
+    sources = {}
+    for entry in records:
+        for reference in entry.get("references", []):
+            sources.setdefault(reference["url"], set()).add(entry["sha256"])
+    return {"videos": len({r["sha256"] for r in records}), "source_pages": len(sources),
+            "ready_source_pages": sum(len(hashes) >= 3 for hashes in sources.values()),
+            "bytes": sum(r.get("bytes", 0) for r in records)}
+
+
+def _archive_asset(asset):
+    directory = STORAGE / "factory/asset-library"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "index.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        metadata_path = directory / (asset["id"] + ".json")
+        old = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+        target = directory / (asset["id"] + Path(asset["path"]).suffix)
+        if not target.exists() or old.get("sha256") != asset["sha256"]:
+            temporary = target.with_suffix(".tmp")
+            shutil.copyfile(asset["path"], temporary)
+            temporary.replace(target)
+        references = {r["url"]: r for r in old.get("references", [])}
+        references[asset["reference_source_url"]] = {"url": asset["reference_source_url"], "title": asset["source_title"]}
+        entry = {**asset, "path": str(target), "references": list(references.values()),
+                 "last_seen_at": datetime.now(timezone.utc).isoformat()}
+        temporary = metadata_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(entry, ensure_ascii=False, indent=2))
+        temporary.replace(metadata_path)
+
+
+def _reuse_archived(identifier, path):
+    metadata_path = STORAGE / "factory/asset-library" / (identifier + ".json")
+    try:
+        metadata = json.loads(metadata_path.read_text())
+        cached = Path(metadata["path"])
+        if (cached.is_symlink() or not cached.resolve().is_relative_to(metadata_path.parent.resolve())
+                or not cached.is_file() or cached.stat().st_size > MAX_FILE_BYTES):
+            return
+        if hashlib.sha256(cached.read_bytes()).hexdigest() != metadata["sha256"]:
+            return
+        shutil.copyfile(cached, path)
+    except (OSError, ValueError, KeyError):
+        return
 
 
 def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6) -> dict:
@@ -360,6 +424,8 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                 final = candidate["url"]
                 redirects = [final]
                 if not path.is_file():
+                    _reuse_archived(identifier, path)
+                if not path.is_file():
                     _, final, redirects = _transfer(client, candidate["url"], media=True, max_bytes=MAX_FILE_BYTES,
                                          deadline=deadline, budget=budget, target=temporary)
                     metadata = _probe(temporary, deadline)
@@ -377,6 +443,7 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                          "sha256": fingerprint, "published": False}
                 asset["source_chain"] = asset["source_chain"] + redirects[1:]
                 assets.append(asset)
+                _archive_asset(asset)
             except Exception as exc:
                 warnings.append(f"视频 {candidate['url']} 不可用（{type(exc).__name__}：{str(exc)[:120]}）")
             finally:

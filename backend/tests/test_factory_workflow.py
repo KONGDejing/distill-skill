@@ -56,6 +56,20 @@ def _seed_item(sessions, **updates):
         return run.id, item.id
 
 
+def test_malformed_script_is_returned_to_writer_with_bounded_feedback(isolated_factory, monkeypatch):
+    run_id, item_id = _seed_item(isolated_factory)
+    valid = {"title": "有出处的指南", "script": "这是来源支持的介绍，建议关注具体使用边界。" * 6,
+             "source_ids": [SOURCE["id"]]}
+    calls = Mock(side_effect=[{"script": "太短"}, valid, {"approved": True, "score": 90}])
+    monkeypatch.setattr(factory_service, "call_agent", calls)
+    factory_service._write_and_review(run_id, item_id)
+    assert [call.args[1] for call in calls.call_args_list] == ["writer", "writer", "reviewer"]
+    assert "80–650" in calls.call_args_list[1].args[2]["review_feedback"]["reason"]
+    assert calls.call_args_list[2].args[2]["task_mode"] == "script_review"
+    with isolated_factory() as db:
+        assert db.get(FactoryItem, item_id).review["approved"] is True
+
+
 def test_json_extraction_preserves_nested_objects_and_rejects_non_json():
     text = '模型输出：\n```json\n{"approved": false, "issues": [{"reason": "缺少 {来源}"}]}\n```'
     assert factory_llm.parse_json(text) == {

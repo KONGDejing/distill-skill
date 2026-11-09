@@ -13,6 +13,7 @@ from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent,
 from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled
 from services.factory_resources import MemoryPressure, ensure_memory_available
+from services.factory_editorial import STRATEGY, validate_editorial_scenes
 
 TERMINAL = {"completed", "partial", "failed", "cancelled", "paused_memory"}
 FACTORY_DIR = settings.STORAGE_DIR / "factory"
@@ -151,7 +152,7 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     target = target_count or config["daily_target"]
     if not 1 <= target <= 10:
         raise ValueError("每轮产量应为 1–10 条")
-    config["max_llm_calls"] = max(config["max_llm_calls"], target * 6 + 8)
+    config["max_llm_calls"] = max(config["max_llm_calls"], target * 8 + 12)
     if release_slot_ids is not None:
         config["release_slot_ids"] = list(release_slot_ids)
     if not queue_available():
@@ -214,12 +215,13 @@ def _make_plan(run_id):
     with SessionLocal() as db:
         run = db.get(FactoryRun, run_id)
         sources, plan, target = run.sources or [], run.plan or {}, run.target_count
+        visual_style = run.settings_snapshot.get("visual_style", "cards")
         recent = [item.content.get("title", "") for item in db.query(FactoryItem).filter(FactoryItem.run_id != run_id).order_by(FactoryItem.created_at.desc()).limit(40)]
     if not sources:
         check_cancel(run_id)
         emit(run_id, "researcher", "researching", "正在采集 AI 官方资料，保存来源和发布时间")
         from services.factory_research import collect_sources
-        research = collect_sources(limit=max(10, target * 3))
+        research = collect_sources(limit=min(24, max(10, target * 3)))
         sources = research["sources"]
         if not sources:
             raise RuntimeError("没有获取到可靠资料，已停止生产以免生成无依据内容")
@@ -228,12 +230,34 @@ def _make_plan(run_id):
             db.commit()
         emit(run_id, "researcher", "researching", f"已采集 {len(sources)} 份官方资料", "completed", {"warnings": research.get("warnings", [])})
     if not plan.get("candidates"):
+        if visual_style == "tech_montage":
+            from services.factory_visuals import collect_visuals
+            from services.factory_research import VISUAL_SOURCE_URLS
+            catalog_urls = {url for _, url in VISUAL_SOURCE_URLS}
+            visual_sources = sorted(sources, key=lambda s: s["url"] not in catalog_urls)[:8]
+            emit(run_id, "researcher", "visual_preflight", "选题前核查动态素材；无匹配画面的题材保留在资料库，暂不进入混剪")
+            for source in visual_sources:
+                check_cancel(run_id)
+                ensure_memory_available()
+                visuals = collect_visuals([source], FACTORY_DIR / run_id / "source-intake" / source["id"])
+                source["visual_ready"] = visuals.get("status") == "ready"
+                source["visual_assets"] = [{k: a.get(k) for k in ("id", "description", "topic_tags")} for a in visuals.get("assets", [])]
+            with SessionLocal() as db:
+                db.get(FactoryRun, run_id).sources = sources
+                db.commit()
+            usable = [s for s in sources if s.get("visual_ready")]
+            if not usable:
+                raise ValueError("选题预检未找到足够动态素材，保留资料但不进入配音与渲染")
+        else:
+            usable = sources
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
-        research = call_agent(run_id, "researcher", {"target": target + 2, "sources": sources, "recent_titles": recent}, max_tokens=max(3500, (target + 2) * 550))
+        research = call_agent(run_id, "researcher", {"target": target + 2, "sources": usable,
+            "recent_titles": recent, "strategy": STRATEGY,
+            "visual_constraint": "仅围绕提供来源中可展示的具体动作和事实提出互不重复选题"}, max_tokens=max(3500, (target + 2) * 550))
         candidates = research.get("candidates", [])
         if not isinstance(candidates, list) or len(candidates) < target:
             raise ValueError("情报员提供的有效选题不足")
-        source_ids = {source["id"] for source in sources}
+        source_ids = {source["id"] for source in usable}
         candidates = [c for c in candidates if isinstance(c, dict) and c.get("title") and isinstance(c.get("source_ids"), list) and c["source_ids"] and set(c["source_ids"]).issubset(source_ids)]
         if len(candidates) < target:
             raise ValueError("候选选题的引用来源不足，未进入制作")
@@ -273,16 +297,25 @@ def _write_and_review(run_id, item_id):
         _save_item(item_id, status="writing", revisions=attempt)
         emit(run_id, "writer", "writing", f"{'修改' if prior else '撰写'}脚本：{brief['title']}")
         content = call_agent(run_id, "writer", {"brief": brief, "sources": sources, "previous_script": prior, "review_feedback": feedback})
-        if not isinstance(content.get("script"), str) or not 80 <= len(content["script"]) <= 650:
-            raise ValueError("文案长度无效，需为 80–650 字符")
-        if not isinstance(content.get("title"), str) or not content["title"].strip():
-            raise ValueError("文案缺少标题")
-        _sources_for(content.get("source_ids", []), sources)
+        try:
+            if not isinstance(content.get("script"), str) or not 80 <= len(content["script"]) <= 650:
+                raise ValueError("文案必须有script字符串字段，长度为80–650字符；不要仅返回分镜、提纲或审核意见")
+            if not isinstance(content.get("title"), str) or not content["title"].strip():
+                raise ValueError("文案缺少标题")
+            _sources_for(content.get("source_ids", []), sources)
+        except ValueError as exc:
+            feedback = {"approved": False, "reason": str(exc)}
+            prior = content
+            _save_item(item_id, review=feedback)
+            emit(run_id, "director", "script_revision", "退回小文修正交付格式：" + str(exc), "rejected")
+            if attempt < max_revisions:
+                continue
+            raise ReviewRejected(str(exc)) from None
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
         _save_item(item_id, content=content, status="reviewing")
         emit(run_id, "writer", "writing", f"脚本已提交：{content['title']}", "completed")
         emit(run_id, "reviewer", "reviewing", f"独立核对文案事实与出处：{content['title']}")
-        review = call_agent(run_id, "reviewer", {"script": content, "sources": sources})
+        review = call_agent(run_id, "reviewer", {"task_mode": "script_review", "script": content, "sources": sources})
         score = review.get("score", 0)
         approved = review.get("approved") is True and type(score) in (int, float) and score >= 80
         review["approved"] = approved
@@ -328,6 +361,35 @@ def _replace_rejected_topic(run_id, item_id):
     return True
 
 
+def _plan_edit(run_id, content, assets, visual_style):
+    available = [{k: a.get(k) for k in ("id", "description", "source_title", "topic_tags", "clips")} for a in assets]
+    feedback = {}
+    for attempt in range(2):
+        check_cancel(run_id)
+        arrangement = call_agent(run_id, "producer", {"content": content, "visual_style": visual_style,
+            "available_assets": available, "editorial_feedback": feedback})
+        scenes = arrangement.get("scenes", [])
+        try:
+            if not isinstance(scenes, list) or not 2 <= len(scenes) <= 6 or not all(isinstance(s, dict) and s.get("heading") and s.get("body") for s in scenes):
+                raise ValueError("制作员未提供有效的画面安排")
+            if assets:
+                validate_editorial_scenes(content["script"], scenes, assets)
+                review = call_agent(run_id, "reviewer", {"task_mode": "edit_review",
+                    "script": content, "arrangement": arrangement, "available_assets": available,
+                    "review_scope": "仅核对已提供素材描述与口播，未直接观看视频，不得声称成片视觉已验收"})
+                if review.get("approved") is not True or type(review.get("score")) not in (int, float) or review["score"] < 80:
+                    feedback = review
+                    raise ValueError("口播与画面搭配未通过审核：" + str(review.get("reason", ""))[:300])
+                arrangement["editorial_review"] = {**review, "scope": "source_description_alignment"}
+                emit(run_id, "reviewer", "edit_review", "分镜与素材描述核对通过，开始制作", "completed", arrangement["editorial_review"])
+            return arrangement
+        except ValueError as exc:
+            feedback = {**feedback, "error": str(exc)}
+            emit(run_id, "director", "edit_revision", "要求小影重排口播与镜头：" + str(exc), "rejected")
+            if attempt:
+                raise
+
+
 def _render(run_id, item_id):
     with SessionLocal() as db:
         item = db.get(FactoryItem, item_id)
@@ -352,8 +414,7 @@ def _render(run_id, item_id):
     elif visual_style != "cards":
         raise ValueError("不支持的画面风格")
     emit(run_id, "producer", "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
-    arrangement = call_agent(run_id, "producer", {"content": content, "visual_style": visual_style,
-        "available_assets": [{k: a.get(k) for k in ("id", "description", "source_title", "topic_tags", "clips")} for a in assets]})
+    arrangement = _plan_edit(run_id, content, assets, visual_style)
     scenes = arrangement.get("scenes", [])
     if not isinstance(scenes, list) or not 2 <= len(scenes) <= 6 or not all(isinstance(s, dict) and s.get("heading") and s.get("body") for s in scenes):
         raise ValueError("制作员未提供有效的画面安排")
@@ -362,7 +423,8 @@ def _render(run_id, item_id):
         if any(not isinstance(s.get("asset_ids"), list) or not s["asset_ids"]
                or not all(isinstance(a, str) and a in known for a in s["asset_ids"]) for s in scenes):
             raise ValueError("镜头计划引用了不存在的演示素材")
-    content = {**content, "scenes": scenes, "visual_note": arrangement.get("visual_note", "")}
+    content = {**content, "scenes": scenes, "visual_note": arrangement.get("visual_note", ""),
+               "editorial_review": arrangement.get("editorial_review", {})}
     _save_item(item_id, content=content)
     if visual_style == "tech_montage":
         from services.factory_voice import synthesize_factory_audio
@@ -450,12 +512,14 @@ def _finish_report(run_id):
         stats = {"production": production, "llm_calls": run.llm_calls,
                  "input_tokens": run.input_tokens, "output_tokens": run.output_tokens,
                  "elapsed_seconds": round((datetime.utcnow() - run.created_at).total_seconds()),
-                 "errors": [item.error for item in items if item.error], "platform_data_available": False}
+                 "errors": [item.error for item in items if item.error], "platform_data_available": False,
+                 "growth": {"status": "not_connected", "net_followers": None, "follow_conversion": None,
+                            "completion_rate": None, "note": STRATEGY["measurement_note"]}}
     check_cancel(run_id)
     emit(run_id, "analyst", "reporting", "根据真实产量、审核和失败记录生成复盘")
     try:
         analysis = call_agent(run_id, "analyst", {**stats, "metric_definitions": {
-            "completed": "原创成片数量", "packages": "输出的各平台发布版本数量，每条成片四份，不是输入素材",
+            "completed": "原创成片数量", "packages": "按本轮启用平台生成的输出版本数量，不是输入素材",
             "failed": "当前尚未完成的作品数量，不是历史失败次数",
             "prohibited_inferences": "没有素材消耗量或素材利用率指标，不得用成片数除以平台版本数推断利用率。"
         }})

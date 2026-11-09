@@ -543,9 +543,9 @@ def render_factory_video(item_id: str, content: dict, output_dir: Path,
                          voice: str = "zh-CN-XiaoxiaoNeural") -> dict:
     """Return real media artifacts or raise; never report placeholder success."""
     from services.factory_resources import ensure_memory_available
-    ensure_memory_available()
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item_id):
         raise ValueError("无效的内容编号")
+    ensure_memory_available()
     display_script = str(content.get("script", "")).replace("**", "").strip()
     script = _speech_text(display_script)
     if not script:

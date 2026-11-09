@@ -83,7 +83,10 @@ def overview(db: Session = Depends(get_db)):
         platform["description"] = ((f"{state.get('display_name') or '账号'} 已登录；" + ("已核验提交回执，公开状态以平台审核为准。" if verified else "上传与提交待实际验证。"))
                                    if state.get("authenticated") else f"{state.get('status', '未连接')}；完成官方扫码后继续验证发布。")
     from services.factory_schedule import upcoming_releases
+    from services.factory_editorial import STRATEGY
+    from services.factory_visuals import library_summary
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
+            "strategy": STRATEGY, "asset_library": library_summary(),
             "releases": upcoming_releases(db, get_config(db)),
             "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available(), "memory": memory_state()}}
 

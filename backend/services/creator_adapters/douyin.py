@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import TimeoutError as BrowserTimeout
 
 from .base import BaseAdapter, clean_url
+from .submission import SubmissionWatch
 from services.creator_login_status import douyin_verification
 
 HOME_URL = "https://creator.douyin.com/"
@@ -17,9 +18,10 @@ HOME_URL = "https://creator.douyin.com/"
 BROWSER_ARGS = ["--disable-http2", "--disable-quic"]
 
 
-class Adapter(BaseAdapter):
-    supports_prepare = False
-    supports_publish = False
+class Adapter(SubmissionWatch, BaseAdapter):
+    supports_prepare = True
+    supports_publish = True
+    portal_host = "creator.douyin.com"
 
     def __init__(self, context):
         super().__init__(context)
@@ -119,7 +121,14 @@ class Adapter(BaseAdapter):
             self.page.get_by_text("退出账号", exact=True).wait_for(state="visible", timeout=2000)
             return True
         except BrowserTimeout:
-            return False
+            # The video editor uses a click-triggered account dropdown; its
+            # home page used a hover menu in the earlier observed layout.
+            try:
+                avatar.click(timeout=3000)
+                self.page.get_by_text("退出账号", exact=True).wait_for(state="visible", timeout=2000)
+                return True
+            except BrowserTimeout:
+                return False
 
     def inspect(self):
         state = {"authenticated": False, "status": "unknown", "display_name": None,
@@ -199,3 +208,53 @@ class Adapter(BaseAdapter):
             return False
         region = self.visible([panel.locator(".YJz68tAT")])
         return self.save_login_region(region, path)
+
+    def _dismiss_editor_tips(self):
+        for name in ("完成", "我知道了"):
+            tip = self.visible([self.page.get_by_role("button", name=name, exact=True)])
+            if tip is not None:
+                tip.click(timeout=3000)
+
+    def prepare(self, payload):
+        self.page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=45000)
+        self.page.locator('input[type=file][accept*="video"]').first.set_input_files(payload["video_path"], timeout=30000)
+        title = self.page.get_by_placeholder("填写作品标题，为作品获得更多流量")
+        title.wait_for(state="visible", timeout=90000)
+        # The actual preview/re-upload control appears after the transfer ends.
+        self.page.get_by_text("重新上传", exact=True).wait_for(state="visible", timeout=180000)
+        self._dismiss_editor_tips()
+        title.fill(payload["title"])
+        caption = payload.get("caption", "") + "\n" + " ".join("#" + tag for tag in payload.get("tags", []))
+        self.page.locator('[contenteditable=true]').fill(caption.strip())
+        self.page.get_by_text("请选择自主声明", exact=True).click()
+        self.page.locator("label.semi-radio").filter(has_text="内容由AI生成").click()
+        self.page.get_by_role("button", name="确定", exact=True).click()
+        if payload.get("cover_path"):
+            self.page.get_by_text("选择封面", exact=True).first.click()
+            self.page.locator("input.semi-upload-hidden-input").last.set_input_files(payload["cover_path"])
+            done = self.page.get_by_role("button", name="完成", exact=True)
+            deadline = time.monotonic() + 45
+            while not done.is_enabled() and time.monotonic() < deadline:
+                self.page.wait_for_timeout(500)
+            done.click()
+            skip = self.page.get_by_text("暂不设置", exact=True)
+            try:
+                skip.wait_for(state="visible", timeout=5000)
+                skip.click()
+            except BrowserTimeout:
+                pass
+        self._prepared_title = payload["title"]
+        self.publication_control(payload, payload)
+        return {"status": "prepared", "uploaded": True, "ai_disclosure": "内容由AI生成",
+                "message": "视频、文案、竖封面及AI声明已准备，等待定时提交"}
+
+    def publication_control(self, payload, prepared):
+        if urlsplit(self.page.url).path != "/creator-micro/content/post/video":
+            raise ValueError("当前不是这条作品的官方发布表单，未点击提交")
+        if self.page.get_by_placeholder("填写作品标题，为作品获得更多流量").input_value() != prepared["title"]:
+            raise ValueError("发布表单的标题与已准备作品不一致")
+        if self.visible([self.page.get_by_text("内容由AI生成", exact=True)]) is None:
+            raise ValueError("未核验到AI内容声明，尚未提交")
+        if self.visible([self.page.get_by_text("重新上传", exact=True)]) is None:
+            raise ValueError("视频上传尚未完成")
+        return self.page.get_by_role("button", name="发布", exact=True)

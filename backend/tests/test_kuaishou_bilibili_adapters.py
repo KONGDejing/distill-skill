@@ -83,7 +83,7 @@ def test_phone_confirmation_and_expired_qr_never_count_as_authenticated(adapter_
     assert state["status"] == "qr_expired" and state["authenticated"] is False
 
 
-@pytest.mark.parametrize("adapter_type", [Bilibili, Kuaishou])
+@pytest.mark.parametrize("adapter_type", [Bilibili])
 def test_unverified_upload_and_publish_controls_remain_disabled(adapter_type):
     adapter = adapter_type(SimpleNamespace(pages=[Page("about:blank", "")]))
     assert not adapter.supports_prepare and not adapter.supports_publish

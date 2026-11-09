@@ -3,6 +3,8 @@ from services import factory_voice
 
 
 def test_audio_only_generation_keeps_display_units_and_reuses_verified_cache(tmp_path, monkeypatch):
+    # This unit test uses fixture bytes; memory-pressure behavior has its own tests.
+    monkeypatch.setattr(factory_voice, "ensure_memory_available", lambda: None)
     async def unavailable(*args):
         raise RuntimeError("offline")
 

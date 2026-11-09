@@ -7,14 +7,16 @@ from urllib.parse import urlsplit
 from playwright.sync_api import TimeoutError as BrowserTimeout
 
 from .base import BaseAdapter, clean_url
+from .submission import SubmissionWatch
 
 HOME_URL = "https://cp.kuaishou.com/"
 OFFICIAL_HOSTS = {"cp.kuaishou.com", "passport.kuaishou.com"}
 
 
-class Adapter(BaseAdapter):
-    supports_prepare = False
-    supports_publish = False
+class Adapter(SubmissionWatch, BaseAdapter):
+    supports_prepare = True
+    supports_publish = True
+    portal_host = "cp.kuaishou.com"
 
     def _account_identity(self):
         address = urlsplit(self.page.url)
@@ -144,3 +146,43 @@ class Adapter(BaseAdapter):
             return False
         region = self.visible([self.page.locator("#login-form .qr-login .qrcode")])
         return self.save_login_region(region, path)
+
+    def _dismiss_editor_tour(self):
+        for _ in range(5):
+            control = self.visible([self.page.get_by_text("立刻体验", exact=True),
+                                    self.page.get_by_text("下一步", exact=True)])
+            if control is None:
+                break
+            control.click(timeout=5000)
+            self.page.wait_for_timeout(300)
+
+    def prepare(self, payload):
+        # The home shortcut opens a new tab. Navigate to its observed official
+        # target in this owned page so login inspection and publishing share it.
+        self.page.goto("https://cp.kuaishou.com/article/publish/video", wait_until="domcontentloaded", timeout=45000)
+        self.page.locator('input[type=file][accept*="video"]').set_input_files(payload["video_path"], timeout=30000)
+        editor = self.page.locator('[contenteditable=true]')
+        editor.wait_for(state="visible", timeout=90000)
+        self.page.get_by_text("重新上传", exact=True).wait_for(state="visible", timeout=180000)
+        self._dismiss_editor_tour()
+        caption = payload["title"] + "\n" + payload.get("caption", "") + "\n" + " ".join("#" + tag for tag in payload.get("tags", []))
+        editor.fill(caption.strip())
+        self.page.get_by_text("为作品添加补充说明", exact=True).locator("..").locator("input").click()
+        self.page.locator(".ant-select-item-option").filter(has_text="内容为AI生成").click()
+        if payload.get("cover_path"):
+            self.page.locator('input[type=file][accept*="image"]').set_input_files(payload["cover_path"])
+            self.page.wait_for_timeout(1500)
+        self.publication_control(payload, payload)
+        return {"status": "prepared", "uploaded": True, "ai_disclosure": "内容为AI生成",
+                "message": "视频、文案、封面及AI声明已准备，等待定时提交"}
+
+    def publication_control(self, payload, prepared):
+        if urlsplit(self.page.url).path != "/article/publish/video":
+            raise ValueError("当前不是这条作品的官方发布表单，未点击提交")
+        if not self.page.locator('[contenteditable=true]').inner_text().startswith(prepared["title"]):
+            raise ValueError("发布表单的文案与已准备作品不一致")
+        if self.visible([self.page.locator(".ant-select-selection-item").filter(has_text="内容为AI生成")]) is None:
+            raise ValueError("未核验到AI内容声明，尚未提交")
+        if self.visible([self.page.get_by_text("重新上传", exact=True)]) is None:
+            raise ValueError("视频上传尚未完成")
+        return self.page.get_by_text("发布", exact=True)
