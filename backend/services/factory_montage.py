@@ -248,20 +248,20 @@ def measure_motion(path: Path, start: float, duration: float) -> dict:
 
 
 def _render_shot(asset: dict, shot: dict, target: Path):
-    # The complete horizontal frame always remains visible. A second view can
-    # enlarge an editorially selected region, with an explicit detail label.
+    # Keep the complete source frame visible. Portrait phone demonstrations use
+    # the available height; wide footage may add a labelled detail view below.
     region = shot.get("focus_region")
     split = 3 if region else 2
     graph = [f"[0:v]fps={FPS},setpts=PTS-STARTPTS,split={split}[b][f]" + ("[d]" if region else ""),
              "[b]scale=360:640:force_original_aspect_ratio=increase,crop=360:640,boxblur=14:2,scale=1080:1920,eq=brightness=-0.30:saturation=0.65[bg]",
-             "[f]scale=1024:690:force_original_aspect_ratio=decrease,setsar=1[full]"]
+             f"[f]scale=1024:{690 if region else 1280}:force_original_aspect_ratio=decrease,setsar=1[full]"]
     if region:
         x, y, w, h = region["rect"]
         graph.extend([f"[d]crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},scale=1024:650:force_original_aspect_ratio=decrease,setsar=1[detail]",
                       "[bg][full]overlay=(W-w)/2:246+(690-h)/2[top]",
                       "[top][detail]overlay=(W-w)/2:935+(650-h)/2[composed]"])
     else:
-        graph.append("[bg][full]overlay=(W-w)/2:470+(900-h)/2[composed]")
+        graph.append("[bg][full]overlay=(W-w)/2:270+(1280-h)/2[composed]")
     graph.append("[composed]drawbox=x=0:y=1590:w=iw:h=330:color=black@0.48:t=fill,format=yuv420p[out]")
     command = ["ffmpeg", "-y", "-v", "error", "-threads", "2", "-filter_complex_threads", "2",
                "-ss", str(shot["source_start"]), "-i", asset["path"], "-filter_complex", ";".join(graph),
@@ -347,7 +347,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
-        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v1"},
+        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v2"},
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     if (target / "media.json").exists():
         old = json.loads((target / "media.json").read_text())
@@ -420,7 +420,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
                     "review_required": "Motion sampling does not verify scene semantics; inspect the edit list and preview."})
     result = {"video_path": str(video), "audio_path": str(audio), "cover_path": str(cover),
               "subtitle_path": str(subtitle), "mixed_audio_path": str(soundtrack), "duration": quality["duration"],
-              "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 1,
+              "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 2,
               "tts_engine": "existing_verified_narration_reused", "quality": quality,
               "edl_path": str(target / "edit-decision-list.json"),
               "visual_manifest_path": str(target / "visual-sources.json"),

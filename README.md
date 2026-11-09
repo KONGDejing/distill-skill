@@ -18,7 +18,7 @@
 
 首页是工厂工作台，保留 `/overview`、`/bloggers`、`/calendar`、`/videos`、`/settings` 原有功能。工厂接口位于 `/api/factory`，API文档位于 `/docs`。
 
-**交付与发布口径**：`package_ready` 只表示素材包就绪，不表示发布成功。小红书支持官方创作后台扫码登录、上传准备、AI合成内容声明与提交回执核验；其余三平台目前交付素材包，等待账号授权与发布接入。`prepared` 表示已上传待提交，`submitted` 表示平台确认接收，最终公开状态仍以平台审核为准。素材包包含MP4、音频、字幕、封面、脚本和各平台元数据。
+**交付与发布口径**：`package_ready` 只表示素材包就绪，不表示发布成功。小红书支持官方创作后台扫码登录、上传准备、AI合成内容声明与提交回执核验。抖音、快手、B站已接入独立官方浏览器会话、登录页和通用发布任务；未经过真实账号后台核验的平台，上传和提交能力保持关闭，不能将扫码入口或接口测试视为发布已调通。`prepared` 表示已上传待提交，`submitted` 表示平台确认接收，最终公开状态仍以平台审核为准。素材包包含MP4、音频、字幕、封面、脚本和各平台元数据。
 
 **声音与画面**：默认使用 `tech_montage` 科技演示混剪。从已引用官方页面采集真实动态素材，制作员按口播选择镜头，输出竖屏剪辑、重点标注、字幕和来源说明。至少需要3份独立动态素材；不足时该条停止制作，不会静默改用文字卡片。旧版 `cards` 可在设置中明确选择。官方演示与自制示意画面分别标注，不宣称为本工程亲测。
 
@@ -46,7 +46,7 @@ npm --prefix frontend run build
 /usr/bin/python3 scripts/factoryctl.py stop
 ```
 
-四个用户级 systemd 服务分别运行 API、Celery Worker、Celery Beat 和小红书浏览器连接器，日志在 `.runtime/`。连接器使用独立的 `short-video-ai-factory-xiaohongshu.service` 与进程组，API 或 Worker 重启不会关闭登录浏览器。`factoryctl.py install/start/stop/restart/status` 统一管理四个服务。要在退出登录后继续运行，用户级systemd需要启用linger。调度每分钟读取数据库计划，每天北京时间08:00启动；当天手动批次也计入当日计划，避免再次自动开工。队列名为 `short_video_ai_factory`。
+七个用户级 systemd 服务分别运行 API、Celery Worker、Celery Beat 和四个平台的浏览器连接器，日志在 `.runtime/`。小红书使用 `short-video-ai-factory-xiaohongshu.service`，另外三平台使用 `short-video-ai-factory-creator-{platform}.service`；各自拥有独立配置目录和进程组，API 或 Worker 重启不会关闭登录浏览器。`factoryctl.py install/start/stop/restart/status` 统一管理七个服务。要在退出登录后继续运行，用户级systemd需要启用linger。调度每分钟读取数据库计划，每天北京时间08:00启动；当天手动批次也计入当日计划，避免再次自动开工。队列名为 `short_video_ai_factory`。
 
 本机旧目录 `distill-skill` 是新目录的兼容符号链接，用于保持历史素材绝对路径有效。历史数据库文件 `backend/distill.db` 继续使用，新增 `factory_*` 表；部署前备份保存在 `.runtime/backups/`。
 
@@ -91,6 +91,14 @@ Vite的后端地址由 `VITE_API_TARGET` 配置，默认 `http://127.0.0.1:8002`
 生产设置中的“自动提交小红书”可控制后续批次通过审核后自动提交；未登录时保留素材包并记录原因。当前上传封面使用平台的视频首帧，独立封面图片仍包含在素材包中。平台有额外验证时需要在官方页面完成。
 
 发布API：`POST /api/factory/items/{id}/platforms/xiaohongshu/prepare`、`POST /api/factory/platform-jobs/{id}/publish`、`GET /api/factory/platform-jobs/{id}`。
+
+## 抖音、快手与B站接入
+
+工作台各平台的“打开扫码登录页”连接官方持久浏览器会话。二维码过期后，用户准备好扫码时点击“启动登录 / 刷新二维码”；不会定时自动重启二维码、打断正在进行的登录。官方额外验证必须在官方页面或对应 App 中完成。
+
+三个连接器位于 `backend/services/creator_connector.py` 和 `creator_adapters/`。登录态、二维码、私有后台结构、命令队列和提交账本分别保存在 `.runtime/creator-connectors/{platform}/`，不进入Git。连接器读取部署环境中的代理配置，源码不包含代理地址和认证信息。
+
+通用接口：`GET /api/factory/platforms/{platform}/login-state`、`POST /api/factory/platforms/{platform}/connect`、`POST /api/factory/items/{id}/platforms/{platform}/prepare`、`POST /api/factory/platform-jobs/{id}/publish`。状态包含独立的 `capabilities.login/prepare/publish`。上传和提交只有在相应真实控件核验后才启用；按作品、平台和操作分别防重，无法确认的提交不会自动重试。
 
 ## 原有博主内容蒸馏功能
 

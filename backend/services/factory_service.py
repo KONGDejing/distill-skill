@@ -78,13 +78,22 @@ def run_detail(db, run):
         preview = media.get("preview") or {}
         packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}"} for package in item.packages or []]
         publication = db.query(FactoryPublication).filter_by(item_id=item.id, platform="xiaohongshu").order_by(FactoryPublication.created_at.desc()).first()
+        from services.factory_publishing import job_dict
+        publications = db.query(FactoryPublication).filter_by(item_id=item.id).order_by(
+            FactoryPublication.created_at.desc()).all()
+        publications.sort(key=lambda job: (job.result or {}).get("updated_at") or iso(job.created_at) or "", reverse=True)
+        platform_jobs = {}
+        for job in publications:
+            platform_jobs.setdefault(job.platform, job_dict(job))
         result["items"].append({
             "id": item.id, "title": content.get("title") or item.brief.get("title", "待生成"),
             "category": item.brief.get("category", "AI 科技"), "status": item.status,
             "script": content.get("script", ""), "hook": content.get("hook", ""),
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
             "review": item.review or {}, "media_quality": media.get("quality", {}),
-            "video_url": storage_url(media.get("video_path")), "audio_url": storage_url(media.get("audio_path")),
+            "video_url": storage_url(media.get("video_path")), "webm_url": storage_url(media.get("webm_path")),
+            "visual_style": media.get("style") or media.get("renderer_kind", "cards"),
+            "audio_url": storage_url(media.get("audio_path")),
             "cover_url": storage_url(media.get("cover_path")), "duration": media.get("duration"),
             "tts_engine": media.get("tts_engine"), "packages": packages, "error": item.error,
             "preview": {"video_url": storage_url(preview.get("video_path")),
@@ -95,6 +104,8 @@ def run_detail(db, run):
                         "published": False} if preview.get("video_path") else None,
             "xiaohongshu_job": {"id": publication.id, "status": publication.status,
                                  "message": (publication.result or {}).get("message", "")} if publication else None,
+            "platform_jobs": platform_jobs,
+            "publications": [job_dict(job) for job in publications],
         })
     if result["report"]:
         result["report"] = {**result["report"], "production": {**result["report"].get("production", {}),

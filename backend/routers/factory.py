@@ -55,6 +55,18 @@ def overview(db: Session = Depends(get_db)):
         verified = db.query(FactoryPublication).filter_by(platform="xiaohongshu", status="submitted").first() is not None
         platform["status"] = "connected" if verified else "not_connected"
         platform["description"] = f"{login.get('display_name') or '账号'} 已登录，" + ("浏览器提交已验证；最终审核以平台为准。" if verified else "视频提交功能等待首条验证。")
+    from services.creator_connector import connection_state as creator_state
+    for platform in platforms:
+        if platform["id"] not in {"douyin", "kuaishou", "bilibili"}:
+            continue
+        state = creator_state(platform["id"])
+        platform["login_status"] = "authenticated" if state.get("authenticated") else state.get("state_code", "unknown")
+        platform["account_name"] = state.get("display_name")
+        platform["capabilities"] = state.get("capabilities", {})
+        verified = db.query(FactoryPublication).filter_by(platform=platform["id"], status="submitted").first() is not None
+        platform["status"] = "connected" if state.get("authenticated") and verified else "not_connected"
+        platform["description"] = ((f"{state.get('display_name') or '账号'} 已登录；" + ("已核验提交回执，公开状态以平台审核为准。" if verified else "上传与提交待实际验证。"))
+                                   if state.get("authenticated") else f"{state.get('status', '未连接')}；完成官方扫码后继续验证发布。")
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
             "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available()}}
 
@@ -194,7 +206,7 @@ def publish_prepared_job(job_id: str, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(404, "平台任务不存在")
     try:
-        return job_dict(begin_publication(db, job.item_id, "publish"))
+        return job_dict(begin_publication(db, job.item_id, "publish", platform=job.platform))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 

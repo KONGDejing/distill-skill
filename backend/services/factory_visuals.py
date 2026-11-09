@@ -25,7 +25,8 @@ STORAGE = Path(__file__).resolve().parents[1] / "storage"
 PAGE_RULES = {
     "allenai.github.io": ("/ToyBlocks/",),
     "allenai.org": ("/blog/",),
-    "huggingface.co": ("/blog/allenai/", "/blog/nvidia/", "/allenai/", "/nvidia/"),
+    "huggingface.co": ("/blog/allenai/", "/blog/nvidia/", "/blog/phonon-tts/", "/allenai/", "/nvidia/"),
+    "gradium.ai": ("/blog/release-phonon-open-weight/",),
     "developer.nvidia.com": ("/blog/",),
     "research.nvidia.com": ("/labs/cosmos-lab/",),
     "blogs.nvidia.com": ("/blog/",),
@@ -35,6 +36,7 @@ PAGE_RULES = {
 }
 MEDIA_RULES = {
     **PAGE_RULES,
+    "gradium.ai": ("/assets/release-phonon-open-weight/demos/",),
     "raw.githubusercontent.com": ("/allenai/ToyBlocks/", "/nvidia/cosmos/"),
     "www.datocms-assets.com": ("/64837/",),
     "cdn-uploads.huggingface.co": ("/production/uploads/",),
@@ -90,6 +92,29 @@ TOYBLOCKS_FOCUS = {
     "dg_reason": [
         {"rect": [0, 0.08, 0.75, 0.92], "label": "规划后的操作（原片 3 倍速）"},
     ],
+}
+
+# Official launch-page descriptions. Selected source windows are still decoded
+# and visually inspected before a reviewed delivery is accepted.
+PHONON = {
+    "on-watch": ("Apple Watch 关闭 Wi-Fi 后逐步引导制作咖啡的官方演示。", ["on_device", "watch", "offline"]),
+    "repcoach": ("iPhone 上离线健身计数与语音指导的官方演示。", ["on_device", "phone", "offline"]),
+    "chrome-extension": ("Phonon 在浏览器扩展中朗读网页文本的官方演示。", ["on_device", "browser", "speech"]),
+    "offline-fm": ("浏览器中的离线恐龙游戏，Phonon 为电台主持生成语音。", ["on_device", "browser", "voices"]),
+    "nativ-translate-mobile": ("手机本地英法翻译演示：Qwen 翻译、Phonon 朗读、MLX 推理。", ["on_device", "phone", "languages"]),
+    "nativ-translate-desktop": ("桌面本地英法翻译演示：Qwen 翻译、Phonon 朗读、MLX 推理。", ["on_device", "desktop", "languages"]),
+}
+
+# Verified operating moments, excluding the talking-head introduction and end
+# screens. Keep full-frame provenance even when also displaying a close-up.
+PHONON_CLIPS = {
+    "on-watch": [(13.4, 34.8), (57, 66)],
+    "repcoach": [(7, 48)],
+    "chrome-extension": [(2, 30)],
+}
+PHONON_FOCUS = {
+    "on-watch": [{"rect": [0.15, 0.08, 0.72, 0.88], "label": "手表离线操作"}],
+    "chrome-extension": [{"rect": [0.07, 0.16, 0.86, 0.77], "label": "浏览器朗读界面"}],
 }
 
 
@@ -242,10 +267,22 @@ def _metadata(candidate, metadata):
             end = min(end, metadata["duration"])
         focus_regions = [{"rect": list(region["rect"]), "label": region["label"]}
                          for region in TOYBLOCKS_FOCUS.get(name, [])]
+    elif (urlsplit(url).hostname == "gradium.ai"
+          and urlsplit(url).path.startswith("/assets/release-phonon-open-weight/demos/")):
+        credit = "画面来源：Gradium / Phonon（官方演示）"
+        if name in PHONON:
+            description, tags = PHONON[name]
+        end = min(60, metadata["duration"])
+        focus_regions = [{"rect": list(region["rect"]), "label": region["label"]}
+                         for region in PHONON_FOCUS.get(name, [])]
+    clips = [{"start": start, "end": end, "description": description}]
+    if urlsplit(url).hostname == "gradium.ai" and name in PHONON_CLIPS:
+        clips = [{"start": first, "end": min(last, metadata["duration"]), "description": description}
+                 for first, last in PHONON_CLIPS[name] if first + 2 < metadata["duration"]] or clips
     return {"label": "官方演示", "kind": "official_video", "description": description,
             "topic_tags": tags, "credit": credit, "rights_note": rights, "license_url": license_url,
             "focus_regions": focus_regions,
-            "clips": [{"start": start, "end": end, "description": description}]}
+            "clips": clips}
 
 
 def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6) -> dict:
@@ -286,6 +323,9 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                 parser = _MediaParser(final)
                 parser.feed(html.decode("utf-8", errors="replace"))
                 for video in parser.videos:
+                    if (urlsplit(video["url"]).hostname == "gradium.ai"
+                            and Path(urlsplit(video["url"]).path).stem not in PHONON):
+                        continue
                     if video["url"] not in media_seen:
                         media_seen.add(video["url"])
                         candidates.append({**video, "source_id": source.get("id"),
@@ -295,16 +335,18 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                     # First inspect explicitly linked project pages, before older
                     # news articles linked from the same post or navigation bar.
                     project_links = [link for link in parser.links
-                                     if urlsplit(link).hostname in {"allenai.github.io", "research.nvidia.com"}
+                                     if urlsplit(link).hostname in {"allenai.github.io", "research.nvidia.com", "gradium.ai"}
                                      and Path(urlsplit(link).path).suffix.lower() in {"", ".html"}]
                     links = sorted(set(project_links), key=lambda link: ("github.io" not in link,
                                                                         "/sim2real" not in link and "/datagen" not in link))
                     queue.extend((link, source, chain + [link], depth + 1) for link in links if link not in visited)
             except Exception as exc:
                 warnings.append(f"页面 {address} 采集失败（{type(exc).__name__}）")
-        priorities = {name: index for index, name in enumerate(TOYBLOCKS)}
+        priorities = {**{name: index for index, name in enumerate(TOYBLOCKS)},
+                      **{name: index for index, name in enumerate(("chrome-extension", "offline-fm",
+                          "nativ-translate-mobile", "nativ-translate-desktop", "repcoach", "on-watch"))}}
         candidates.sort(key=lambda candidate: priorities.get(Path(urlsplit(candidate["url"]).path).stem, 20)
-                        if urlsplit(candidate["url"]).hostname == "allenai.github.io" else 30)
+                        if urlsplit(candidate["url"]).hostname in {"allenai.github.io", "gradium.ai"} else 30)
         for candidate in candidates[:18]:
             if len(assets) >= limit or time.monotonic() >= deadline or budget[0] <= 0:
                 break

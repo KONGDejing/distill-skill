@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from database import init_db
 from routers import bloggers, videos, scripts, generated_videos, settings as settings_router, factory
+from routers import creator_platforms
 from config import settings
 from pathlib import Path
 from fastapi.responses import FileResponse
@@ -24,6 +25,7 @@ app.include_router(scripts.router, prefix="/api/scripts", tags=["scripts"])
 app.include_router(generated_videos.router, prefix="/api/videos-generated", tags=["generated_videos"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(factory.router, prefix="/api/factory", tags=["factory"])
+app.include_router(creator_platforms.router, prefix="/api/factory", tags=["creator-platforms"])
 
 app.mount("/storage", StaticFiles(directory=str(settings.STORAGE_DIR)), name="storage")
 

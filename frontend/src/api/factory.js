@@ -10,7 +10,9 @@ async function request(path = '', options = {}) {
     const data = await response.json().catch(() => null)
     if (!response.ok) {
       const detail = data?.detail
-      throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(v => v.msg).join('；') : `请求失败（${response.status}）`)
+      const error = new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(v => v.msg).join('；') : `请求失败（${response.status}）`)
+      error.status = response.status
+      throw error
     }
     if (data == null) throw new Error('工厂服务返回异常，请稍后重试。')
     return data
@@ -30,7 +32,10 @@ export const factoryApi = {
   cancelRun: (id) => request(`/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   retryRun: (id) => request(`/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   updateSettings: (data) => request('/settings', { method: 'PATCH', body: JSON.stringify(data) }),
+  getPlatformLoginState: (platform) => request(`/platforms/${encodeURIComponent(platform)}/login-state`, { cache: 'no-store' }),
+  connectPlatform: (platform) => request(`/platforms/${encodeURIComponent(platform)}/connect`, { method: 'POST' }),
   prepareXiaohongshu: (itemId) => request(`/items/${encodeURIComponent(itemId)}/platforms/xiaohongshu/prepare`, { method: 'POST' }),
+  preparePlatform: (itemId, platform) => request(`/items/${encodeURIComponent(itemId)}/platforms/${encodeURIComponent(platform)}/prepare`, { method: 'POST' }),
   getPlatformJob: (jobId) => request(`/platform-jobs/${encodeURIComponent(jobId)}`),
   publishPlatformJob: (jobId) => request(`/platform-jobs/${encodeURIComponent(jobId)}/publish`, { method: 'POST' }),
 }

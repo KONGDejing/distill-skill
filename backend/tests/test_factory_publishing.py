@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from database import Base
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRun
-from services import factory_publishing, factory_service, xiaohongshu_connector
+from services import creator_connector, factory_publishing, factory_service, xiaohongshu_connector
 
 
 @pytest.fixture
@@ -239,3 +239,139 @@ def test_connector_rejects_unsafe_paths_bad_titles_and_non_uuid_ids(tmp_path, mo
     with pytest.raises(ValueError):
         xiaohongshu_connector.command_result("../../state.json")
     start.assert_not_called()
+
+
+@pytest.fixture
+def creator_publishing(publishing, monkeypatch):
+    env = publishing
+    env.states = {platform: {"authenticated": True, "session_active": True,
+                            "capabilities": {"prepare": True, "publish": True}}
+                  for platform in ("douyin", "kuaishou", "bilibili")}
+    def enqueue(platform, action, payload=None):
+        identifier = str(uuid.uuid4())
+        result = {"command_id": identifier, "platform": platform, "action": action,
+                  "status": "queued", "message": "Test only"}
+        env.results[identifier] = result
+        return dict(result)
+    env.creator_submit = Mock(side_effect=enqueue)
+    monkeypatch.setattr(creator_connector, "submit_command", env.creator_submit)
+    monkeypatch.setattr(creator_connector, "command_result", lambda platform, identifier: dict(env.results[identifier]))
+    monkeypatch.setattr(creator_connector, "connection_state", lambda platform: dict(env.states[platform]))
+    with env.sessions() as db:
+        item = db.get(FactoryItem, env.item_id)
+        item.packages = item.packages + [
+            {"platform": platform, "title": "AI 教程", "caption": "使用指南", "tags": ["AI"],
+             "status": "package_ready", "published": False} for platform in env.states]
+        db.commit()
+    return env
+
+
+def _creator_prepared(env, db, platform="douyin"):
+    job = factory_publishing.begin_publication(db, env.item_id, "prepare", platform=platform)
+    env.results[job.command_id] = {"platform": platform, "status": "prepared", "message": "Test prepared",
+                                   "item_id": env.item_id, "uploaded": True, "published": False}
+    env.states[platform]["prepared_item_id"] = env.item_id
+    return factory_publishing.refresh_job(db, job)
+
+
+def test_creator_platforms_have_separate_idempotent_jobs(creator_publishing):
+    env = creator_publishing
+    with env.sessions() as db:
+        identifiers = []
+        for platform in env.states:
+            job = factory_publishing.begin_publication(db, env.item_id, "prepare", platform=platform)
+            identifiers.append(job.id)
+            assert job.platform == platform
+            assert factory_publishing.begin_publication(db, env.item_id, "prepare", platform=platform).id == job.id
+        assert len(set(identifiers)) == 3
+        assert db.query(FactoryPublication).count() == 3
+    assert env.creator_submit.call_count == 3
+    assert {call.args[0] for call in env.creator_submit.call_args_list} == set(env.states)
+    env.submit.assert_not_called()
+
+
+@pytest.mark.parametrize("authenticated,enabled", [(False, True), (True, False)])
+def test_unverified_creator_capability_never_creates_upload_job(creator_publishing, authenticated, enabled):
+    env = creator_publishing
+    env.states["douyin"] = {"authenticated": authenticated, "capabilities": {"prepare": enabled}}
+    with env.sessions() as db:
+        with pytest.raises(ValueError, match="扫码|真实联调"):
+            factory_publishing.begin_publication(db, env.item_id, "prepare", platform="douyin")
+        assert db.query(FactoryPublication).count() == 0
+    env.creator_submit.assert_not_called()
+
+
+def test_one_platform_preparation_cannot_authorize_another_platform(creator_publishing):
+    env = creator_publishing
+    with env.sessions() as db:
+        _creator_prepared(env, db, "bilibili")
+        with pytest.raises(ValueError, match="先上传"):
+            factory_publishing.begin_publication(db, env.item_id, "publish", platform="douyin")
+        assert db.query(FactoryPublication).filter_by(action="publish").count() == 0
+    assert env.creator_submit.call_count == 1
+
+
+def test_foreign_receipt_is_uncertain_and_never_retried(creator_publishing):
+    env = creator_publishing
+    with env.sessions() as db:
+        _creator_prepared(env, db)
+        job = factory_publishing.begin_publication(db, env.item_id, "publish", platform="douyin")
+        env.results[job.command_id] = {"status": "submitted", "platform": "douyin", "evidence": {
+            "type": "success_page", "url": "https://member.bilibili.com/success", "text": "发布成功"}}
+        factory_publishing.refresh_job(db, job)
+        assert job.status == "failed" and job.result["submission_uncertain"] is True
+        assert factory_publishing.begin_publication(db, env.item_id, "publish", platform="douyin").id == job.id
+        with pytest.raises(ValueError, match="禁止重复发布"):
+            factory_publishing.begin_publication(db, env.item_id, "prepare", platform="douyin")
+    assert env.creator_submit.call_count == 2
+    env.submit.assert_not_called()
+
+
+def test_creator_receipt_updates_only_its_platform_and_routes_job_publish(creator_publishing):
+    from fastapi import HTTPException
+    from routers.creator_platforms import creator_job, creator_publish
+    from routers.factory import publish_prepared_job
+    env = creator_publishing
+    evidence = {"type": "success_page", "url": "https://creator.douyin.com/success", "text": "发布成功"}
+    with env.sessions() as db:
+        prepared = _creator_prepared(env, db)
+        with pytest.raises(HTTPException) as error:
+            creator_publish("kuaishou", prepared.id, db)
+        assert error.value.status_code == 404
+        with pytest.raises(HTTPException):
+            creator_job("kuaishou", prepared.id, db)
+        # The established common job URL must route by the stored platform.
+        response = publish_prepared_job(prepared.id, db)
+        assert response["platform"] == "douyin"
+        job = db.get(FactoryPublication, response["id"])
+        env.results[job.command_id] = {"status": "submitted", "platform": "douyin", "item_id": env.item_id,
+                                       "message": "官方确认提交", "evidence": evidence, "published": False}
+        factory_publishing.refresh_job(db, job)
+        item = db.get(FactoryItem, env.item_id)
+        packages = {package["platform"]: package for package in item.packages}
+        assert packages["douyin"]["status"] == "submitted"
+        assert packages["douyin"]["submission_evidence"] == evidence
+        assert all(package["published"] is False for package in packages.values())
+        assert packages["xiaohongshu"]["status"] == "package_ready"
+        assert packages["kuaishou"]["status"] == "package_ready"
+        assert db.query(FactoryEvent).order_by(FactoryEvent.id.desc()).first().message.startswith("抖音：")
+        detail = factory_service.run_detail(db, db.get(FactoryRun, env.run_id))["items"][0]
+        assert detail["platform_jobs"]["douyin"]["id"] == job.id
+        assert detail["platform_jobs"]["douyin"]["result"]["evidence"] == evidence
+        assert len(detail["publications"]) == 2
+        assert detail["xiaohongshu_job"] is None
+    env.submit.assert_not_called()
+
+
+def test_creator_proven_preclick_failure_can_retry_same_job(creator_publishing):
+    env = creator_publishing
+    with env.sessions() as db:
+        _creator_prepared(env, db)
+        first = factory_publishing.begin_publication(db, env.item_id, "publish", platform="douyin")
+        old_command = first.command_id
+        env.results[old_command] = {"status": "failed", "submission_attempted": False, "message": "未点击"}
+        factory_publishing.refresh_job(db, first)
+        retried = factory_publishing.begin_publication(db, env.item_id, "publish", platform="douyin")
+        assert retried.id == first.id and retried.command_id != old_command
+        assert db.query(FactoryPublication).count() == 2
+    assert env.creator_submit.call_count == 3

@@ -62,6 +62,34 @@ def test_collect_follows_explicit_project_and_preserves_complete_chain(monkeypat
         assert asset["rights_note"]
 
 
+def test_phonon_collects_linked_official_demos_without_following_setup_links(monkeypatch, tmp_path):
+    visited = []
+    launch = "https://gradium.ai/blog/release-phonon-open-weight"
+    def handler(request):
+        visited.append(str(request.url))
+        if request.url.host == "huggingface.co":
+            return httpx.Response(200, text=f'<a href="{launch}">Launch</a>')
+        if request.url.path.startswith("/blog/"):
+            return httpx.Response(200, text=''.join(
+                f'<a href="/assets/release-phonon-open-weight/demos/{name}.mp4">Demo</a>'
+                for name in ("on-watch", "repcoach", "chrome-extension"))
+                + '<a href="/assets/release-phonon-open-weight/setup.prompt">Setup</a>'
+                + '<a href="https://gradium.ai/blog/unrelated">Other</a>')
+        return httpx.Response(200, content=request.url.path.encode())
+    _collector(monkeypatch, tmp_path, handler)
+    source = {"id": "phonon", "title": "Phonon TTS", "url": "https://huggingface.co/blog/phonon-tts"}
+    result = visuals.collect_visuals([source], tmp_path / "output")
+    assert result["status"] == "ready"
+    assert len(result["assets"]) == 3
+    for asset in result["assets"]:
+        assert asset["source_chain"] == [source["url"], launch, asset["url"]]
+        assert "Gradium / Phonon" in asset["credit"]
+        assert asset["license_url"] is None
+        assert "未核实" in asset["rights_note"]
+        assert "on_device" in asset["topic_tags"]
+    assert not any("setup.prompt" in url or "/unrelated" in url for url in visited)
+
+
 def test_duplicate_video_bytes_cannot_satisfy_three_asset_requirement(monkeypatch, tmp_path):
     def handler(request):
         if not request.url.path.endswith(".mp4"):
