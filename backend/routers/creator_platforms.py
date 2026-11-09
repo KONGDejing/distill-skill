@@ -1,8 +1,9 @@
 """Official login views for creator platforms; private profiles are never served."""
 from html import escape
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from database import get_db
 from models.factory import FactoryPublication
@@ -49,9 +50,61 @@ def login_image(platform: str):
 
 @router.get("/platforms/{platform}/login", response_class=HTMLResponse, include_in_schema=False)
 def login_page(platform: str):
+    from services.creator_verification import page_token
     details = require_platform(platform)
     page = _LOGIN_PAGE.replace("__PLATFORM__", platform).replace("__NAME__", escape(details["name"]))
+    page = page.replace("__VERIFICATION_TOKEN__", page_token(platform))
     return HTMLResponse(page, headers={"Cache-Control": "no-store, private"})
+
+
+def authorize_verification(platform, request):
+    from services.creator_verification import authorize
+    require_platform(platform)
+    try:
+        authorize(platform, request.headers.get("X-Factory-Verification", ""), request.headers.get("origin"),
+                  str(request.base_url).rstrip("/"), request.headers.get("sec-fetch-site"))
+    except ValueError as exc:
+        raise HTTPException(403, str(exc)) from None
+
+
+@router.get("/platforms/{platform}/verification-frame", include_in_schema=False)
+def verification_frame(platform: str, request: Request):
+    from services.creator_verification import frame
+    authorize_verification(platform, request)
+    try:
+        data, identifier = frame(platform)
+        return Response(data, media_type="image/png", headers={"Cache-Control": "no-store, private",
+                                                               "X-Verification-Frame": identifier})
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "暂时无法读取官方验证窗口，请稍候重试") from None
+
+
+@router.post("/platforms/{platform}/verification-input", include_in_schema=False)
+async def verification_input(platform: str, request: Request):
+    from services.creator_verification import interact
+    authorize_verification(platform, request)
+    # Read in memory, outside durable connector commands and validation errors
+    # that might echo a user's one-time code back in a response.
+    raw = await request.body()
+    if len(raw) > 2048:
+        raise HTTPException(400, "验证请求过长")
+    try:
+        import json
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError
+    except (ValueError, TypeError):
+        raise HTTPException(400, "无效验证请求") from None
+    try:
+        result = await run_in_threadpool(interact, platform, value.get("action"), value.get("frame_id"),
+                                        value.get("x"), value.get("y"), value.get("code"))
+        return JSONResponse(result, headers={"Cache-Control": "no-store, private"})
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "官方验证操作暂未完成，请查看窗口结果") from None
 
 
 @router.get("/platforms/{platform}/login-commands/{command_id}")

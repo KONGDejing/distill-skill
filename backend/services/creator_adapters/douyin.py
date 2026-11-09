@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import TimeoutError as BrowserTimeout
 
 from .base import BaseAdapter, clean_url
+from services.creator_login_status import douyin_verification
 
 HOME_URL = "https://creator.douyin.com/"
 # The portal's document/resource transfer stalled with the older browser's HTTP2
@@ -103,8 +104,9 @@ class Adapter(BaseAdapter):
         except BrowserTimeout:
             state.update(status="network_error", error="抖音官方页面尚未加载完成")
             return state
-        if any(text in body for text in ("请完成验证", "安全验证", "扫码成功", "请在手机上确认", "请在抖音上确认")):
-            state.update(status="needs_verification", error="请按抖音官方页面或手机提示完成确认")
+        verification = douyin_verification(body)
+        if verification:
+            state.update(status="needs_verification", error=verification["message"], verification=verification)
         elif any(text in qr_text for text in ("二维码已失效", "二维码已过期", "二维码过期", "二维码失效")):
             state["status"] = "qr_expired"
         elif self._qr_ready(panel):

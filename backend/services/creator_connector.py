@@ -162,6 +162,21 @@ def _latest_login(platform):
 def connection_state(platform) -> dict:
     directory = platform_directory(platform)
     state, active = _read(directory / "state.json"), _alive(platform)
+    # A read-only snapshot lets API updates classify a newly observed checkpoint
+    # without restarting an in-progress browser confirmation session.
+    if platform == "douyin" and active and _recent(state.get("updated_at")) and state.get("state_code") in {"network_error", "needs_verification"}:
+        snapshot_path = directory / "login-ui.json"
+        try:
+            current_session = snapshot_path.stat().st_mtime >= (directory / "daemon.pid").stat().st_mtime
+        except OSError:
+            current_session = False
+        snapshot = _read(snapshot_path) if current_session else {}
+        if snapshot.get("url") == state.get("url"):
+            from services.creator_login_status import douyin_verification
+            verification = douyin_verification(snapshot.get("body", ""))
+            if verification:
+                state.update(state_code="needs_verification", status="需要官方验证", qr_ready=False,
+                             authenticated=False, verification=verification, error=verification["message"])
     login = _latest_login(platform)
     refreshing = bool(active and login and login["status"] in {"queued", "running"})
     qr_ready = (active and not refreshing and state.get("qr_ready") is True
@@ -180,6 +195,7 @@ def connection_state(platform) -> dict:
             "display_name": state.get("display_name"), "url": state.get("url"),
             "error": state.get("error"), "updated_at": state.get("updated_at"),
             "qr_ready": bool(qr_ready), "qr_version": version, "login_command": login,
+            "verification": state.get("verification") if active else None,
             "prepared_item_id": state.get("prepared_item_id") if active else None,
             "capabilities": state.get("capabilities", {"login": True, "prepare": False, "publish": False})}
 
@@ -287,6 +303,8 @@ def submit_command(platform, action, payload=None) -> dict:
             previous = _latest_login(platform)
             if previous and previous["status"] in {"queued", "running"}:
                 return command_result(platform, previous["command_id"])
+            if connection_state(platform).get("state_code") == "needs_verification":
+                raise ValueError("当前会话正在等待官方验证，请完成验证；未刷新二维码")
             result = _enqueue_command(platform, action, clean)
             _write(directory / "login-request.json", {"command_id": result["command_id"]})
             return result
@@ -333,6 +351,8 @@ class _Browser:
         module = importlib.import_module(f"services.creator_adapters.{platform}")
         options = {"headless": True, "viewport": {"width": 1440, "height": 1000},
                    "locale": "zh-CN", "args": ["--disable-dev-shm-usage", *getattr(module, "BROWSER_ARGS", [])]}
+        if platform == "douyin":
+            options["args"].extend(["--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"])
         proxy = browser_proxy(platform)
         if proxy:
             options["proxy"] = proxy
@@ -391,6 +411,7 @@ class _Browser:
                  "authenticated": authenticated, "session_active": True, "display_name": name,
                  "url": _clean_url(value.get("url") or self.adapter.page.url), "error": value.get("error"),
                  "qr_ready": qr_ready, "updated_at": _now(),
+                 "verification": value.get("verification"),
                  "prepared_item_id": self.prepared["item_id"] if self.prepared else None,
                  "capabilities": {"login": True, "prepare": self.adapter.supports_prepare,
                                   "publish": self.adapter.supports_publish}}

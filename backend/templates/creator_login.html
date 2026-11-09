@@ -10,6 +10,10 @@ p{color:#a8bac7;line-height:1.8;overflow-wrap:anywhere}a,strong{color:#73edc7}
 button{padding:12px 20px;margin:12px 0;cursor:pointer;border:0;border-radius:10px;background:#73edc7;color:#10251e;font:inherit}
 button:disabled{opacity:.6;cursor:wait}#error{color:#fbbf24}#progress{min-height:29px}
 #qr{width:320px;max-width:calc(100% - 24px);height:auto;padding:12px;border-radius:12px;background:white;image-rendering:pixelated}
+#verification{padding:18px;margin:18px 0;border:1px solid #344858;border-radius:12px}
+#verification h2{font-size:19px}#official-frame{display:block;width:100%;max-width:700px;height:auto;cursor:pointer;background:white;border-radius:8px}
+#code{padding:12px;font:inherit;max-width:170px;border-radius:8px;border:1px solid #52616e;background:#15232f;color:white}
+#verification-error{color:#fbbf24}
 [hidden]{display:none!important}
 </style>
 <main>
@@ -19,6 +23,18 @@ button:disabled{opacity:.6;cursor:wait}#error{color:#fbbf24}#progress{min-height
 <button id="connect" type="button">启动登录 / 刷新二维码</button>
 <p id="progress" role="status" aria-live="polite"></p><p id="error" role="alert"></p>
 <img id="qr" hidden alt="__NAME__官方登录二维码">
+<section id="verification" hidden>
+<h2>完成抖音官方身份验证</h2>
+<p>下面是当前登录会话的官方窗口，可以直接点击。请选择短信验证并发送验证码；收到后在下方填写，再点击官方窗口中的确认按钮。</p>
+<p id="verification-error" role="status"></p>
+<img id="official-frame" hidden alt="抖音官方身份验证窗口，可直接点击操作">
+<form id="code-form" autocomplete="off">
+<label for="code">短信验证码</label>
+<input id="code" type="password" inputmode="numeric" autocomplete="one-time-code" minlength="4" maxlength="8" pattern="[0-9]{4,8}" required>
+<button id="fill-code" type="submit">填入官方验证码框</button>
+</form>
+<p>验证码只用于当前官方输入框，不写入工厂任务记录。请勿在聊天中发送验证码或密码。</p>
+</section>
 <p>过期二维码会自动隐藏。刷新期间无需重复点击；手机正在确认登录时不会重新生成二维码。</p>
 <p>账号登录后，再验证视频上传与提交；实际结果以平台回执为准。</p>
 </main>
@@ -28,6 +44,49 @@ const base='/api/factory/platforms/__PLATFORM__';
 const button=document.getElementById('connect'), qr=document.getElementById('qr');
 const label=document.getElementById('state'), progress=document.getElementById('progress'), error=document.getElementById('error');
 let pending=null, posting=false, polling=false, startedAt=0, imageVersion=null, showImage=false, commandError='';
+const verificationToken='__VERIFICATION_TOKEN__', verification=document.getElementById('verification');
+const officialFrame=document.getElementById('official-frame'), verificationError=document.getElementById('verification-error');
+const codeInput=document.getElementById('code'), fillCode=document.getElementById('fill-code');
+let verificationVisible=false, verificationBusy=false, frameLoading=false, frameId=null, frameURL=null;
+function syncVerification(state){
+  verificationVisible=Boolean(verificationToken&&state.state_code==='needs_verification'&&state.verification?.kind==='identity');
+  verification.hidden=!verificationVisible;
+  if(!verificationVisible){
+    officialFrame.hidden=true;officialFrame.removeAttribute('src');frameId=null;codeInput.value='';
+    if(frameURL){URL.revokeObjectURL(frameURL);frameURL=null}
+  }else if(!frameId){loadVerificationFrame()}
+}
+async function loadVerificationFrame(){
+  if(!verificationVisible||frameLoading||verificationBusy)return;
+  frameLoading=true;
+  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),12000);
+  try{
+    const response=await fetch(base+'/verification-frame',{cache:'no-store',headers:{'X-Factory-Verification':verificationToken},signal:controller.signal});
+    if(!response.ok){const value=await response.json();throw new Error(value.detail||'官方验证画面暂未就绪')}
+    const blob=await response.blob();if(!verificationVisible)return;
+    const nextURL=URL.createObjectURL(blob);if(frameURL)URL.revokeObjectURL(frameURL);
+    frameURL=nextURL;frameId=response.headers.get('X-Verification-Frame');officialFrame.src=frameURL;officialFrame.hidden=false;
+    verificationError.textContent='请直接操作上方抖音官方窗口。';
+  }catch(exception){verificationError.textContent=exception.name==='AbortError'?'官方窗口读取较慢，正在重试。':exception.message}
+  finally{clearTimeout(timeout);frameLoading=false}
+}
+async function verificationAction(value){
+  if(!verificationVisible||verificationBusy||!frameId)return;
+  verificationBusy=true;fillCode.disabled=true;verificationError.textContent='正在操作官方窗口…';
+  try{
+    const result=await getJSON(base+'/verification-input',{method:'POST',headers:{'Content-Type':'application/json','X-Factory-Verification':verificationToken},body:JSON.stringify({...value,frame_id:frameId})});
+    verificationError.textContent=result.message;
+  }catch(exception){verificationError.textContent=exception.message}
+  finally{verificationBusy=false;fillCode.disabled=false;loadVerificationFrame();poll()}
+}
+officialFrame.addEventListener('click',event=>{
+  const box=officialFrame.getBoundingClientRect();
+  verificationAction({action:'click',x:(event.clientX-box.left)/box.width,y:(event.clientY-box.top)/box.height});
+});
+document.getElementById('code-form').addEventListener('submit',event=>{
+  event.preventDefault();const code=codeInput.value;codeInput.value='';
+  verificationAction({action:'fill_code',code});
+});
 function hideQR(){showImage=false;qr.hidden=true;qr.removeAttribute('src');imageVersion=null}
 async function getJSON(url, options={}){
   const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),12000);
@@ -39,6 +98,7 @@ async function getJSON(url, options={}){
   }finally{clearTimeout(timeout)}
 }
 function paint(state){
+  syncVerification(state);
   if(!pending && state.login_command && ['queued','running'].includes(state.login_command.status)){
     pending=state.login_command.command_id;
     startedAt=Date.parse(state.login_command.created_at)||Date.now();
@@ -56,7 +116,7 @@ function paint(state){
   error.textContent=commandError||state.error||'';
   if(state.authenticated){hideQR();progress.textContent='登录已确认，可以返回工厂继续。';return}
   if(state.state_code==='needs_verification'){
-    hideQR();progress.textContent='已暂停刷新，请先在手机或官方页面完成登录确认。';return;
+    hideQR();progress.textContent=state.verification?.message||'已暂停刷新，请先在手机或官方页面完成登录确认。';return;
   }
   if(state.state_code==='waiting_scan' && state.qr_ready && state.qr_version){
     showImage=true;commandError='';error.textContent='';progress.textContent='新二维码已就绪，请用__NAME__ App 立即扫描。';
@@ -94,5 +154,6 @@ button.addEventListener('click',async()=>{
   finally{posting=false;button.disabled=Boolean(pending);poll()}
 });
 poll();setInterval(poll,1500);
+setInterval(loadVerificationFrame,2500);
 </script>
 </html>
