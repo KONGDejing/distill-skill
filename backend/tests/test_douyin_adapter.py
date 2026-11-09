@@ -14,7 +14,9 @@ def adapter(body="扫码登录"):
     page = Mock()
     page.url = HOME_URL
     page.locator.return_value.inner_text.return_value = body
-    return Adapter(SimpleNamespace(pages=[page]))
+    client = Adapter(SimpleNamespace(pages=[page]))
+    client._save_pending_dom = Mock()
+    return client
 
 
 def test_missing_qr_is_reported_as_network_error_not_authentication():

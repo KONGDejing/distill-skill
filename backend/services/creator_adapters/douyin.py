@@ -69,6 +69,24 @@ class Adapter(BaseAdapter):
                                     "console_error_types": list(self._errors)}, ensure_ascii=False, indent=2))
         path.chmod(0o600)
 
+    def _save_pending_dom(self, body):
+        """Keep unknown/confirmed login UI private for account integration."""
+        signature = (clean_url(self.page.url), body)
+        if signature == getattr(self, "_last_ui_snapshot", None):
+            return
+        directory = Path(__file__).resolve().parents[3] / ".runtime/creator-connectors/douyin"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        controls = self.page.locator("button,a,input,[role=button],[role=dialog]").evaluate_all(
+            "es=>es.slice(0,160).map(e=>({tag:e.tagName,classes:e.className,"
+            "text:(e.innerText||e.getAttribute('aria-label')||'').slice(0,200),"
+            "type:e.getAttribute('type'),placeholder:e.getAttribute('placeholder')}))")
+        temporary = directory / "login-ui.json.tmp"
+        temporary.write_text(json.dumps({"url": signature[0], "body": body[:14000], "controls": controls},
+                                        ensure_ascii=False, indent=2))
+        temporary.chmod(0o600)
+        temporary.replace(directory / "login-ui.json")
+        self._last_ui_snapshot = signature
+
     def inspect(self):
         state = {"authenticated": False, "status": "unknown", "display_name": None,
                  "url": clean_url(self.page.url), "error": None}
@@ -95,6 +113,8 @@ class Adapter(BaseAdapter):
             state.update(status="authenticated", authenticated=True)
         else:
             state.update(status="network_error", error="官方登录界面已打开，但尚未取得可扫描二维码；请刷新或检查网络")
+        if state["status"] in {"needs_verification", "authenticated", "network_error"}:
+            self._save_pending_dom(body)
         return state
 
     def login(self, *, refresh=False):

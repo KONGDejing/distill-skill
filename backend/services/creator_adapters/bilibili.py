@@ -80,12 +80,20 @@ class Adapter(BaseAdapter):
         if current["status"] == "qr_expired":
             button = self.visible([self.page.get_by_text("点击刷新", exact=True)])
             if button is not None:
-                button.click()
-                for _ in range(30):
-                    self.page.wait_for_timeout(500)
+                try:
+                    button.click(timeout=5000)
+                    for _ in range(30):
+                        self.page.wait_for_timeout(500)
+                        current = self.inspect()
+                        if current["status"] in {"waiting_scan", "needs_verification", "authenticated"}:
+                            return current
+                except BrowserTimeout:
+                    self._save_pending_dom(self.page.locator("body").inner_text(timeout=5000))
                     current = self.inspect()
-                    if current["status"] in {"waiting_scan", "needs_verification", "authenticated"}:
+                    if current["authenticated"] or current["status"] == "needs_verification":
                         return current
+                    # An expired-code overlay can stop receiving clicks after
+                    # an idle period. Reopen the official passport login page.
         self.page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45000)
         try:
             self.page.locator(".login-scan__qrcode").wait_for(state="visible", timeout=20000)

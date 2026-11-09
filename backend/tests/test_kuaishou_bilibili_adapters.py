@@ -148,6 +148,28 @@ def test_douyin_refresh_reopens_official_modal_without_reloading_portal():
     adapter.page.get_by_role.return_value.click.assert_called_once()
 
 
+@pytest.mark.parametrize('next_state', ['qr_expired', 'needs_verification', 'authenticated'])
+def test_bilibili_stalled_expired_refresh_reopens_only_without_phone_confirmation(next_state):
+    from unittest.mock import Mock
+    from playwright.sync_api import TimeoutError
+    adapter = object.__new__(Bilibili)
+    adapter.page = Mock()
+    expired = {'authenticated': False, 'status': 'qr_expired'}
+    after = {'authenticated': next_state == 'authenticated', 'status': next_state}
+    adapter.inspect = Mock(side_effect=[expired, after, {'authenticated': False, 'status': 'waiting_scan'}])
+    button = Mock()
+    button.click.side_effect = TimeoutError('Official refresh overlay did not accept click')
+    adapter.visible = Mock(return_value=button)
+    adapter._save_pending_dom = Mock()
+    result = adapter.login(refresh=True)
+    if next_state == 'qr_expired':
+        adapter.page.goto.assert_called_once()
+        assert result['status'] == 'waiting_scan'
+    else:
+        adapter.page.goto.assert_not_called()
+        assert result == after
+
+
 @pytest.mark.parametrize('adapter_type', [Bilibili, Kuaishou])
 def test_expired_qr_is_not_captured_as_scannable(adapter_type):
     from unittest.mock import Mock
