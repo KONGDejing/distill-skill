@@ -1,9 +1,9 @@
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from database import get_db
@@ -26,7 +26,17 @@ class SettingsUpdate(BaseModel):
     schedule_enabled: bool | None = None
     schedule_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     auto_publish_xiaohongshu: bool | None = None
+    platforms: list[Literal["douyin", "xiaohongshu", "kuaishou"]] | None = Field(default=None, min_length=1, max_length=3)
     visual_style: Literal["tech_montage", "cards"] | None = None
+    publish_enabled: bool | None = None
+    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=10)
+
+    @field_validator("publish_times", "platforms")
+    @classmethod
+    def distinct_values(cls, values):
+        if values is not None and len(values) != len(set(values)):
+            raise ValueError("不能有重复的时间或平台")
+        return sorted(values) if values is not None else values
 
 
 def require_run(db, run_id):
@@ -58,6 +68,10 @@ def overview(db: Session = Depends(get_db)):
         platform["description"] = f"{login.get('display_name') or '账号'} 已登录，" + ("浏览器提交已验证；最终审核以平台为准。" if verified else "视频提交功能等待首条验证。")
     from services.creator_connector import connection_state as creator_state
     for platform in platforms:
+        platform["enabled"] = platform["id"] in config["platforms"]
+        if not platform["enabled"]:
+            platform.update(status="paused", description="小麦负责后续 B站长视频运营；当前不参与短视频生产与发布。" if platform["id"] == "bilibili" else "已退出当前短视频发行计划。")
+            continue
         if platform["id"] not in {"douyin", "kuaishou", "bilibili"}:
             continue
         state = creator_state(platform["id"])
@@ -68,14 +82,24 @@ def overview(db: Session = Depends(get_db)):
         platform["status"] = "connected" if state.get("authenticated") and verified else "not_connected"
         platform["description"] = ((f"{state.get('display_name') or '账号'} 已登录；" + ("已核验提交回执，公开状态以平台审核为准。" if verified else "上传与提交待实际验证。"))
                                    if state.get("authenticated") else f"{state.get('status', '未连接')}；完成官方扫码后继续验证发布。")
+    from services.factory_schedule import upcoming_releases
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
+            "releases": upcoming_releases(db, get_config(db)),
             "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available(), "memory": memory_state()}}
 
 
 @router.patch("/settings")
 def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     config = get_config(db)
-    for key, value in data.model_dump(exclude_none=True).items():
+    updates = data.model_dump(exclude_none=True)
+    merged = {**config_dict(config), **updates}
+    if merged["publish_enabled"] and len(merged["publish_times"]) != merged["daily_target"]:
+        raise HTTPException(422, "每个发布时间对应一条原创视频，时间数量应等于每日原创目标")
+    if merged["publish_enabled"]:
+        updates["auto_publish_xiaohongshu"] = False
+        if not config.publish_enabled:
+            config.publish_start_at = datetime.utcnow()
+    for key, value in updates.items():
         setattr(config, key, value)
     db.commit()
     return config_dict(config)

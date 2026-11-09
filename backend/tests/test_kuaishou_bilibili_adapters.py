@@ -29,16 +29,17 @@ class Locator:
 
 
 class Page:
-    def __init__(self, url, body, visible=(), image_loaded=True):
+    def __init__(self, url, body, visible=(), image_loaded=True, texts=None):
         self.url, self.body = url, body
         self.visible, self.image_loaded = set(visible), image_loaded
+        self.texts = texts or {}
 
     def set_default_timeout(self, _timeout):
         pass
 
     def locator(self, selector):
         return Locator(selector == "body" or selector in self.visible,
-                       self.body if selector == "body" else "", self.image_loaded)
+                       self.body if selector == "body" else self.texts.get(selector, ""), self.image_loaded)
 
     def get_by_text(self, text, **kwargs):
         return Locator("text:" + text in self.visible, text)
@@ -100,6 +101,37 @@ def test_lookalike_domain_cannot_prove_login(adapter_type, login_url, creator_ur
     state = adapter_type(SimpleNamespace(pages=[page])).inspect()
     assert state["authenticated"] is False
     assert state["status"] == "unknown"
+
+
+@pytest.mark.parametrize('name,avatar,body,expected', [
+    ('示例作者', True, '发布作品 内容管理 数据中心', True),
+    ('', True, '发布作品 内容管理 数据中心', False),
+    ('立即登录', True, '发布作品 内容管理 数据中心', False),
+    ('示例作者', False, '发布作品 内容管理 数据中心', False),
+    ('示例作者', True, '请完成验证', False),
+])
+def test_kuaishou_requires_own_header_identity_not_public_dashboard_text(name, avatar, body, expected):
+    name_selector = '.header-bar .user-info-dpd .user-info-name'
+    avatar_selector = '.header-bar .user-info-dpd .user-info-avatar'
+    visible = [name_selector] + ([avatar_selector] if avatar else [])
+    client = Kuaishou(SimpleNamespace(pages=[Page('https://cp.kuaishou.com/profile', body, visible,
+                                                texts={name_selector: name})]))
+    with patch.object(client, '_save_pending_dom'):
+        state = client.inspect()
+    assert state['authenticated'] is expected
+    if expected:
+        assert state['display_name'] == name
+
+
+def test_kuaishou_restored_session_skips_logged_out_login_controls():
+    from unittest.mock import Mock
+    client = object.__new__(Kuaishou)
+    client.page = Mock(url='about:blank')
+    client.inspect = Mock(side_effect=[{'authenticated': False, 'status': 'unknown'},
+                                       {'authenticated': True, 'status': 'authenticated'}])
+    assert client.login()['authenticated']
+    client.page.goto.assert_called_once()
+    client.page.get_by_text.assert_not_called()
 
 
 @pytest.mark.parametrize('adapter_type', [Bilibili, Kuaishou, Douyin])

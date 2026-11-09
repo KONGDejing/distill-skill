@@ -109,6 +109,9 @@ def refresh_job(db, job):
 
 def begin_publication(db, item_id, action, platform="xiaohongshu"):
     platform_name = _platform_name(platform)
+    from services.factory_service import get_config
+    if platform not in get_config(db).platforms:
+        raise ValueError(f"{platform_name}已暂停短视频发布，不在当前发行计划中")
     if action not in {"prepare", "publish"}:
         raise ValueError("不支持的发布操作")
     item = db.get(FactoryItem, item_id)

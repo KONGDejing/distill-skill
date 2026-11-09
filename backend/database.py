@@ -27,7 +27,7 @@ def init_db():
     from models.generated_script import GeneratedScript
     from models.generated_video import GeneratedVideo
     from models.user_profile import UserProfile
-    from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
+    from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication, FactoryRelease
     Base.metadata.create_all(bind=engine)
     _ensure_user_profile_columns()
     _ensure_factory_columns()
@@ -42,6 +42,12 @@ def _ensure_factory_columns():
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN auto_publish_xiaohongshu BOOLEAN NOT NULL DEFAULT 0")
         if "visual_style" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN visual_style VARCHAR(30) NOT NULL DEFAULT 'cards'")
+        if "publish_enabled" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_enabled BOOLEAN NOT NULL DEFAULT 0")
+        if "publish_times" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_times JSON NOT NULL DEFAULT '[\"06:00\",\"07:00\",\"08:00\",\"09:10\",\"10:30\",\"17:00\",\"19:00\",\"20:00\",\"21:00\",\"22:00\"]'")
+        if "publish_start_at" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_start_at DATETIME")
 
 
 def _ensure_user_profile_columns():

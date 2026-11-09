@@ -9,7 +9,7 @@ from sqlalchemy import update
 from config import settings
 from database import SessionLocal
 from models.factory import FactoryRun, FactoryEvent
-from agents.registry import COMMON, INSTRUCTIONS
+from agents.registry import AGENT_MAP, COMMON, INSTRUCTIONS
 from services.factory_resources import ensure_memory_available
 
 
@@ -59,7 +59,7 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400):
                 model=model,
                 max_tokens=max_tokens,
                 temperature=0.25 if agent_id == "reviewer" else 0.55,
-                system=COMMON + "\n" + INSTRUCTIONS[agent_id],
+                system=COMMON + f"\n你的名字是{AGENT_MAP[agent_id]['name']}，岗位是{AGENT_MAP[agent_id]['role']}。\n" + INSTRUCTIONS[agent_id],
                 # Some compatible gateways do not retain the system field. Keep
                 # the actual assignment explicit in the user message as well.
                 messages=[{"role": "user", "content": (

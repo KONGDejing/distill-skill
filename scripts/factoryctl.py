@@ -33,7 +33,7 @@ def install(port):
     commands = {
         "api": f"{sys.executable} -m uvicorn main:app --host 0.0.0.0 --port {port}",
         "worker": f"{sys.executable} -m celery -A tasks.celery_app worker -l info -c 1 -Q short_video_ai_factory --hostname=factory@%h",
-        "scheduler": f"{sys.executable} -m celery -A tasks.celery_app beat -l info --schedule={runtime}/celerybeat-schedule --pidfile={runtime}/beat.pid",
+        "scheduler": f"{sys.executable} -m services.factory_scheduler",
         "xiaohongshu": f"{sys.executable} {ROOT / 'backend/services/xiaohongshu_connector.py'} --serve",
     }
     commands.update({f"creator-{platform}": f"{sys.executable} {ROOT / 'backend/services/creator_connector.py'} --serve --platform {platform}"

@@ -1,5 +1,6 @@
 """Kuaishou official creator login, based on its observed passport DOM."""
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -14,6 +15,21 @@ OFFICIAL_HOSTS = {"cp.kuaishou.com", "passport.kuaishou.com"}
 class Adapter(BaseAdapter):
     supports_prepare = False
     supports_publish = False
+
+    def _account_identity(self):
+        address = urlsplit(self.page.url)
+        if address.hostname != "cp.kuaishou.com" or address.path in {"", "/", "/login"}:
+            return None
+        # Observed signed-in header: account name and avatar inside its account
+        # dropdown. Do not use names from comments or public creator examples.
+        name = self.visible([self.page.locator(".header-bar .user-info-dpd .user-info-name")])
+        avatar = self.visible([self.page.locator(".header-bar .user-info-dpd .user-info-avatar")])
+        if name is None or avatar is None:
+            return None
+        value = name.inner_text().strip()
+        if not value or len(value) > 60 or value in {"登录", "立即登录", "未登录"}:
+            return None
+        return {"name": value}
 
     def _qr_panel(self):
         qr = self.visible([self.page.locator("#login-form .qr-login")])
@@ -56,9 +72,11 @@ class Adapter(BaseAdapter):
             if login_button is not None:
                 state.update(status="unknown", error="官方首页尚未切换到扫码登录")
             elif body.strip():
+                identity = self._account_identity()
                 logout = self.visible([self.page.get_by_text("退出登录", exact=True)])
-                if logout is not None:
-                    state.update(authenticated=True, status="authenticated")
+                if identity is not None or logout is not None:
+                    state.update(authenticated=True, status="authenticated",
+                                 display_name=(identity or {}).get("name"))
                 else:
                     state["error"] = "页面已进入创作后台，仍需核验真实账号状态与上传控件"
                 self._save_pending_dom(body)
@@ -87,10 +105,21 @@ class Adapter(BaseAdapter):
         if host != "passport.kuaishou.com":
             self.page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45000)
             try:
-                entry = self.page.get_by_text("立即登录", exact=True)
-                entry.wait_for(state="visible", timeout=20000)
-                entry.click()
-                self.page.wait_for_url("https://passport.kuaishou.com/**", timeout=30000)
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    current = self.inspect()
+                    if current["authenticated"] or current["status"] == "needs_verification":
+                        return current
+                    if urlsplit(self.page.url).hostname == "passport.kuaishou.com":
+                        break
+                    entry = self.visible([self.page.get_by_text("立即登录", exact=True)])
+                    if entry is not None:
+                        entry.click()
+                        self.page.wait_for_url("https://passport.kuaishou.com/**", timeout=30000)
+                        break
+                    self.page.wait_for_timeout(500)
+                else:
+                    return self.inspect()
             except BrowserTimeout:
                 return self.inspect()
         elif refresh or current["status"] == "qr_expired":

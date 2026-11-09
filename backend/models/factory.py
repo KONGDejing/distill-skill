@@ -12,16 +12,19 @@ def uid():
 class FactoryConfig(Base):
     __tablename__ = "factory_config"
     id = Column(Integer, primary_key=True, default=1)
-    daily_target = Column(Integer, nullable=False, default=3)
+    daily_target = Column(Integer, nullable=False, default=10)
     sector = Column(String(100), nullable=False, default="AI 科技")
     schedule_enabled = Column(Boolean, nullable=False, default=True)
-    schedule_time = Column(String(5), nullable=False, default="08:00")
+    schedule_time = Column(String(5), nullable=False, default="00:30")
     timezone = Column(String(50), nullable=False, default="Asia/Shanghai")
-    platforms = Column(JSON, nullable=False, default=lambda: ["douyin", "xiaohongshu", "kuaishou", "bilibili"])
+    platforms = Column(JSON, nullable=False, default=lambda: ["douyin", "xiaohongshu", "kuaishou"])
     max_revisions = Column(Integer, nullable=False, default=1)
     max_llm_calls = Column(Integer, nullable=False, default=32)
     auto_publish_xiaohongshu = Column(Boolean, nullable=False, default=False)
     visual_style = Column(String(30), nullable=False, default="tech_montage")
+    publish_enabled = Column(Boolean, nullable=False, default=False)
+    publish_times = Column(JSON, nullable=False, default=lambda: ["06:00", "07:00", "08:00", "09:10", "10:30", "17:00", "19:00", "20:00", "21:00", "22:00"])
+    publish_start_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -91,3 +94,18 @@ class FactoryPublication(Base):
     status = Column(String(30), nullable=False, default="queued")
     result = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class FactoryRelease(Base):
+    """One original per time slot; platform jobs retain their own receipts."""
+    __tablename__ = "factory_releases"
+    id = Column(String(36), primary_key=True, default=uid)
+    due_at = Column(DateTime, nullable=False, unique=True, index=True)
+    run_id = Column(String(36), ForeignKey("factory_runs.id"), nullable=True)
+    position = Column(Integer, nullable=True)
+    item_id = Column(String(36), ForeignKey("factory_items.id"), nullable=True, unique=True)
+    platforms = Column(JSON, nullable=False, default=list)
+    status = Column(String(30), nullable=False, default="scheduled")
+    results = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

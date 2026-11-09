@@ -27,7 +27,7 @@ def iso(value):
 
 
 def config_dict(config):
-    keys = ("daily_target", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style")
+    keys = ("daily_target", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times")
     return {key: getattr(config, key) for key in keys}
 
 
@@ -146,12 +146,14 @@ def queue_available():
         return False
 
 
-def start_run(db, target_count=None, trigger="manual", schedule_key=None):
+def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None):
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
     if not 1 <= target <= 10:
         raise ValueError("每轮产量应为 1–10 条")
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 6 + 8)
+    if release_slot_ids is not None:
+        config["release_slot_ids"] = list(release_slot_ids)
     if not queue_available():
         raise RuntimeError("任务队列未连接，请检查 Redis")
     if db.query(FactoryRun).filter_by(status="paused_memory").first():
@@ -227,7 +229,7 @@ def _make_plan(run_id):
         emit(run_id, "researcher", "researching", f"已采集 {len(sources)} 份官方资料", "completed", {"warnings": research.get("warnings", [])})
     if not plan.get("candidates"):
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
-        research = call_agent(run_id, "researcher", {"target": target + 2, "sources": sources, "recent_titles": recent}, max_tokens=3500)
+        research = call_agent(run_id, "researcher", {"target": target + 2, "sources": sources, "recent_titles": recent}, max_tokens=max(3500, (target + 2) * 550))
         candidates = research.get("candidates", [])
         if not isinstance(candidates, list) or len(candidates) < target:
             raise ValueError("情报员提供的有效选题不足")
@@ -393,7 +395,7 @@ def _package(run_id, item_id):
             _save_item(item_id, status="completed", error=None)
             return
     check_cancel(run_id)
-    emit(run_id, "publisher", "adapting", f"准备四平台标题、简介、封面及素材包：{content['title']}")
+    emit(run_id, "publisher", "adapting", f"准备 {len(platforms)} 个平台的标题、简介、封面及素材包：{content['title']}")
     adapted = call_agent(run_id, "publisher", {"content": content, "platforms": platforms}, max_tokens=3000)
     variants = adapted.get("platforms", [])
     if not isinstance(variants, list) or len(variants) != len(platforms) or {p.get("platform") for p in variants} != set(platforms):
@@ -530,7 +532,8 @@ def execute_run(run_id):
                     _render(run_id, item_id)
                     _package(run_id, item_id)
                 with SessionLocal() as db:
-                    auto_publish = db.get(FactoryRun, run_id).settings_snapshot.get("auto_publish_xiaohongshu", False)
+                    snapshot = db.get(FactoryRun, run_id).settings_snapshot
+                    auto_publish = snapshot.get("auto_publish_xiaohongshu", False) and not snapshot.get("publish_enabled", False)
                 if auto_publish:
                     try:
                         from services.factory_publishing import auto_submit

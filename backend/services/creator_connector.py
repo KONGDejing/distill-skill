@@ -351,7 +351,7 @@ class _Browser:
         module = importlib.import_module(f"services.creator_adapters.{platform}")
         options = {"headless": True, "viewport": {"width": 1440, "height": 1000},
                    "locale": "zh-CN", "args": ["--disable-dev-shm-usage", *getattr(module, "BROWSER_ARGS", [])]}
-        if platform == "douyin":
+        if platform in {"douyin", "kuaishou"}:
             options["args"].extend(["--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"])
         proxy = browser_proxy(platform)
         if proxy:

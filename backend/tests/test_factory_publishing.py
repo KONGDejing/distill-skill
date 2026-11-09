@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRun
+from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRun
 from services import creator_connector, factory_publishing, factory_service, factory_resources, xiaohongshu_connector
 
 
@@ -17,7 +17,7 @@ from services import creator_connector, factory_publishing, factory_service, fac
 def publishing(tmp_path, monkeypatch):
     monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'publishing.db'}")
-    Base.metadata.create_all(engine, tables=[FactoryRun.__table__, FactoryItem.__table__,
+    Base.metadata.create_all(engine, tables=[FactoryConfig.__table__, FactoryRun.__table__, FactoryItem.__table__,
                                             FactoryPublication.__table__, FactoryEvent.__table__])
     sessions = sessionmaker(bind=engine)
     results = {}
@@ -41,6 +41,7 @@ def publishing(tmp_path, monkeypatch):
     video.write_bytes(b"fixture, never uploaded")
     cover.write_bytes(b"fixture, never uploaded")
     with sessions() as db:
+        db.add(FactoryConfig(id=1, platforms=["xiaohongshu", "douyin", "kuaishou", "bilibili"]))
         run = FactoryRun(status="completed", target_count=1, completed_count=1,
                          report={"production": {"completed": 1, "published": 0, "submitted": 0}})
         db.add(run)
@@ -105,6 +106,17 @@ def test_media_quality_hold_prevents_any_upload_or_submission(publishing):
         for action in ("prepare", "publish"):
             with pytest.raises(ValueError, match="暂缓提交"):
                 factory_publishing.begin_publication(db, env.item_id, action)
+    env.submit.assert_not_called()
+
+
+def test_removed_platform_cannot_upload_or_submit_existing_short_video(publishing):
+    env = publishing
+    with env.sessions() as db:
+        db.get(FactoryConfig, 1).platforms = ["xiaohongshu", "douyin", "kuaishou"]
+        db.commit()
+        for action in ("prepare", "publish"):
+            with pytest.raises(ValueError, match="已暂停短视频发布"):
+                factory_publishing.begin_publication(db, env.item_id, action, "bilibili")
     env.submit.assert_not_called()
 
 

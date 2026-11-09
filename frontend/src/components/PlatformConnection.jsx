@@ -4,7 +4,7 @@ import { ExternalLink, Loader2, RefreshCw } from 'lucide-react'
 export const LOGIN_PLATFORMS = new Set(['douyin', 'xiaohongshu', 'kuaishou', 'bilibili'])
 
 export default function PlatformConnection({ platform, statusBadge, loadState, onStateChange }) {
-  const supported = LOGIN_PLATFORMS.has(platform.id)
+  const supported = platform.enabled !== false && LOGIN_PLATFORMS.has(platform.id)
   const [connection, setConnection] = useState(null)
   const [loading, setLoading] = useState(supported)
   const [unavailable, setUnavailable] = useState('')

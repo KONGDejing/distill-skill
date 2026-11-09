@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import fcntl
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from tasks.celery_app import celery_app
 from database import SessionLocal, init_db
@@ -14,6 +16,17 @@ def produce_run(run_id):
 
 @celery_app.task(name="factory.schedule")
 def schedule_factory():
+    directory = Path(__file__).resolve().parents[2] / ".runtime"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    with (directory / "factory-tick.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "scheduler_busy"}
+        return _schedule_factory()
+
+
+def _schedule_factory():
     """Read the live schedule every minute; a daily unique key prevents repeats."""
     init_db()
     with SessionLocal() as db:
@@ -27,8 +40,12 @@ def schedule_factory():
                 active.heartbeat_at = datetime.utcnow()
                 db.commit()
                 return {"recovered": active.id}
-            return {"status": "busy"}
         config = get_config(db)
+        if config.publish_enabled:
+            from services.factory_schedule import tick
+            return tick(db, config)
+        if active:
+            return {"status": "busy"}
         if not config.schedule_enabled:
             return {"status": "disabled"}
         now = datetime.now(ZoneInfo(config.timezone))
