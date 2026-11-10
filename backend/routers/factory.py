@@ -96,6 +96,12 @@ def overview(db: Session = Depends(get_db)):
     from services.factory_analytics import overview as analytics_overview
     from services.factory_operations import overview as operations_overview
     from services.factory_llm import model_runtime
+    from services.factory_platform_policy import automation_state, automation_enabled
+    for platform in platforms:
+        platform["automation"] = automation_state(platform["id"])
+        if not automation_enabled(platform["id"]):
+            platform.update(status="manual", login_status="manual",
+                            description="人工发布：每天最多2条，仅接收分配给本平台的作品。自动浏览、数据采集、账号巡检和浏览器发布已停用。")
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
             "analytics": analytics_overview(db), "operations": operations_overview(db),
             "strategy": STRATEGY, "asset_library": library_summary(),
@@ -107,7 +113,11 @@ def overview(db: Session = Depends(get_db)):
 def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     config = get_config(db)
     updates = data.model_dump(exclude_none=True)
+    if updates.get("auto_publish_xiaohongshu"):
+        raise HTTPException(409, "小红书仅支持官方客户端人工操作，不能启用浏览器自动发布")
     merged = {**config_dict(config), **updates}
+    if merged["daily_target"] > 2 * len(merged["platforms"]):
+        raise HTTPException(422, "每个平台每天最多2条，原创目标不能超过启用平台的总分发名额")
     if merged["publish_enabled"] and len(merged["publish_times"]) != merged["daily_target"]:
         raise HTTPException(422, "每个发布时间对应一条原创视频，时间数量应等于每日原创目标")
     if merged["publish_enabled"]:
@@ -235,6 +245,9 @@ def download_package(item_id: str, platform: str, db: Session = Depends(get_db))
 
 @router.get("/platforms/xiaohongshu/login-image", include_in_schema=False)
 def xiaohongshu_login_image():
+    from services.factory_platform_policy import automation_enabled
+    if not automation_enabled("xiaohongshu"):
+        raise HTTPException(410, "小红书自动登录已停用，请使用官方客户端人工操作")
     path = LOGIN_DIR / "xiaohongshu-login.png"
     if not path.is_file():
         raise HTTPException(404, "登录会话尚未启动")
@@ -249,6 +262,11 @@ def xiaohongshu_login_state():
 
 @router.post("/platforms/xiaohongshu/connect", status_code=202)
 def connect_xiaohongshu():
+    from services.factory_platform_policy import require_automation
+    try:
+        require_automation("xiaohongshu")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     from services.xiaohongshu_connector import submit_command
     return submit_command("login")
 
@@ -289,6 +307,9 @@ def publish_prepared_job(job_id: str, db: Session = Depends(get_db)):
 
 @router.get("/platforms/xiaohongshu/login", response_class=HTMLResponse, include_in_schema=False)
 def xiaohongshu_login_page():
+    from services.factory_platform_policy import automation_enabled
+    if not automation_enabled("xiaohongshu"):
+        return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>小红书人工发布</title><main><a href="/">返回内容工厂</a><h1>小红书自动化已停用</h1><p>请下载分配给小红书的视频素材包，通过官方客户端人工发布。此页面不会启动登录浏览器、刷新二维码或读取小红书账号。</p></main></html>'
     return """<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>小红书登录 · 短视频 AI 内容工厂</title><style>body{margin:0;background:#0b121a;color:#e5edf4;font:16px system-ui,sans-serif}main{max-width:1100px;margin:40px auto;padding:20px}h1{font-size:25px}p{color:#a8bac7;line-height:1.8}img{width:100%;border-radius:16px;background:white}a{color:#73edc7}strong{color:#73edc7}</style>
 <main><a href="/">← 返回工厂</a><h1>连接小红书创作平台</h1><p>用小红书 App 扫描下图中的二维码，并在手机上确认登录。二维码来自官方创作平台的真实浏览器会话。<br>登录状态：<strong id="state">正在读取</strong></p><button onclick="connect()" style="padding:12px 20px;margin-bottom:20px;cursor:pointer">启动登录 / 刷新二维码</button><img id="qr" alt="小红书官方登录二维码" src="/api/factory/platforms/xiaohongshu/login-image"><p>已登录时会保留当前账号。若平台要求额外验证，请按手机或官方页面提示完成。</p></main>

@@ -19,6 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+if __package__:
+    from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
+else:
+    # The historical systemd unit executes this file directly, without PYTHONPATH.
+    from factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = PROJECT_ROOT / ".runtime"
 PRIVATE = RUNTIME / "xiaohongshu-connector"
@@ -108,6 +114,17 @@ def _alive():
 
 def connection_state() -> dict:
     state = _read(STATE_FILE)
+    state = state if isinstance(state, dict) else {}
+    if not automation_enabled("xiaohongshu"):
+        policy = automation_state("xiaohongshu")
+        return {**policy, "status": "manual", "state_code": "manual", "message": policy["reason"],
+                "automation_enabled": False, "cache_only": True,
+                "display_name": state.get("display_name"), "account_id": state.get("account_id"),
+                "authenticated": False, "session_active": False,
+                "cached_authenticated": bool(state.get("authenticated")),
+                "updated_at": state.get("updated_at"), "cached_updated_at": state.get("updated_at"),
+                "prepared_item_id": state.get("prepared_item_id"),
+                "capabilities": {name: False for name in ("login", "inspect", "prepare", "publish", "analytics")}}
     active = _alive()
     return {
         "status": state.get("status", "未连接") if active else "连接器未运行",
@@ -123,6 +140,7 @@ def connection_state() -> dict:
 
 
 def _ensure_daemon():
+    require_automation("xiaohongshu")
     _directories()
     with (PRIVATE / "start.lock").open("a") as lock:
         os.chmod(lock.name, 0o600)
@@ -192,6 +210,7 @@ def _payload(action, payload):
 
 
 def submit_command(action: str, payload: dict | None = None) -> dict:
+    require_automation("xiaohongshu")
     if action not in ALLOWED_ACTIONS:
         raise ValueError("不支持的连接器操作")
     clean = _payload(action, payload)
@@ -277,6 +296,7 @@ class _ShadowButton:
 
 class _Browser:
     def __init__(self, playwright):
+        require_automation("xiaohongshu")
         self.context = playwright.chromium.launch_persistent_context(
             str(PROFILE), headless=True, viewport={"width": 1440, "height": 1000},
             locale="zh-CN", args=["--disable-dev-shm-usage",
@@ -586,6 +606,7 @@ class _Browser:
 
 
 def _serve():
+    require_automation("xiaohongshu")
     from playwright.sync_api import sync_playwright
 
     _directories()
@@ -667,4 +688,8 @@ def _serve():
 
 if __name__ == "__main__":
     if "--serve" in sys.argv:
-        _serve()
+        try:
+            _serve()
+        except AutomationDisabled as exc:
+            # An old enabled unit must exit cleanly, not enter a restart loop.
+            print(str(exc), flush=True)

@@ -7,6 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from database import SessionLocal
 from models.factory import FactoryItem, FactoryPublication, FactoryEvent
 from services.factory_resources import ensure_memory_available
+from services.factory_distribution import guard_publication, RESERVATION_KEY
+from services.factory_platform_policy import require_automation
 
 
 def _platform_name(platform):
@@ -70,6 +72,15 @@ def safe_to_retry(job):
             and not result.get("submission_uncertain"))
 
 
+def _with_reservation(job, result):
+    """Connector responses cannot erase or change our durable quota reservation."""
+    result = {k: v for k, v in result.items() if k != RESERVATION_KEY}
+    reservation = (job.result or {}).get(RESERVATION_KEY)
+    if reservation:
+        result[RESERVATION_KEY] = reservation
+    return result
+
+
 def refresh_job(db, job):
     if not job.command_id or job.status in {"submitted", "failed", "prepared"}:
         return job
@@ -85,7 +96,7 @@ def refresh_job(db, job):
         if not valid:
             result = {**result, "status": "failed", "submission_uncertain": True,
                       "message": "没有取得可核验的提交回执，请在平台核对结果；不会自动重复发布"}
-    job.status, job.result = result.get("status", "failed"), result
+    job.status, job.result = result.get("status", "failed"), _with_reservation(job, result)
     if job.status in {"prepared", "submitted", "failed"}:
         item = db.get(FactoryItem, job.item_id)
         packages = [dict(package) for package in item.packages or []]
@@ -123,20 +134,32 @@ def begin_publication(db, item_id, action, platform="xiaohongshu"):
 
 def _begin_publication(db, item_id, action, platform):
     platform_name = _platform_name(platform)
-    from services.factory_service import get_config
-    if platform not in get_config(db).platforms:
-        raise ValueError(f"{platform_name}已暂停短视频发布，不在当前发行计划中")
     if action not in {"prepare", "publish"}:
         raise ValueError("不支持的发布操作")
     item = db.get(FactoryItem, item_id)
-    if not item or item.status != "completed" or not item.media.get("video_path"):
+    if not item:
+        raise ValueError("作品不存在")
+    existing = db.query(FactoryPublication).filter_by(item_id=item_id, platform=platform, action=action).first()
+    # Historical receipts and uncertain attempts are read-only and idempotent,
+    # even after a platform becomes manual or the current route changes.
+    if existing and ((action == "publish" and not safe_to_retry(existing))
+                     or existing.status in {"queued", "running", "submitted"}):
+        return existing
+    require_automation(platform)
+    from services.factory_service import get_config
+    config = get_config(db)
+    if platform not in config.platforms:
+        raise ValueError(f"{platform_name}已暂停短视频发布，不在当前发行计划中")
+    if item.status != "completed" or not item.media.get("video_path"):
         raise ValueError("需要先完成视频制作、审核与平台素材包")
     if item.media.get("publication_hold"):
         raise ValueError(f"暂缓提交：{item.media['publication_hold']}")
     variant = next((p for p in item.packages or [] if p["platform"] == platform), None)
     if not variant:
         raise ValueError(f"缺少{platform_name}发布文案")
-    existing = db.query(FactoryPublication).filter_by(item_id=item_id, platform=platform, action=action).first()
+    submission = db.query(FactoryPublication).filter_by(item_id=item_id, platform=platform, action="publish").first()
+    if action == "prepare" and submission and not safe_to_retry(submission):
+        raise ValueError("该作品已有提交尝试，请先在平台核对结果，禁止重复发布")
     reuse_job = False
     if existing:
         refresh_job(db, existing)
@@ -149,6 +172,7 @@ def _begin_publication(db, item_id, action, platform):
         if existing.status == "prepared" and _connection_state(platform).get("prepared_item_id") == item_id:
             return existing
         reuse_job = True
+    reservation = guard_publication(db, item, platform, action, timezone_name=config.timezone)
     from services.factory_montage import validate_publication_media
     from services.factory_papers import require_paper_publication
     from services.factory_team import editor_id
@@ -191,7 +215,7 @@ def _begin_publication(db, item_id, action, platform):
         db.add(FactoryEvent(run_id=item.run_id, agent_id="publisher", stage="platform_retry",
             status="info", message=f"{platform_name}：上次操作已确认未点击提交，重新准备后安全重试",
             detail={"previous_command_id": job.command_id, "previous_result": job.result}))
-    job.status, job.result = "queued", {}
+    job.status, job.result = "queued", {RESERVATION_KEY: reservation} if reservation else {}
     job.command_id = None
     if not reuse_job:
         db.add(job)
@@ -202,10 +226,10 @@ def _begin_publication(db, item_id, action, platform):
         return db.query(FactoryPublication).filter_by(item_id=item_id, platform=platform, action=action).one()
     try:
         command = _submit_command(platform, action, payload)
-        job.command_id, job.result = command["command_id"], command
+        job.command_id, job.result = command["command_id"], _with_reservation(job, command)
         db.commit()
     except Exception as exc:
-        job.status, job.result = "failed", {"message": str(exc)[:500]}
+        job.status, job.result = "failed", _with_reservation(job, {"message": str(exc)[:500]})
         db.commit()
     return job
 

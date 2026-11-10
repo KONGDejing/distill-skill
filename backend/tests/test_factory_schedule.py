@@ -18,6 +18,10 @@ TZ = ZoneInfo("Asia/Shanghai")
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    # These legacy receipt-state tests exercise the generic automated state
+    # machine. The actual manual-only platform policy is tested separately.
+    from services import factory_platform_policy
+    monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: True)
     engine = create_engine(f"sqlite:///{tmp_path / 'clock.db'}")
     Base.metadata.create_all(engine, tables=[m.__table__ for m in
         (FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun)])
@@ -42,6 +46,46 @@ def env(tmp_path, monkeypatch):
         monkeypatch.setattr(schedule.publishing, "begin_publication", begin)
         yield SimpleNamespace(db=db, config=config, slot=slot, begin=begin)
     engine.dispose()
+
+
+def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env, monkeypatch):
+    from services import factory_platform_policy
+    monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: platform != "xiaohongshu")
+    state = Mock(side_effect=AssertionError("manual platform must not query browser"))
+    monkeypatch.setattr(schedule.publishing, "_connection_state", state)
+    item = env.db.get(FactoryItem, "item")
+    item.brief = {"distribution": {"platform": "xiaohongshu", "day": "2026-11-09", "policy": "single-platform-v1"}}
+    item.packages = [{"platform": "xiaohongshu", "status": "package_ready"}]
+    env.db.commit()
+    schedule.advance_slot(env.db, env.slot, env.config, env.slot.due_at)
+    assert env.slot.platforms == ["xiaohongshu"]
+    assert env.slot.status == "manual_ready"
+    assert env.slot.results["xiaohongshu"]["status"] != "submitted"
+    env.begin.assert_not_called()
+    state.assert_not_called()
+
+
+def test_carried_video_does_not_create_seventh_original_and_keeps_editor_quota(env, monkeypatch):
+    db = env.db
+    env.slot.run_id = "run"
+    env.slot.position = 0
+    db.get(FactoryItem, "item").brief = {"editor_id": "producer3"}
+    for index in range(5):
+        db.add(FactoryRelease(due_at=env.slot.due_at + timedelta(minutes=40 * (index + 1)), platforms=[]))
+    db.commit()
+    def create(db, **kwargs):
+        result = FactoryRun(id="tomorrow", target_count=kwargs["target_count"], schedule_key=kwargs["schedule_key"],
+            settings_snapshot={"release_slot_ids": kwargs["release_slot_ids"], "editor_quotas": kwargs["editor_quota_override"]})
+        db.add(result); db.flush()
+        return result
+    create_run = Mock(side_effect=create)
+    monkeypatch.setattr(factory_service, "start_run", create_run)
+    schedule.plan_production(db, env.config, datetime(2026, 11, 9, 16, 50, tzinfo=TZ))
+    kwargs = create_run.call_args.kwargs
+    assert kwargs["target_count"] == 5
+    assert kwargs["editor_quota_override"] == {"producer": 2, "producer2": 2, "producer3": 1}
+    assert env.slot.id not in kwargs["release_slot_ids"]
+    assert env.slot.run_id == "run"
 
 
 def test_six_local_times_never_backfill_or_duplicate_after_restart(env):

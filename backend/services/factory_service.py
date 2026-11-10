@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
 from config import settings
 from database import SessionLocal
-from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
+from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication, FactoryRelease
 from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailable
 from services.factory_resources import MemoryPressure, ensure_memory_available
@@ -30,9 +30,12 @@ def iso(value):
 
 
 def config_dict(config):
+    from services.factory_platform_policy import automation_state
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
-            "editor_quotas": editor_quotas(min(config.daily_target, 6))}
+            "editor_quotas": editor_quotas(min(config.daily_target, 6)),
+            "distribution_policy": "single-platform-v1", "platform_daily_limit": 2,
+            "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
 
 def get_config(db):
@@ -98,6 +101,7 @@ def run_detail(db, run):
             "id": item.id, "title": content.get("title") or item.brief.get("title", "待生成"),
             "token_usage": {**usage["items"][item.id], "history_may_be_incomplete": usage["has_unattributed_history"]},
             "editor_id": editor_id(item), "editor_name": AGENT_MAP[editor_id(item)]["name"],
+            "distribution": item.brief.get("distribution"),
             "category": item.brief.get("category", "AI 科技"), "status": item.status,
             "script": content.get("script", ""), "hook": content.get("hook", ""),
             "engagement_plan": item.brief.get("engagement_plan"),
@@ -161,12 +165,19 @@ def queue_available():
         return False
 
 
-def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None):
+def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None, editor_quota_override=None):
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
     if not 1 <= target <= 6:
         raise ValueError("每轮产量应为 1–6 条")
     config["editor_quotas"] = editor_quotas(target)
+    if editor_quota_override is not None:
+        if (set(editor_quota_override) != set(config["editor_quotas"])
+                or any(type(v) is not int or not 0 <= v <= 2 for v in editor_quota_override.values())
+                or sum(editor_quota_override.values()) != target):
+            raise ValueError("剩余剪辑配额必须与本轮数量一致，且每人不超过2条")
+        config["editor_quotas"] = dict(editor_quota_override)
+    config["auto_publish_xiaohongshu"] = False
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 12 + 12)
     config["engagement_required"] = True
     config["director_hook_required"] = True
@@ -342,6 +353,17 @@ def _make_plan(run_id):
             if owners:
                 brief["editor_id"] = owners[position]
             db.add(FactoryItem(run_id=run_id, position=position, brief=brief))
+        db.flush()
+        if db.get(FactoryRun, run_id).settings_snapshot.get("distribution_policy") == "single-platform-v1":
+            from services.factory_distribution import assign_distribution, local_day
+            run = db.get(FactoryRun, run_id)
+            slot_ids = run.settings_snapshot.get("release_slot_ids", [])
+            timezone_name = run.settings_snapshot.get("timezone", "Asia/Shanghai")
+            dates = {}
+            for item in db.query(FactoryItem).filter_by(run_id=run_id).all():
+                slot = db.get(FactoryRelease, slot_ids[item.position]) if item.position < len(slot_ids) else None
+                dates[item.id] = local_day((slot.nominal_at or slot.due_at) if slot else run.created_at, timezone_name)
+            assign_distribution(db, run_id, slots=dates)
         db.commit()
     emit(run_id, "director", "planning", decision.get("reason", "生产计划已下达"), "completed")
 
@@ -505,7 +527,9 @@ def _replace_rejected_topic(run_id, item_id):
     with SessionLocal() as db:
         run, item = db.get(FactoryRun, run_id), db.get(FactoryItem, item_id)
         run.plan = {**run.plan, "rejected_titles": [*run.plan.get("rejected_titles", []), old_title]}
-        item.brief = {**candidates[index], "replacement_count": 1, "editor_id": editor_id(item)}
+        distribution = (item.brief or {}).get("distribution")
+        item.brief = {**candidates[index], "replacement_count": 1, "editor_id": editor_id(item),
+                      **({"distribution": distribution} if distribution else {})}
         item.content, item.review, item.revisions, item.status = {}, {}, 0, "planned"
         db.commit()
     emit(run_id, "director", "replacement", f"改用备用选题：{candidates[index]['title']}", "completed",
@@ -686,6 +710,12 @@ def _package(run_id, item_id):
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
         content, media, existing = item.content, item.media, item.packages or []
         platforms = run.settings_snapshot["platforms"]
+        route = item.brief.get("distribution") or {}
+        if run.settings_snapshot.get("distribution_policy") == "single-platform-v1" or route:
+            if route.get("platform") not in platforms:
+                raise ValueError("尚未确定唯一分发平台，保留成片等待排期")
+            platforms = [route["platform"]]
+            existing = [p for p in existing if p["platform"] in platforms]
         if len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing):
             _save_item(item_id, status="completed", error=None)
             return

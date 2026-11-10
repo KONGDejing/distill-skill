@@ -18,7 +18,7 @@ DAILY_TARGET = sum(DAILY_EDITOR_QUOTAS.values())
 DEFAULT_PUBLISH_TIMES = ("06:00", "08:00", "10:30", "17:00", "20:00", "22:00")
 for _editor in EDITOR_IDS:
     AGENT_MAP[_editor]["daily_quota"] = DAILY_EDITOR_QUOTAS[_editor]
-    AGENT_MAP[_editor]["description"] += " 每日负责2条原创短视频，三位剪辑师合计6条；每条向抖音、小红书、快手各提交一次。"
+    AGENT_MAP[_editor]["description"] += " 每日负责2条原创短视频，三位剪辑师合计6条；每条按内容适配只分配给抖音、小红书、快手中的一个平台，每个平台每天最多2条，员工不固定绑定平台；小红书仅交付人工发布包。"
 
 PLATFORMS = [
     {"id": "douyin", "name": "抖音", "status": "not_connected", "description": "发布素材包可下载；尚未配置平台授权。"},

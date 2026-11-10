@@ -11,7 +11,7 @@ from services.factory_resources import MemoryPressure, ensure_memory_available
 
 PREPARE_LEAD = timedelta(minutes=20)
 LATE_WINDOW = timedelta(minutes=15)
-FINAL = {"submitted", "missed", "partial", "cancelled"}
+FINAL = {"submitted", "missed", "partial", "cancelled", "manual_ready"}
 
 
 def nominal_time():
@@ -145,12 +145,12 @@ def plan_slots(db, config, now):
                 continue
             slot = db.query(FactoryRelease).filter(nominal_time() == nominal).first()
             if not slot:
-                slot = FactoryRelease(due_at=nominal, nominal_at=nominal, platforms=list(config.platforms), status="scheduled")
+                slot = FactoryRelease(due_at=nominal, nominal_at=nominal, platforms=[], status="scheduled")
                 _set_jitter(db, slot, config, now_utc)
                 db.add(slot)
                 db.flush()
             elif not slot.run_id and slot.status not in FINAL:
-                slot.platforms = list(config.platforms)
+                slot.platforms = []
     db.commit()
 
 
@@ -169,15 +169,25 @@ def plan_production(db, config, now):
     elif run and any(slot.run_id == run.id for slot in slots):
         slots = [slot for slot in slots if slot.run_id == run.id]
     elif not run:
-        slots = [slot for slot in slots if slot.due_at + LATE_WINDOW >= utc(now)]
+        carried = [slot for slot in slots if slot.run_id]
+        slots = [slot for slot in slots if not slot.run_id and slot.due_at + LATE_WINDOW >= utc(now)]
     if not slots or all(s.due_at + LATE_WINDOW < utc(now) for s in slots):
         return {"status": "no_slots"}
     if not run:
         if len(slots) > min(config.daily_target, DAILY_TARGET):
             return {"status": "deferred", "reason": "待生产时段超过每日6条或当前目标，请先调整未来排期"}
         try:
+            from services.factory_team import editor_id, editor_quotas
+            remaining = editor_quotas(config.daily_target)
+            for slot in carried:
+                item = db.get(FactoryItem, slot.item_id) if slot.item_id else db.query(FactoryItem).filter_by(run_id=slot.run_id, position=slot.position).first()
+                if item:
+                    remaining[editor_id(item)] -= 1
+            # Late starts only plan available slots; a full calendar with a
+            # carried completed item keeps its original editor's quota.
+            override = remaining if carried and sum(remaining.values()) == len(slots) else None
             run = start_run(db, target_count=len(slots), trigger="scheduled", schedule_key=key,
-                            release_slot_ids=[slot.id for slot in slots])
+                            release_slot_ids=[slot.id for slot in slots], editor_quota_override=override)
         except (ValueError, RuntimeError) as exc:
             return {"status": "deferred", "reason": str(exc)}
     for position, slot in enumerate(slots):
@@ -213,6 +223,9 @@ def step_platform(db, slot, item, platform, now, enabled):
         return _result("blocked", detail, submitted)
     if prepared and prepared.status in {"queued", "running"}:
         return _result("uploading", "正在上传视频", prepared)
+    from services.factory_platform_policy import automation_enabled
+    if not automation_enabled(platform):
+        return _result("manual_ready", "素材包已备好，请在官方客户端人工发布；自动浏览、采集和发布已停用")
     if not enabled:
         return _result("paused", "当前发行计划已暂停此平台")
     if now >= deadline(db, slot):
@@ -257,6 +270,15 @@ def advance_slot(db, slot, config, now):
             slot.item_id = item.id
             db.commit()
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
+    if item:
+        route = (item.brief or {}).get("distribution") or {}
+        if route.get("platform"):
+            slot.platforms = [route["platform"]]
+        elif not slot.platforms:
+            slot.status = "waiting_media"
+            slot.results = {"distribution": _result("waiting", "待按内容分配唯一平台，不向多个平台重复提交")}
+            db.commit()
+            return
     if item is None or item.status != "completed":
         slot.status = "missed" if now >= deadline(db, slot) else "waiting_media"
         run = db.get(FactoryRun, slot.run_id or item.run_id) if slot.run_id or item else None
@@ -271,6 +293,8 @@ def advance_slot(db, slot, config, now):
         statuses = {r["status"] for r in results.values()}
         if statuses == {"submitted"}:
             slot.status = "submitted"
+        elif statuses == {"manual_ready"}:
+            slot.status = "manual_ready"
         elif statuses & {"uploading", "publishing"}:
             slot.status = "publishing"
         elif now >= deadline(db, slot):

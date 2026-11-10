@@ -15,6 +15,10 @@ from services import creator_connector, factory_publishing, factory_service, fac
 
 @pytest.fixture
 def publishing(tmp_path, monkeypatch):
+    # These legacy tests isolate the existing upload/receipt state machine.
+    # Current distribution/quota/manual-platform guards have dedicated tests.
+    monkeypatch.setattr(factory_publishing, "guard_publication", lambda *args, **kwargs: None)
+    monkeypatch.setattr(factory_publishing, "require_automation", lambda platform: None)
     monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'publishing.db'}")
     Base.metadata.create_all(engine, tables=[FactoryConfig.__table__, FactoryRun.__table__, FactoryItem.__table__,
@@ -464,3 +468,144 @@ def test_new_voice_requirement_preserves_existing_paper_submission_receipt(publi
         db.add(receipt);db.commit()
         assert factory_publishing.begin_publication(db,item.id,'publish').id==receipt.id
         publishing.submit.assert_not_called()
+
+
+@pytest.fixture
+def distribution_publishing(creator_publishing, monkeypatch):
+    """Restore production guards; connectors remain strict offline mocks."""
+    from services import factory_distribution, factory_platform_policy
+    env = creator_publishing
+    monkeypatch.setattr(factory_publishing, 'guard_publication', factory_distribution.guard_publication)
+    monkeypatch.setattr(factory_publishing, 'require_automation', factory_platform_policy.require_automation)
+    with env.sessions() as db:
+        run = db.get(FactoryRun, env.run_id)
+        run.settings_snapshot = {'distribution_policy': factory_distribution.CURRENT_DISTRIBUTION_POLICY}
+        item = db.get(FactoryItem, env.item_id)
+        item.brief = {**item.brief, 'distribution': {
+            'platform': 'douyin', 'day': factory_distribution.local_day(), 'reason': 'test',
+            'policy': factory_distribution.CURRENT_DISTRIBUTION_POLICY}}
+        db.commit()
+    return env
+
+
+def _other_reserved(env, db, index, *, action='publish', status='submitted', result=None):
+    item = FactoryItem(run_id=env.run_id, position=index, status='completed')
+    db.add(item); db.flush()
+    entry = FactoryPublication(item_id=item.id, platform='douyin', action=action,
+                               status=status, result=result or {})
+    db.add(entry); db.commit()
+    return entry
+
+
+def test_new_operations_require_the_assigned_platform(distribution_publishing):
+    env = distribution_publishing
+    with env.sessions() as db:
+        for action in ('prepare', 'publish'):
+            with pytest.raises(ValueError, match='其他平台'):
+                factory_publishing.begin_publication(db, env.item_id, action, 'kuaishou')
+        assert db.query(FactoryPublication).count() == 0
+    env.creator_submit.assert_not_called()
+
+
+def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(distribution_publishing, monkeypatch):
+    from services.factory_platform_policy import AutomationDisabled
+    env = distribution_publishing
+    forbidden = Mock(side_effect=AssertionError('No XHS connector operation allowed'))
+    monkeypatch.setattr(xiaohongshu_connector, 'connection_state', forbidden)
+    monkeypatch.setattr(xiaohongshu_connector, 'command_result', forbidden)
+    monkeypatch.setattr(xiaohongshu_connector, 'submit_command', forbidden)
+    with env.sessions() as db:
+        item = db.get(FactoryItem, env.item_id)
+        item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': 'xiaohongshu'}}
+        db.commit()
+        for action in ('prepare', 'publish'):
+            with pytest.raises(AutomationDisabled):
+                factory_publishing.begin_publication(db, env.item_id, action, 'xiaohongshu')
+        receipt = FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish',
+                                     status='failed', result={'submission_uncertain': True}, command_id='retained-job')
+        db.add(receipt); db.commit()
+        assert factory_publishing.begin_publication(db, env.item_id, 'publish', 'xiaohongshu').id == receipt.id
+        assert receipt.result == {'submission_uncertain': True}
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize('action', ['prepare', 'publish'])
+def test_two_publish_reservations_block_new_upload_and_publish(distribution_publishing, action):
+    env = distribution_publishing
+    with env.sessions() as db:
+        _other_reserved(env, db, 1)
+        _other_reserved(env, db, 2, status='failed', result={'submission_uncertain': True})
+        if action == 'publish':
+            db.add(FactoryPublication(item_id=env.item_id, platform='douyin', action='prepare', status='prepared'))
+            db.commit()
+        with pytest.raises(ValueError, match='当天已预留或提交'):
+            factory_publishing.begin_publication(db, env.item_id, action, 'douyin')
+        assert db.query(FactoryPublication).filter_by(item_id=env.item_id, action=action).count() == 0
+    env.creator_submit.assert_not_called()
+
+
+def test_prepare_also_has_bounded_daily_admission(distribution_publishing):
+    env = distribution_publishing
+    with env.sessions() as db:
+        _other_reserved(env, db, 1, action='prepare', status='prepared')
+        _other_reserved(env, db, 2, action='prepare', status='prepared')
+        with pytest.raises(ValueError, match='当天已预留或提交'):
+            factory_publishing.begin_publication(db, env.item_id, 'prepare', 'douyin')
+    env.creator_submit.assert_not_called()
+
+
+def test_publish_reservation_survives_command_and_receipt_refresh(distribution_publishing):
+    from services import factory_distribution
+    env = distribution_publishing
+    with env.sessions() as db:
+        _creator_prepared(env, db)
+        entry = factory_publishing.begin_publication(db, env.item_id, 'publish', 'douyin')
+        reservation = dict(entry.result[factory_distribution.RESERVATION_KEY])
+        assert reservation['day'] == factory_distribution.local_day()
+        env.results[entry.command_id] = {'status': 'failed', 'submission_uncertain': True,
+            factory_distribution.RESERVATION_KEY: {'day': '1900-01-01'}}
+        factory_publishing.refresh_job(db, entry)
+        assert entry.result[factory_distribution.RESERVATION_KEY] == reservation
+        assert factory_distribution.publication_usage(db, 'douyin', reservation['day']) == 1
+        env.creator_submit.reset_mock()
+        assert factory_publishing.begin_publication(db, env.item_id, 'publish', 'douyin').id == entry.id
+    env.creator_submit.assert_not_called()
+
+
+def test_proven_non_submission_releases_capacity_but_unknown_does_not(distribution_publishing):
+    env = distribution_publishing
+    with env.sessions() as db:
+        _other_reserved(env, db, 1)
+        _other_reserved(env, db, 2, status='failed', result={'submission_attempted': False})
+        entry = factory_publishing.begin_publication(db, env.item_id, 'prepare', 'douyin')
+        assert entry.status == 'queued'
+    env.creator_submit.assert_called_once()
+
+
+def test_legacy_multiplatform_item_cannot_create_another_operation(distribution_publishing):
+    env = distribution_publishing
+    with env.sessions() as db:
+        db.get(FactoryRun, env.run_id).settings_snapshot = {}
+        item = db.get(FactoryItem, env.item_id)
+        item.brief = {k:v for k,v in item.brief.items() if k != 'distribution'}
+        first = FactoryPublication(item_id=item.id, platform='douyin', action='publish', status='submitted')
+        db.add(first)
+        db.add(FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish', status='submitted'))
+        db.commit()
+        assert factory_publishing.begin_publication(db, item.id, 'publish', 'douyin').id == first.id
+        with pytest.raises(ValueError, match='旧作品已有多平台'):
+            factory_publishing.begin_publication(db, item.id, 'prepare', 'kuaishou')
+    env.creator_submit.assert_not_called()
+
+
+def test_new_route_wrong_day_never_creates_a_job(distribution_publishing):
+    env = distribution_publishing
+    with env.sessions() as db:
+        item = db.get(FactoryItem, env.item_id)
+        item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'day': '2000-01-01'}}
+        db.commit()
+        for action in ('prepare', 'publish'):
+            with pytest.raises(ValueError, match='发行日期与今天不符'):
+                factory_publishing.begin_publication(db, item.id, action, 'douyin')
+        assert db.query(FactoryPublication).count() == 0
+    env.creator_submit.assert_not_called()

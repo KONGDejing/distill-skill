@@ -12,6 +12,7 @@ from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, Factory
 from agents.registry import AGENTS
 from services import factory_analytics
 from services.factory_resources import memory_state
+from services.factory_platform_policy import automation_enabled
 
 PRIVATE = Path(__file__).resolve().parents[2] / ".runtime/operations"
 ASSIGNMENTS = {
@@ -85,7 +86,7 @@ def overview(db, now=None):
         {"name": "自然关注提醒进入口播", "owner": "小文 / 小审", "status": "已有成片验证" if follow_ready else "待成片验证", "evidence": f"今日{follow_ready}条已完成作品含关注提醒"},
         {"name": "约2分30秒内容与实际时长", "owner": "小影 / 小审", "status": "已有成片验证" if long_ready else "待样片验收", "evidence": f"今日{long_ready}条成片达到135–165秒"},
         {"name": "四个平台运营数据", "owner": "小数", "status": "已接入" if len(connected) == 4 else "部分接入", "evidence": f"{len(connected)}/4个平台取得当前官方数据"},
-        {"name": "评论读取与回复", "owner": "小麦", "status": "联调中", "evidence": "抖音/快手评论入口已检查；小红书公共评论页仍要求独立登录。自动回复尚未通过真实回执验证"},
+        {"name": "评论读取与回复", "owner": "小麦", "status": "联调中", "evidence": "抖音/快手评论入口已检查；小红书仅支持手动查看与回复，浏览器自动化已停用。自动回复尚未通过真实回执验证"},
     ]
     completed = sum(i.status == "completed" for i in items)
     result = {"day": now.date().isoformat(), "assignments": assignments, "alerts": alerts, "resolved_issues": resolved_issues,
@@ -139,6 +140,8 @@ def serve():
                 with SessionLocal() as db:
                     patrol(db)
                     for platform in ("douyin", "xiaohongshu", "kuaishou", "bilibili"):
+                        if not automation_enabled(platform):
+                            continue
                         last = db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform).order_by(FactoryAnalyticsSnapshot.id.desc()).first()
                         if last and datetime.utcnow() - last.collected_at < timedelta(minutes=30):
                             continue

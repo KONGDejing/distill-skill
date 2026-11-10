@@ -21,7 +21,7 @@ RHYTHM = [
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "每30分钟", "owner": "小数", "task": "读取官方数据，保留采集时间、平台统计周期与缺失字段"},
-    {"time": "6个既定时段（±15分钟）", "owner": "小麦", "task": "每条向抖音、小红书、快手各提交一次，每天最多18次；逐条保存回执，异常结果不盲目重发"},
+    {"time": "6个既定时段（±15分钟）", "owner": "小麦", "task": "每条只发一个平台，每平台最多2条、每天合计6条；小红书交付人工发布包，其他平台逐条保存回执"},
     {"time": "每周三 / 周六 20:00", "owner": "小麦 / 小影", "task": "B站每周2条6–10分钟专题；账号与长视频流程完成接入后启用"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -65,7 +65,7 @@ def initialize(db):
                                "observed_at": snapshot.collected_at.replace(tzinfo=timezone.utc).isoformat() if snapshot else None}
     plan = FactoryGrowthPlan(id=1, baselines=baselines, policy={"weeks": 4, "weekly_min": .05, "weekly_stretch": .10,
         "shorts_per_day": DAILY_TARGET, "editor_quotas": dict(DAILY_EDITOR_QUOTAS),
-        "max_short_submissions_per_day": DAILY_TARGET * 3, "short_seconds": 150, "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
+        "max_short_submissions_per_day": DAILY_TARGET, "short_seconds": 150, "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
         "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_login_and_long_video_integration"}})
     db.add(plan); db.commit()
     return plan
@@ -131,7 +131,7 @@ def sync_work_orders(db, state, analytics, now):
         ("researcher3", "05:15", "给小影3交接热点与展会素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
-        ("publisher", "22:15", "逐时段发布并核对三平台回执", "今日各时段三平台均取得真实提交回执；公开审核另行核对", state["summary"]["fully_submitted_slots"], target),
+        ("publisher", "22:15", "按唯一平台分发，小红书交付人工发布包", "每条只分配一个平台、每天合计6条；抖音和快手记录回执，小红书等待官方客户端人工发布，不以素材包冒充已发布", state["summary"]["fully_submitted_slots"], target),
         ("analyst", "22:25", "补齐四平台经营数据", "4个平台有2小时内官方数据，缺失指标和统计周期明确标记", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]

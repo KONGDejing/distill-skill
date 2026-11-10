@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from models.factory import FactoryAnalyticsSnapshot
+from services.factory_platform_policy import automation_enabled, automation_state
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTALS = {
@@ -112,6 +113,10 @@ def normalize(platform, responses, body=""):
 
 
 def capture(platform):
+    if not automation_enabled(platform):
+        policy = automation_state(platform)
+        return {"status": "manual", "platform": policy["platform"], "message": policy["reason"],
+                "automation_enabled": False, "automation": policy, "historical_data_retained": True}
     from playwright.sync_api import sync_playwright
     from services.factory_resources import ensure_memory_available
     ensure_memory_available()
@@ -151,6 +156,9 @@ def capture(platform):
 
 
 def save_snapshot(db, platform, data):
+    if not automation_enabled(platform) or data.get("status") == "manual":
+        # A disabled capture is a policy state, not a new data observation.
+        return db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform).order_by(FactoryAnalyticsSnapshot.id.desc()).first()
     snapshot = FactoryAnalyticsSnapshot(platform=platform, status=data["status"], data=data)
     db.add(snapshot)
     db.commit()
@@ -163,6 +171,13 @@ def overview(db):
         latest = db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform).order_by(FactoryAnalyticsSnapshot.id.desc()).first()
         good = db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform, status="connected").order_by(FactoryAnalyticsSnapshot.id.desc()).first()
         data = dict(good.data) if good else {"metrics": dict.fromkeys(METRICS), "period": {}}
+        if not automation_enabled(platform):
+            policy = automation_state(platform)
+            platforms.append({**data, "platform": platform, "status": "manual", "automation": policy,
+                "automation_enabled": False, "historical_only": bool(good),
+                "message": policy["reason"] + " 自动采集已停止；以下仅保留历史数据及原采集时间。",
+                "collected_at": good.collected_at.replace(tzinfo=timezone.utc).isoformat() if good else None})
+            continue
         stale = bool(good and (datetime.utcnow() - good.collected_at > timedelta(hours=2) or latest.status != "connected"))
         platforms.append({**data, "platform": platform, "status": "stale" if stale else latest.status if latest else "not_connected",
                           "message": latest.data.get("message", "") if latest else "等待首次官方数据采集",

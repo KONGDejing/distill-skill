@@ -312,7 +312,8 @@ def test_rejected_script_never_reaches_rendering_or_packaging(isolated_factory, 
     lock.release.assert_called_once()
 
 
-def test_four_platform_archives_contain_assets_and_cannot_claim_publication(isolated_factory, monkeypatch):
+@pytest.mark.parametrize("single_platform", [False, True])
+def test_archives_contain_assets_and_only_target_assigned_platform(isolated_factory, monkeypatch, single_platform):
     run_id, item_id = _seed_item(isolated_factory, content={
         "title": "AI 工具使用指南", "script": "这是经过审核的测试文案。", "sources": [SOURCE],
     })
@@ -326,8 +327,16 @@ def test_four_platform_archives_contain_assets_and_cannot_claim_publication(isol
         path.write_bytes(f"fixture-only:{filename}".encode())
         media[field] = str(path)
     factory_service._save_item(item_id, media=media)
+    platforms = ["xiaohongshu"] if single_platform else PLATFORMS
+    if single_platform:
+        with isolated_factory() as db:
+            run = db.get(FactoryRun, run_id)
+            run.settings_snapshot = {**run.settings_snapshot, "distribution_policy": "single-platform-v1"}
+            item = db.get(FactoryItem, item_id)
+            item.brief = {**item.brief, "distribution": {"platform": "xiaohongshu", "day": "2026-11-11", "policy": "single-platform-v1"}}
+            db.commit()
     variants = [{"platform": platform, "title": f"{platform} 标题", "caption": "平台简介",
-                 "tags": ["AI"], "published": True, "status": "published"} for platform in PLATFORMS]
+                 "tags": ["AI"], "published": True, "status": "published"} for platform in platforms]
     model = Mock(return_value={"platforms": variants})
     monkeypatch.setattr(factory_service, "call_agent", model)
 
@@ -335,11 +344,12 @@ def test_four_platform_archives_contain_assets_and_cannot_claim_publication(isol
     # Redelivery must reuse complete archives instead of calling the model again.
     factory_service._package(run_id, item_id)
     assert model.call_count == 1
+    assert model.call_args.args[2]["platforms"] == platforms
 
     with isolated_factory() as db:
         item = db.get(FactoryItem, item_id)
         assert item.status == "completed"
-        assert {package["platform"] for package in item.packages} == set(PLATFORMS)
+        assert {package["platform"] for package in item.packages} == set(platforms)
         for package in item.packages:
             assert package["status"] == "package_ready"
             assert package.get("published", False) is False

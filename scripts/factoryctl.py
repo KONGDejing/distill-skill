@@ -11,7 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "short-video-ai-factory"
 CREATOR_PLATFORMS = ("douyin", "kuaishou", "bilibili")
 UNITS = [f"{PREFIX}-{role}.service" for role in
-         ("api", "worker", "scheduler", "operations", "xiaohongshu", *(f"creator-{platform}" for platform in CREATOR_PLATFORMS))]
+         ("api", "worker", "scheduler", "operations", *(f"creator-{platform}" for platform in CREATOR_PLATFORMS))]
+LEGACY_UNITS = [f"{PREFIX}-xiaohongshu.service"]
+ALL_UNITS = [*UNITS, *LEGACY_UNITS]
 
 
 def run(*args, check=True):
@@ -37,7 +39,6 @@ def install(port):
         "worker": f"{python} -m celery -A tasks.celery_app worker -l info -c 1 -Q short_video_ai_factory --hostname=factory@%h",
         "scheduler": f"{python} -m services.factory_scheduler",
         "operations": f"{python} -m services.factory_operations",
-        "xiaohongshu": f"{python} {ROOT / 'backend/services/xiaohongshu_connector.py'} --serve",
     }
     commands.update({f"creator-{platform}": f"{python} {ROOT / 'backend/services/creator_connector.py'} --serve --platform {platform}"
                      for platform in CREATOR_PLATFORMS})
@@ -71,16 +72,22 @@ WantedBy=default.target
     print(f"Installed services for {ROOT}; API and web UI: http://localhost:{port}")
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["install", "start", "stop", "restart", "status"])
     parser.add_argument("--port", type=int, default=3000)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.action == "install":
         install(args.port)
     elif args.action == "start":
         run("systemctl", "--user", "enable", "--now", *UNITS)
     elif args.action == "status":
-        run("systemctl", "--user", "status", "--no-pager", *UNITS, check=False)
+        run("systemctl", "--user", "status", "--no-pager", *ALL_UNITS, check=False)
+    elif args.action == "stop":
+        run("systemctl", "--user", "stop", *ALL_UNITS)
     else:
         run("systemctl", "--user", args.action, *UNITS)
+
+
+if __name__ == "__main__":
+    main()

@@ -81,7 +81,7 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
     policy = db.get(FactoryGrowthPlan, 1).policy
-    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 18
+    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 6
     assert policy["editor_quotas"] == {"producer": 2, "producer2": 2, "producer3": 2}
     assert all(order.evidence["required"] == 2 for order in daily if order.owner in policy["editor_quotas"])
 
