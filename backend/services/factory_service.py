@@ -601,6 +601,8 @@ def _render(run_id, item_id):
     if visual_style == "tech_montage":
         from services.factory_voice import synthesize_factory_audio
         from services.factory_montage import render_tech_montage
+        emit(run_id, owner, "voice_synthesis", "口播与分镜已审核，正在合成配音并对齐字幕：" + content["title"],
+             detail={"item_id": item_id})
         voice = synthesize_factory_audio(item_id, content, directory)
         check_cancel(run_id)
         if target_duration and abs(voice["duration"] - target_duration) > 15:
@@ -616,6 +618,8 @@ def _render(run_id, item_id):
             emit(run_id, "director", "duration_revision", f"按实测配音时长修订一次，目标{target_duration}秒", "warning")
             _write_and_review(run_id, item_id)
             return _render(run_id, item_id)
+        emit(run_id, owner, "rendering", f"配音已完成（{voice['duration']:.1f}秒），正在按口播裁剪画面并检查重复：" + content["title"],
+             detail={"item_id": item_id, "tts_engine": voice["tts_engine"]})
         media = render_tech_montage(item_id, content, voice["audio_path"], voice["subtitle_path"], assets, directory)
         media.update(tts_engine=voice["tts_engine"], speech_timings_path=voice["speech_timings_path"], style="tech_montage")
     else:

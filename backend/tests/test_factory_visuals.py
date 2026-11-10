@@ -81,6 +81,19 @@ def test_author_reviewed_material_keeps_its_own_credit():
     assert 'pick_place' in data['topic_tags']
 
 
+def test_reviewed_window_excludes_static_intro_and_preserves_default_start():
+    diagram = {'url': 'https://sumo048.github.io/CS-pi_site/media/story/safe_vs_plausible.mp4',
+               'source_title': 'CS-Pi'}
+    clip = visuals._metadata(diagram, {'duration': 19.167})['clips'][0]
+    assert (clip['start'], clip['end']) == (2, 4)
+    shorter = visuals._metadata(diagram, {'duration': 3})['clips'][0]
+    assert (shorter['start'], shorter['end']) == (2, 3)
+    unchanged = visuals._metadata({
+        'url': 'https://sumo048.github.io/CS-pi_site/media/hardware/cspi_success_0.mp4',
+        'source_title': 'CS-Pi'}, {'duration': 3.667})['clips'][0]
+    assert (unchanged['start'], unchanged['end']) == (0, 3.667)
+
+
 def test_project_data_is_read_as_json_and_keeps_task_variety():
     script = 'https://ai4ce.github.io/VICTR/data/rollouts.js'
     data = {task: {method: [{'video': f'assets/rollouts/{task}/{method}/1.mp4', 'speed': 2}]
@@ -164,7 +177,7 @@ def test_phonon_collects_linked_official_demos_without_following_setup_links(mon
         if request.url.path.startswith("/blog/"):
             return httpx.Response(200, text=''.join(
                 f'<a href="/assets/release-phonon-open-weight/demos/{name}.mp4">Demo</a>'
-                for name in ("on-watch", "repcoach", "chrome-extension"))
+                for name in ("on-watch", "repcoach", "lamp-hat", "chrome-extension"))
                 + '<a href="/assets/release-phonon-open-weight/setup.prompt">Setup</a>'
                 + '<a href="https://gradium.ai/blog/unrelated">Other</a>')
         return httpx.Response(200, content=request.url.path.encode())
@@ -178,8 +191,33 @@ def test_phonon_collects_linked_official_demos_without_following_setup_links(mon
         assert "Gradium / Phonon" in asset["credit"]
         assert asset["license_url"] is None
         assert "未核实" in asset["rights_note"]
-        assert "on_device" in asset["topic_tags"]
+        assert asset["topic_tags"]
+        assert not asset["url"].endswith("/chrome-extension.mp4")
+    assert not any("chrome-extension" in url for url in visited)
     assert not any("setup.prompt" in url or "/unrelated" in url for url in visited)
+
+
+def test_retired_phonon_demo_cannot_return_from_verified_archive(monkeypatch, tmp_path):
+    import hashlib
+    requested = []
+    def offline(request):
+        requested.append(str(request.url))
+        return httpx.Response(503)
+    _collector(monkeypatch, tmp_path, offline)
+    launch = "https://gradium.ai/blog/release-phonon-open-weight"
+    for name in ("chrome-extension", "lamp-hat", "on-watch", "repcoach"):
+        path = tmp_path / f"{name}.mp4"
+        path.write_bytes(f"previously verified {name}".encode())
+        visuals._archive_asset({"id": name, "url": f"https://gradium.ai/assets/release-phonon-open-weight/demos/{name}.mp4",
+            "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size, "duration": 120, "motion_verified": True,
+            "reference_source_url": launch, "source_url": launch, "source_title": "Phonon"})
+    result = visuals.collect_visuals([{"id": "phonon", "url": launch, "title": "Phonon"}],
+                                     tmp_path / "output", limit=3)
+    assert result["status"] == "ready"
+    assert {asset["id"] for asset in result["assets"]} == {"lamp-hat", "on-watch", "repcoach"}
+    assert not (tmp_path / "output/chrome-extension.mp4").exists()
+    assert not requested
 
 
 def test_duplicate_video_bytes_cannot_satisfy_three_asset_requirement(monkeypatch, tmp_path):

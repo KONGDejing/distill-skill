@@ -23,7 +23,7 @@ const STAGES = [
   { keys: ['research', 'researching'], label: '情报采集', icon: Search },
   { keys: ['planning', 'plan', 'director'], label: '选题决策', icon: Workflow },
   { keys: ['writing', 'script', 'review', 'reviewing', 'script_review', 'revision'], label: '文案审核', icon: FileText },
-  { keys: ['production', 'render', 'rendering', 'video', 'media_review', 'quality'], label: '制作质检', icon: Film },
+  { keys: ['production', 'render', 'rendering', 'voice_synthesis', 'video', 'media_review', 'quality'], label: '制作质检', icon: Film },
   { keys: ['adapting', 'publish', 'publishing', 'packaging', 'packages'], label: '平台适配', icon: Layers3 },
   { keys: ['report', 'reporting', 'analysis', 'completed', 'finished'], label: '复盘交付', icon: TrendingUp },
 ]

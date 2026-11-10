@@ -66,12 +66,14 @@ def authorize_catch_up(db, run, config, now=None):
 
 def release_dict(db, slot):
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
+    if item is None and slot.run_id:
+        item = db.query(FactoryItem).filter_by(run_id=slot.run_id, position=slot.position).first()
     until = catch_up_until(db, slot)
     return {"id": slot.id, "due_at": slot.due_at.replace(tzinfo=timezone.utc).isoformat(),
             "nominal_at": (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).isoformat(),
             "jitter_seconds": slot.jitter_seconds,
             "item_id": slot.item_id, "run_id": slot.run_id, "status": slot.status,
-            "title": (item.content or {}).get("title") if item else None,
+            "title": ((item.content or {}).get("title") or (item.brief or {}).get("title")) if item else None,
             "platforms": slot.platforms, "results": slot.results or {},
             "catch_up_until": until.replace(tzinfo=timezone.utc).isoformat() if until else None}
 

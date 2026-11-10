@@ -32,7 +32,7 @@ def _sample():
     total, available = memory["MemTotal"], memory["MemAvailable"]
     if total <= 0 or not 0 <= available <= total:
         raise ValueError("invalid memory counters")
-    project, processes, unreadable = 0, 0, 0
+    project, processes, unreadable, rss_fallbacks = 0, 0, 0, 0
     for process in PROC.iterdir():
         if not process.name.isdigit():
             continue
@@ -47,6 +47,22 @@ def _sample():
             project += int(pss.split()[1]) * 1024
             processes += 1
         except (OSError, ValueError, StopIteration):
+            # Short-lived encoders can lose their smaps during exec/exit while
+            # status is still readable. RSS is a conservative upper bound for
+            # PSS; count it instead of treating a live process as zero memory.
+            try:
+                status = dict(line.split(":", 1) for line in (process / "status").read_text().splitlines() if ":" in line)
+                if status.get("State", "").strip().split()[0] in {"Z", "X"}:
+                    continue
+                rss = int(status["VmRSS"].split()[0])
+                if rss < 0:
+                    raise ValueError("invalid RSS")
+                project += rss * 1024
+                processes += 1
+                rss_fallbacks += 1
+                continue
+            except (OSError, ValueError, KeyError, IndexError):
+                pass
             if process.exists():
                 # A finished child can remain as a zombie until reaped. It has
                 # no address space/smaps and must not pause the whole factory.
@@ -64,7 +80,8 @@ def _sample():
     except (OSError, ValueError, KeyError, StopIteration):
         pass
     return {"total": total, "available": available, "project": project,
-            "processes": processes, "unreadable_processes": unreadable, "stall": stall}
+            "processes": processes, "unreadable_processes": unreadable,
+            "rss_fallback_processes": rss_fallbacks, "stall": stall}
 
 
 def memory_state(*, fresh=False):
@@ -97,6 +114,8 @@ def memory_state(*, fresh=False):
                          total_gib=round(sample["total"] / GIB, 2),
                          min_available_gib=round(reserve / GIB, 2),
                          full_stall_avg10=sample["stall"], process_count=sample["processes"])
+            state.update(unreadable_processes=sample["unreadable_processes"],
+                         rss_fallback_processes=sample.get("rss_fallback_processes", 0))
         except (OSError, ValueError, KeyError):
             state.update(status="unavailable", blocked=True, reason="暂时无法读取机器内存，停止启动新的生产任务")
         _cached, _cached_at = state, time.monotonic()
@@ -105,6 +124,11 @@ def memory_state(*, fresh=False):
 
 def ensure_memory_available():
     state = memory_state()
+    if state["blocked"] and state["reason"] == "部分工程进程内存暂时无法核验":
+        # Confirm a disappearing-process race once; genuine memory/PSI limits
+        # still pause immediately, and persistently unreadable metrics fail closed.
+        time.sleep(0.05)
+        state = memory_state(fresh=True)
     if state["blocked"]:
         raise MemoryPressure(state)
     return state

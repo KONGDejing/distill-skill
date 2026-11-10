@@ -74,3 +74,27 @@ def test_project_pss_excludes_similarly_named_projects_and_shared_rss(tmp_path, 
     sample = resources._sample()
     assert sample["project"] == 300 * 1024
     assert sample["processes"] == 2 and sample["stall"] == 0.2
+
+
+@pytest.mark.parametrize('state,rss,expected,unreadable', [('S',400,400,0),('Z',None,0,0),('S',None,0,1)])
+def test_missing_smaps_counts_live_rss_or_blocks_unverifiable_process(tmp_path,monkeypatch,state,rss,expected,unreadable):
+    proc=tmp_path/'proc';proc.mkdir()
+    root=tmp_path/'factory';root.mkdir()
+    (proc/'meminfo').write_text('MemTotal: 100000 kB\nMemAvailable: 40000 kB\n')
+    process=proc/'20';process.mkdir()
+    (process/'cwd').symlink_to(root,target_is_directory=True)
+    (process/'stat').write_text(f'20 (encoder) {state} 1')
+    (process/'status').write_text(f'State:\t{state} (state)\n'+(f'VmRSS:\t{rss} kB\n' if rss is not None else ''))
+    monkeypatch.setattr(resources,'PROC',proc);monkeypatch.setattr(resources,'ROOT',root)
+    sample=resources._sample()
+    assert sample['project']==expected*1024
+    assert sample['unreadable_processes']==unreadable
+    assert sample['rss_fallback_processes']==(1 if rss is not None else 0)
+
+
+def test_transient_unreadable_process_is_confirmed_before_pausing(normal,monkeypatch):
+    first={**normal,'unreadable_processes':1}
+    samples=iter([first,normal])
+    monkeypatch.setattr(resources,'_sample',lambda:next(samples))
+    monkeypatch.setattr(resources.time,'sleep',lambda seconds:None)
+    assert resources.ensure_memory_available()['blocked'] is False

@@ -23,6 +23,11 @@ from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from services.factory_reviewed_visuals import (
+    REVIEWED_LOCAL_ASSETS, REVIEWED_LOCAL_SOURCE_URLS,
+    REVIEWED_LOCAL_MAX_FILE_BYTES, REVIEWED_LOCAL_MAX_TOTAL_BYTES,
+)
+
 STORAGE = Path(__file__).resolve().parents[1] / "storage"
 PAGE_RULES = {
     "www.ces.tech": ("/press-releases/", "/videos/", "/topics/"),
@@ -150,8 +155,10 @@ TOYBLOCKS_FOCUS = {
 PHONON = {
     "on-watch": ("Apple Watch 关闭 Wi-Fi 后逐步引导制作咖啡的官方演示。", ["on_device", "watch", "offline"]),
     "repcoach": ("iPhone 上离线健身计数与语音指导的官方演示。", ["on_device", "phone", "offline"]),
-    "chrome-extension": ("Phonon 在浏览器扩展中朗读网页文本的官方演示。", ["on_device", "browser", "speech"]),
+    # chrome-extension is excluded: its mostly static page holds fail actual
+    # shot motion / repeated-sequence checks even though the whole file moves.
     "offline-fm": ("浏览器中的离线恐龙游戏，Phonon 为电台主持生成语音。", ["on_device", "browser", "voices"]),
+    "lamp-hat": ("Autonomous 的 Lamp 桌面机器人戴着分院帽转动灯头、与人对话；官方说明角色语音由 Phonon 提供，不代表 Phonon 控制机器人动作，也不能据此认定全套对话系统离线。", ["real_robot", "voices", "character"]),
     "nativ-translate-mobile": ("手机本地英法翻译演示：Qwen 翻译、Phonon 朗读、MLX 推理。", ["on_device", "phone", "languages"]),
     "nativ-translate-desktop": ("桌面本地英法翻译演示：Qwen 翻译、Phonon 朗读、MLX 推理。", ["on_device", "desktop", "languages"]),
 }
@@ -159,13 +166,17 @@ PHONON = {
 # Verified operating moments, excluding the talking-head introduction and end
 # screens. Keep full-frame provenance even when also displaying a close-up.
 PHONON_CLIPS = {
-    "on-watch": [(13.4, 34.8), (57, 66)],
+    # 2026-11-10: one-second contact sheets and 4 fps decoded samples checked
+    # against the unchanged official source. Added grinding/filter preparation,
+    # pouring/timer operation and serving; omit the low-action 84.8-88.2s wait.
+    # Adjacent old/new windows are merged, never counted as separate coverage.
+    "on-watch": [(13.4, 55), (57, 84.8), (88.2, 95)],
     "repcoach": [(7, 48)],
-    "chrome-extension": [(2, 30)],
+    # Original robot/person motion throughout; no loop, crop or timing change.
+    "lamp-hat": [(0.5, 34.5)],
 }
 PHONON_FOCUS = {
     "on-watch": [{"rect": [0.15, 0.08, 0.72, 0.88], "label": "手表离线操作"}],
-    "chrome-extension": [{"rect": [0.07, 0.16, 0.86, 0.77], "label": "浏览器朗读界面"}],
 }
 
 
@@ -273,7 +284,7 @@ class _MediaParser(HTMLParser):
                 continue
 
 
-def _probe(path, deadline=None):
+def _probe(path, deadline=None, *, max_duration=180):
     def timeout():
         remaining = 15 if deadline is None else min(15, deadline - time.monotonic())
         if remaining <= 0:
@@ -286,7 +297,7 @@ def _probe(path, deadline=None):
     data = json.loads(subprocess.check_output(command, timeout=timeout(), stderr=subprocess.DEVNULL))
     stream = (data.get("streams") or [{}])[0]
     duration = float(data.get("format", {}).get("duration", 0))
-    if not 3 <= duration <= 180 or stream.get("width", 0) < 160 or stream.get("height", 0) < 90:
+    if not 3 <= duration <= max_duration or stream.get("width", 0) < 160 or stream.get("height", 0) < 90:
         raise ValueError("文件不是可用的短视频素材")
     # Reject a still frame encoded as MP4. Four low-resolution samples bound the
     # decode cost while requiring measurable visual change in the opening scene.
@@ -309,6 +320,14 @@ def _probe(path, deadline=None):
 def _metadata(candidate, metadata):
     from services.factory_visual_catalog import INSPECTED_ASSETS
     url = candidate["url"]
+    reviewed = REVIEWED_LOCAL_ASSETS.get(url)
+    if reviewed and metadata.get("sha256") == reviewed["sha256"]:
+        return {"label": "官方演示", "kind": "official_video", "description": reviewed["description"],
+                "topic_tags": list(reviewed["topic_tags"]), "credit": "画面来源：NVIDIA（官方游戏技术演示／资料画面）",
+                "rights_note": "NVIDIA官网公开演示，未核实本项目商业转载许可；保留出处，不得标作CES 2027现场或独立实测。",
+                "license_url": None, "focus_regions": [],
+                "clips": [{"start": first, "end": min(last, metadata["duration"]), "description": description}
+                          for first, last, description in reviewed["clips"] if first < metadata["duration"]]}
     name = Path(urlsplit(url).path).stem
     toyblocks = (urlsplit(url).hostname == "allenai.github.io"
                  and urlsplit(url).path.startswith("/ToyBlocks/media/"))
@@ -342,7 +361,7 @@ def _metadata(candidate, metadata):
     inspected = INSPECTED_ASSETS.get(hashlib.sha256(url.encode()).hexdigest()[:20])
     if inspected:
         description, tags = inspected["description"], inspected["topic_tags"]
-        clips = [{"start": 0, "end": min(inspected["end"], metadata["duration"]), "description": description}]
+        clips = [{"start": inspected.get("start", 0), "end": min(inspected["end"], metadata["duration"]), "description": description}]
         credit = inspected.get("credit", "画面来源：Google DeepMind（官方演示）")
     return {"label": "官方演示", "kind": "official_video", "description": description,
             "topic_tags": tags, "credit": credit, "rights_note": rights, "license_url": license_url,
@@ -437,12 +456,82 @@ def _reuse_archived(identifier, path):
         return
 
 
+def _import_reviewed_local_assets(sources, directory, limit, deadline):
+    """Import pinned originals only after source, size, hash, and media checks.
+
+    The larger budget applies only to these reviewed local bytes. It cannot
+    raise network download limits or admit another URL, source, or file hash.
+    Archive metadata is not trusted to nominate paths or authorize exceptions.
+    """
+    by_url = {s.get("url"): s for s in sources[:6] if isinstance(s, dict)}
+    assets, warnings, total_bytes = [], [], 0
+    for url, reviewed in REVIEWED_LOCAL_ASSETS.items():
+        source = next((by_url[ref] for ref in reviewed["reference_urls"] if ref in by_url), None)
+        if source is None or len(assets) >= limit:
+            continue
+        identifier = hashlib.sha256(url.encode()).hexdigest()[:20]
+        destination = directory / (identifier + ".mp4")
+        temporary = directory / (identifier + "." + uuid.uuid4().hex + ".part")
+        candidates = (STORAGE / "factory/asset-library" / (identifier + ".mp4"),
+                      STORAGE / reviewed["local_path"])
+        try:
+            if (reviewed["bytes"] > REVIEWED_LOCAL_MAX_FILE_BYTES
+                    or total_bytes + reviewed["bytes"] > REVIEWED_LOCAL_MAX_TOTAL_BYTES):
+                raise ValueError("已审原片超过专用本地导入预算")
+            if destination.is_symlink():
+                raise ValueError("素材缓存不能是符号链接")
+            verified = False
+            for cached in candidates:
+                if (cached.is_symlink() or not cached.resolve().is_relative_to(STORAGE.resolve())
+                        or not cached.is_file() or cached.stat().st_size != reviewed["bytes"]):
+                    continue
+                digest, count = hashlib.sha256(), 0
+                with cached.open("rb") as original, temporary.open("wb") as target:
+                    while chunk := original.read(1024 * 1024):
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("已审原片导入超过总时间限制")
+                        count += len(chunk)
+                        if count > min(reviewed["bytes"], REVIEWED_LOCAL_MAX_FILE_BYTES):
+                            raise ValueError("已审原片实际体积不符")
+                        digest.update(chunk)
+                        target.write(chunk)
+                if count == reviewed["bytes"] and digest.hexdigest() == reviewed["sha256"]:
+                    verified = True
+                    break
+                temporary.unlink(missing_ok=True)
+            if not verified:
+                raise ValueError("没有匹配固定SHA256的已审本地原片；未扩大网络下载权限")
+            # Duration exception is reached only after checking the original bytes.
+            metadata = _probe(temporary, deadline, max_duration=reviewed["duration"] + .1)
+            if abs(metadata["duration"] - reviewed["duration"]) > .1:
+                raise ValueError("已审原片时长与登记信息不符")
+            temporary.replace(destination)
+            candidate = {"url": url, "source_id": source.get("id"),
+                         "source_title": source.get("title", "NVIDIA官方演示"),
+                         "source_url": source["url"], "reference_source_url": source["url"],
+                         "source_chain": [source["url"], url]}
+            metadata["sha256"] = reviewed["sha256"]
+            asset = {**candidate, **metadata, **_metadata(candidate, metadata), "id": identifier,
+                     "path": str(destination), "download_url": url, "bytes": reviewed["bytes"],
+                     "published": False, "reuse_basis": "reviewed_exact_source_url_and_pinned_original_sha256"}
+            _archive_asset(asset)
+            assets.append(asset)
+            total_bytes += reviewed["bytes"]
+        except (OSError, ValueError, KeyError, TimeoutError, subprocess.SubprocessError) as exc:
+            warnings.append(f"已审原片 {url} 导入失败（{type(exc).__name__}：{str(exc)[:120]}）")
+        finally:
+            temporary.unlink(missing_ok=True)
+    return assets, warnings
+
+
 def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6) -> dict:
     """Return status, assets, warnings and manifest_path; ready requires 3 clips.
 
     ``sources`` must be this script's already cited source objects (id/title/url),
     not a topical search query. Fetch at most six pages/two linked project hops,
     six videos, 15 MB per file, 60 MB total and 180 seconds of network work.
+    Three pinned NVIDIA originals may be imported locally under a separate
+    80 MB/file, 150 MB total budget; ordinary download limits remain unchanged.
     Every asset retains its complete reference -> project -> media source chain.
     """
     if (not isinstance(sources, list) or not isinstance(limit, int)
@@ -452,16 +541,20 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
     if not directory.is_relative_to(STORAGE.resolve()):
         raise ValueError("视觉素材输出目录必须位于本工程 storage 内")
     directory.mkdir(parents=True, exist_ok=True)
-    warnings, queue, candidates = [], [], []
+    deadline, budget = time.monotonic() + MAX_SECONDS, [MAX_TOTAL_BYTES]
+    assets, warnings = _import_reviewed_local_assets(sources, directory, limit, deadline)
+    queue, candidates = [], []
     for source in sources[:6]:
         try:
+            if source["url"] in REVIEWED_LOCAL_SOURCE_URLS:
+                # Exact local imports do not broaden the network allowlist.
+                continue
             address = _url(source["url"])
             queue.append((address, source, [address], 0))
         except (TypeError, KeyError, ValueError):
             warnings.append("一个引用来源不在视觉素材官方页面白名单中，已跳过")
-    deadline, budget = time.monotonic() + MAX_SECONDS, [MAX_TOTAL_BYTES]
     visited, media_seen = set(), set()
-    assets, fingerprints = [], set()
+    fingerprints = {asset["sha256"] for asset in assets}
     # A retained, attributed source clip remains usable when its original page
     # is temporarily unreachable. Match the exact cited page, never a keyword.
     referenced = {s.get("url") for s in sources}
@@ -471,6 +564,13 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
             break
         try:
             entry = json.loads(metadata_path.read_text())
+            if entry.get("url") in REVIEWED_LOCAL_ASSETS:
+                # Pinned originals cannot fall back to mutable archive metadata.
+                continue
+            cached_url = urlsplit(str(entry.get("url") or ""))
+            if cached_url.hostname == "gradium.ai" and Path(cached_url.path).stem not in PHONON:
+                # A retired Phonon demo must not reappear through an older cache.
+                continue
             if not any(r.get("url") in referenced for r in entry.get("references", [])):
                 continue
             cached = Path(entry["path"]).resolve()
@@ -531,7 +631,7 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                 warnings.append(f"页面 {address} 采集失败（{type(exc).__name__}）")
         priorities = {**{name: index for index, name in enumerate(TOYBLOCKS)},
                       **{name: index for index, name in enumerate(("chrome-extension", "offline-fm",
-                          "nativ-translate-mobile", "nativ-translate-desktop", "repcoach", "on-watch"))}}
+                          "repcoach", "on-watch", "lamp-hat", "nativ-translate-mobile", "nativ-translate-desktop"))}}
         candidates.sort(key=lambda candidate: priorities.get(Path(urlsplit(candidate["url"]).path).stem, 20)
                         if urlsplit(candidate["url"]).hostname in {"allenai.github.io", "gradium.ai"} else 30)
         for candidate in candidates[:18]:
