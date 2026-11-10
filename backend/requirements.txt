@@ -7,7 +7,7 @@ python-multipart==0.0.12
 celery[redis]==5.4.0
 redis==5.1.1
 openai==1.51.0
-edge-tts==6.1.13
+edge-tts==7.3.1
 yt-dlp==2024.9.27
 playwright==1.47.0
 faster-whisper>=1.0.0

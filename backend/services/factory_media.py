@@ -149,10 +149,11 @@ def _timed_chunks(text: str, start: float, end: float) -> list[dict]:
     return result
 
 
-async def _edge_speech(text: str, voice: str, audio: Path) -> list[dict]:
+async def _edge_speech(text: str, voice: str, audio: Path, *,
+                       rate: str = "+0%", pitch: str = "+0Hz") -> list[dict]:
     import edge_tts
 
-    kwargs: dict[str, Any] = {"rate": "+0%", "pitch": "+0Hz"}
+    kwargs: dict[str, Any] = {"rate": rate, "pitch": pitch}
     params = inspect.signature(edge_tts.Communicate).parameters
     if "boundary" in params:
         kwargs["boundary"] = "WordBoundary"

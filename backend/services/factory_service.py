@@ -102,6 +102,7 @@ def run_detail(db, run):
             "audio_url": storage_url(media.get("audio_path")),
             "cover_url": storage_url(media.get("cover_path")), "duration": media.get("duration"),
             "tts_engine": media.get("tts_engine"), "packages": packages, "error": item.error,
+            "voice_profile": media.get("voice_profile"), "voice_label": media.get("voice_label"),
             "preview": {"video_url": storage_url(preview.get("video_path")),
                         "title": preview.get("title"), "quality": preview.get("quality", {}),
                         "hook": preview.get("hook"), "script_url": storage_url(preview.get("narration_text_path")),
@@ -538,6 +539,8 @@ def _render(run_id, item_id):
         visual_style = db.get(FactoryRun, run_id).settings_snapshot.get("visual_style", "cards")
         target_duration = db.get(FactoryRun, run_id).settings_snapshot.get("target_duration_seconds")
         if media.get("video_path") and Path(media["video_path"]).is_file():
+            if owner == "producer2" and media.get("voice_profile") != "calm_male":
+                raise ValueError("这份未发布论文仍是旧声线，需要按沉稳男声重制后交付")
             from services.factory_montage import validate_publication_media
             from services.factory_papers import require_paper_publication
             validate_publication_media(media)
@@ -547,6 +550,11 @@ def _render(run_id, item_id):
     ensure_memory_available()
     _save_item(item_id, status="rendering")
     directory = FACTORY_DIR / run_id / item_id
+    if owner == "producer2":
+        # A new voice gets a separate delivery directory. Keep the previous
+        # unsubmitted candidate and its packages available for audit.
+        directory = directory / "voice-calm-male"
+        content = {**content, "voice_profile": "calm_male", "editor_id": owner}
     assets = []
     if visual_style == "tech_montage" and brief.get("paper_document"):
         from services.factory_papers import paper_assets
@@ -604,6 +612,8 @@ def _render(run_id, item_id):
         emit(run_id, owner, "voice_synthesis", "口播与分镜已审核，正在合成配音并对齐字幕：" + content["title"],
              detail={"item_id": item_id})
         voice = synthesize_factory_audio(item_id, content, directory)
+        if owner == "producer2" and voice.get("voice_profile") != "calm_male":
+            raise ValueError("论文配音未使用要求的沉稳男声，停止交付")
         check_cancel(run_id)
         if target_duration and abs(voice["duration"] - target_duration) > 15:
             with SessionLocal() as db:
@@ -622,6 +632,7 @@ def _render(run_id, item_id):
              detail={"item_id": item_id, "tts_engine": voice["tts_engine"]})
         media = render_tech_montage(item_id, content, voice["audio_path"], voice["subtitle_path"], assets, directory)
         media.update(tts_engine=voice["tts_engine"], speech_timings_path=voice["speech_timings_path"], style="tech_montage")
+        media.update({key: voice.get(key) for key in ("voice_profile", "voice_name", "voice_label", "voice_rate", "voice_pitch")})
     else:
         from services.factory_media import render_factory_video
         media = render_factory_video(item_id, content, directory)

@@ -439,3 +439,28 @@ def test_memory_pressure_stops_new_submission_without_changing_prepared_job(publ
         assert db.get(FactoryPublication, prepared.id).status == 'prepared'
         assert db.query(FactoryPublication).filter_by(item_id=publishing.item_id, action='publish').count() == 0
         publishing.submit.assert_not_called()
+
+
+def test_paper_editor_requires_requested_male_voice_before_new_submission(publishing):
+    with publishing.sessions() as db:
+        item=db.get(FactoryItem,publishing.item_id)
+        item.brief={**item.brief,'editor_id':'producer2'}
+        db.commit()
+        with pytest.raises(ValueError,match='沉稳男声'):
+            factory_publishing.begin_publication(db,item.id,'prepare')
+        publishing.submit.assert_not_called()
+        item.media={**item.media,'voice_profile':'calm_male'}
+        db.commit()
+        job=factory_publishing.begin_publication(db,item.id,'prepare')
+        assert job.status=='queued'
+        publishing.submit.assert_called_once()
+
+
+def test_new_voice_requirement_preserves_existing_paper_submission_receipt(publishing):
+    with publishing.sessions() as db:
+        item=db.get(FactoryItem,publishing.item_id)
+        item.brief={**item.brief,'editor_id':'producer2'}
+        receipt=FactoryPublication(item_id=item.id,platform='xiaohongshu',action='publish',status='submitted',result={'evidence':{'type':'success_page'}})
+        db.add(receipt);db.commit()
+        assert factory_publishing.begin_publication(db,item.id,'publish').id==receipt.id
+        publishing.submit.assert_not_called()

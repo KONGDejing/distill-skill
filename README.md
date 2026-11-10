@@ -45,6 +45,8 @@
 
 已提交作品的新版本保存在独立 `media.preview` 中，工作台显示“新版演示混剪样片 · 未发布”；原交付文件和提交记录保留。定时发布仅使用对应排期批次中通过质检的原创成片，新版样片和旧视频不会被自动拿来补量。
 
+小影2的未发布论文视频固定使用沉稳男声（Yunyang、语速−8%、原始音调），配音缓存与成片按声线区分；服务失败时暂停该条，不回退到女声。已发布作品保留。使用 `edge-tts==7.3.1`，旧版可能因握手协议失效返回403；部署工具优先使用仓库根目录 `.venv/bin/python`，避免修改其它项目共用的Python环境。
+
 ## 定时发行
 
 北京时间：**06:00、07:00、08:00、09:10、10:30、17:00、19:00、20:00、21:00、22:00**。建议每天00:30提前开工；新安装默认关闭自动提交，在生产计划中启用。中途开启只安排当天剩余时间和次日计划，不补发已经过去的时段。
@@ -60,7 +62,8 @@
 ```bash
 npm --prefix frontend ci
 npm --prefix frontend run build
-/usr/bin/python3 -m pip install -r backend/requirements.txt
+/usr/bin/python3 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
 /usr/bin/python3 scripts/factoryctl.py install --port 3000
 /usr/bin/python3 scripts/factoryctl.py start
 ```

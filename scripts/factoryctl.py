@@ -30,14 +30,16 @@ def install(port):
         network_file.chmod(0o600)
     directory = Path.home() / ".config" / "systemd" / "user"
     directory.mkdir(parents=True, exist_ok=True)
+    local_python = ROOT / ".venv" / "bin" / "python"
+    python = str(local_python) if local_python.is_file() else sys.executable
     commands = {
-        "api": f"{sys.executable} -m uvicorn main:app --host 0.0.0.0 --port {port}",
-        "worker": f"{sys.executable} -m celery -A tasks.celery_app worker -l info -c 1 -Q short_video_ai_factory --hostname=factory@%h",
-        "scheduler": f"{sys.executable} -m services.factory_scheduler",
-        "operations": f"{sys.executable} -m services.factory_operations",
-        "xiaohongshu": f"{sys.executable} {ROOT / 'backend/services/xiaohongshu_connector.py'} --serve",
+        "api": f"{python} -m uvicorn main:app --host 0.0.0.0 --port {port}",
+        "worker": f"{python} -m celery -A tasks.celery_app worker -l info -c 1 -Q short_video_ai_factory --hostname=factory@%h",
+        "scheduler": f"{python} -m services.factory_scheduler",
+        "operations": f"{python} -m services.factory_operations",
+        "xiaohongshu": f"{python} {ROOT / 'backend/services/xiaohongshu_connector.py'} --serve",
     }
-    commands.update({f"creator-{platform}": f"{sys.executable} {ROOT / 'backend/services/creator_connector.py'} --serve --platform {platform}"
+    commands.update({f"creator-{platform}": f"{python} {ROOT / 'backend/services/creator_connector.py'} --serve --platform {platform}"
                      for platform in CREATOR_PLATFORMS})
     for role, command in commands.items():
         unit = directory / f"{PREFIX}-{role}.service"
