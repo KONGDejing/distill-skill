@@ -25,6 +25,12 @@ import httpx
 
 STORAGE = Path(__file__).resolve().parents[1] / "storage"
 PAGE_RULES = {
+    # Author project pages linked by the corresponding arXiv records.
+    "sumo048.github.io": ("/CS-pi_site/",),
+    "roboforpc.github.io": ("/",),
+    "ai4ce.github.io": ("/VICTR/",),
+    "weirdlabuw.github.io": ("/qoil/",),
+    "zju3dv.github.io": ("/SplatAnything/",),
     "deepmind.google": ("/models/veo/", "/models/genie/", "/models/gemini-robotics/"),
     "allenai.github.io": ("/ToyBlocks/",),
     "allenai.org": ("/blog/",),
@@ -55,6 +61,43 @@ MAX_PAGES = 6
 MAX_DEPTH = 2
 MAX_SECONDS = 180
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
+PROJECT_DATA = {
+    "https://ai4ce.github.io/VICTR/data/rollouts.js": "VICTR_ROLLOUTS",
+    "https://zju3dv.github.io/SplatAnything/assets/js/gallery.js": "SPLAT_GALLERY",
+}
+
+
+def _project_videos(document, script_url, page_url):
+    """Read the observed JSON assignments; never execute downloaded JavaScript."""
+    variable = PROJECT_DATA.get(script_url)
+    if not variable:
+        return []
+    match = re.search(r"window\." + re.escape(variable) + r"\s*=\s*", document)
+    if not match:
+        return []
+    data, _ = json.JSONDecoder().raw_decode(document[match.end():])
+    if not isinstance(data, dict):
+        return []
+    candidates = []
+    for group, entries in list(data.items())[:12]:
+        if variable == "VICTR_ROLLOUTS" and isinstance(entries, dict):
+            # A method comparison from several tasks, not six trials of one action.
+            for method in ("victr", "pi05"):
+                row = next((r for r in entries.get(method, []) if isinstance(r, dict) and r.get("video")), None)
+                if row:
+                    candidates.append((row["video"], f"作者目录任务：{group}；方法：{method}；作者标注播放倍率：{row.get('speed', '未提供')}。动作仍需抽帧核对。"))
+        elif variable == "SPLAT_GALLERY" and isinstance(entries, list):
+            candidates.extend((row["preview"], f"作者3D重建预览目录：{group} / {row.get('name', '')}；不是现场实拍。")
+                              for row in entries[:2] if isinstance(row, dict) and row.get("preview"))
+    videos = []
+    for relative, description in candidates[:18]:
+        try:
+            url = _url(urljoin(page_url, relative), media=True)
+            if Path(urlsplit(url).path).suffix.lower() in VIDEO_SUFFIXES:
+                videos.append({"url": url, "description": description, "data_source": script_url})
+        except (ValueError, TypeError):
+            continue
+    return videos
 
 # Descriptions/time ranges checked against the official project page and actual
 # downloaded frames, not inferred from model-generated text or a URL filename.
@@ -194,10 +237,14 @@ def _transfer(client, url, *, media, max_bytes, deadline, budget, target=None):
 class _MediaParser(HTMLParser):
     def __init__(self, base):
         super().__init__(convert_charrefs=True)
-        self.base, self.videos, self.links = base, [], []
+        self.base, self.videos, self.links, self.data_scripts = base, [], [], []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "script" and attrs.get("src"):
+            script = urljoin(self.base, attrs["src"])
+            if script in PROJECT_DATA:
+                self.data_scripts.append(script)
         keys = ("src", "data-src") if tag in {"video", "source"} else ("href",) if tag == "a" else ()
         for key in keys:
             if not attrs.get(key):
@@ -210,6 +257,10 @@ class _MediaParser(HTMLParser):
             suffix = Path(urlsplit(address).path).suffix.lower()
             try:
                 if suffix in VIDEO_SUFFIXES:
+                    # Alternate codecs of one shot do not add visual variety.
+                    stem = address.rsplit(".", 1)[0]
+                    if any(v["url"].rsplit(".", 1)[0] == stem for v in self.videos):
+                        continue
                     self.videos.append({"url": _url(address, media=True),
                                         "description": (attrs.get("aria-label") or attrs.get("title") or "")[:300]})
                 elif tag == "a" and "/docs" not in urlsplit(address).path:
@@ -288,7 +339,7 @@ def _metadata(candidate, metadata):
     if inspected:
         description, tags = inspected["description"], inspected["topic_tags"]
         clips = [{"start": 0, "end": min(inspected["end"], metadata["duration"]), "description": description}]
-        credit = "画面来源：Google DeepMind（官方演示）"
+        credit = inspected.get("credit", "画面来源：Google DeepMind（官方演示）")
     return {"label": "官方演示", "kind": "official_video", "description": description,
             "topic_tags": tags, "credit": credit, "rights_note": rights, "license_url": license_url,
             "focus_regions": focus_regions,
@@ -430,7 +481,11 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
             path = directory / (entry["id"] + cached.suffix)
             if path.resolve() != cached:
                 shutil.copyfile(cached, path)
-            assets.append({**entry, "path": str(path), "reuse_basis": "exact_cited_source_and_verified_hash"})
+            refreshed = _metadata(entry, entry) if entry.get("url") and entry.get("duration") else {}
+            asset = {**entry, **refreshed, "path": str(path),
+                     "reuse_basis": "exact_cited_source_and_verified_hash"}
+            assets.append(asset)
+            _archive_asset(asset)
             fingerprints.add(digest); cache_bytes += size
         except (OSError, ValueError, KeyError):
             continue
@@ -446,6 +501,10 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                 chain = chain + redirects[1:]
                 parser = _MediaParser(final)
                 parser.feed(html.decode("utf-8", errors="replace"))
+                for script_url in parser.data_scripts[:2]:
+                    script, script_final, _ = _transfer(client, script_url, media=False,
+                        max_bytes=MAX_PAGE_BYTES, deadline=deadline, budget=budget)
+                    parser.videos.extend(_project_videos(script.decode("utf-8", errors="replace"), script_final, final))
                 for video in parser.videos:
                     if (urlsplit(video["url"]).hostname == "gradium.ai"
                             and Path(urlsplit(video["url"]).path).stem not in PHONON):
@@ -454,7 +513,7 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
                         media_seen.add(video["url"])
                         candidates.append({**video, "source_id": source.get("id"),
                                            "source_title": source.get("title", "官方演示"), "source_url": final,
-                                           "reference_source_url": source["url"], "source_chain": chain + [video["url"]]})
+                                           "reference_source_url": source["url"], "source_chain": chain + ([video["data_source"]] if video.get("data_source") else []) + [video["url"]]})
                 if depth < MAX_DEPTH:
                     # First inspect explicitly linked project pages, before older
                     # news articles linked from the same post or navigation bar.

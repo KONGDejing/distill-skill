@@ -17,6 +17,22 @@ class RunCancelled(Exception):
     pass
 
 
+class ModelServiceUnavailable(RuntimeError):
+    """Account/quota failures stop a batch, without retrying every employee."""
+
+
+def _account_error(exc):
+    code = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    detail = body.get("error", {}) if isinstance(body, dict) else {}
+    message = str(detail.get("message", "")) if isinstance(detail, dict) else ""
+    if any(term in message.lower() for term in ("额度不足", "余额不足", "insufficient quota", "insufficient balance", "credit balance")):
+        return "模型服务额度不足，制作已保留进度；恢复服务额度后可继续原批次"
+    if code in {401, 403}:
+        return "模型服务授权未通过，制作已保留进度；请在本机检查服务配置，勿将密钥发到聊天或GitHub"
+    return None
+
+
 def parse_json(text):
     decoder = json.JSONDecoder()
     for match in re.finditer(r"\{", text):
@@ -76,6 +92,9 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=Fals
             break
         except anthropic.APIError as exc:
             code = getattr(exc, "status_code", None)
+            account_error = _account_error(exc)
+            if account_error:
+                raise ModelServiceUnavailable(account_error) from None
             retryable = code is None or code == 429 or code >= 500
             if attempt == 2 or not retryable:
                 raise RuntimeError(f"模型调用失败：{type(exc).__name__}（状态 {code or '连接超时'}）") from None

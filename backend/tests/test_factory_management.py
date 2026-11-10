@@ -89,3 +89,52 @@ def test_scorecards_do_not_invent_full_scores_when_evidence_is_missing(db):
     reviewer = next(c for c in cards if c["agent_id"] == "reviewer")
     assert reviewer["measured_weight"] == 0
     assert all(c["earned"] is None for c in reviewer["checks"])
+
+
+def test_incident_disposition_never_converts_failed_job_or_video_into_published(db, monkeypatch):
+    from models.factory import FactoryItem, FactoryRun, FactoryPublication
+    from services import factory_operations as operations
+    monkeypatch.setattr(operations.factory_analytics, 'overview', lambda _: {'platforms': []})
+    run = FactoryRun(status='partial', active_slot=None)
+    db.add(run); db.flush()
+    item = FactoryItem(run_id=run.id, position=0, status='failed', error='原始错误')
+    db.add(item); db.flush()
+    job = FactoryPublication(item_id=item.id, platform='kuaishou', action='publish', status='failed',
+                             result={'submission_attempted': True, 'submission_uncertain': True})
+    db.add(job); db.commit()
+    key = 'issue:publication:' + job.id
+    order = FactoryWorkOrder(key=key, kind='issue', owner='publisher', title='核对回执', acceptance='官方核对',
+                             due_at=datetime.now(timezone.utc), status='completed', evidence={})
+    db.add(order); db.commit()
+    # A bare completed flag cannot silently dismiss a publication incident.
+    assert len(operations.overview(db)['alerts']) == 2
+    order.evidence = {'resolution': '已核对并停发旧版，转交重制', 'checked_at': datetime.now(timezone.utc).isoformat()}
+    db.commit()
+    state = operations.overview(db)
+    assert len(state['alerts']) == 1 and len(state['resolved_issues']) == 1
+    assert state['summary']['completed'] == state['summary']['fully_submitted_slots'] == 0
+    assert item.status == job.status == 'failed' and job.result['submission_uncertain']
+
+
+def test_incident_order_closes_only_after_real_150_second_completion(db):
+    from models.factory import FactoryItem, FactoryRun
+    now = datetime.now(timezone.utc)
+    run = FactoryRun(status='partial', active_slot=None)
+    db.add(run); db.flush()
+    item = FactoryItem(run_id=run.id, position=0, status='failed')
+    db.add(item); db.commit()
+    key = 'issue:production:' + item.id
+    state = {'summary': {'target': 10, 'fully_submitted_slots': 0}, 'alerts': [
+        {'key': key, 'owner_id': 'producer2', 'message': '缺少素材', 'next_action': '补齐原始演示', 'item_id': item.id}]}
+    metrics = {'platforms': []}
+    manager.sync_work_orders(db, state, metrics, now)
+    order = db.get(FactoryWorkOrder, key)
+    assert order.owner == 'producer2' and order.status == 'blocked'
+    item.status, item.media = 'completed', {'duration': 50}
+    db.commit()
+    manager.sync_work_orders(db, state, metrics, now)
+    assert order.status == 'blocked'
+    item.media = {'duration': 150}
+    db.commit()
+    manager.sync_work_orders(db, state, metrics, now)
+    assert order.status == 'completed' and '150秒' in order.evidence['resolution']

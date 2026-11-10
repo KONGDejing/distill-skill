@@ -8,7 +8,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from database import SessionLocal, init_db
-from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
+from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
 from agents.registry import AGENTS
 from services import factory_analytics
 from services.factory_resources import memory_state
@@ -51,14 +51,29 @@ def overview(db, now=None):
     uncertain = db.query(FactoryPublication).filter_by(action="publish", status="failed").all()
     for job in uncertain:
         if job.result.get("submission_uncertain"):
-            alerts.append({"owner": "小麦", "platform": job.platform, "item_id": job.item_id,
-                           "message": job.result.get("message", "提交结果待核对"), "next_action": "核对官方作品记录，不自动重复发布"})
+            alerts.append({"key": "issue:publication:" + job.id, "owner_id": "publisher", "owner": "小麦", "platform": job.platform, "item_id": job.item_id,
+                           "message": job.result.get("message", "提交结果待核对"), "next_action": "小麦核对官方作品记录；用户暂不重复提交，仅官方要求本人验证时需操作"})
     items = db.query(FactoryItem).filter(FactoryItem.created_at >= start).all()
     for item in items:
-        if item.status == "failed":
-            alerts.append({"owner": "老周 / 小探 / 小影", "item_id": item.id,
-                           "message": f"制作未完成：{item.brief.get('title', '待定选题')}；{item.error or '待核查'}",
-                           "next_action": "先补齐来源与画面；无合适素材则更换有依据的选题，保留失败记录，不用旧短片补量"})
+        incident = db.get(FactoryWorkOrder, "issue:production:" + item.id)
+        recovering = bool(incident and incident.status != "completed" and item.status not in {"completed", "failed"})
+        if item.status == "failed" or recovering:
+            from services.factory_team import editor_id
+            owner = editor_id(item)
+            name = next(a["name"] for a in AGENTS if a["id"] == owner)
+            alerts.append({"key": "issue:production:" + item.id, "owner_id": owner, "owner": f"老周 / 小探 / {name}", "item_id": item.id,
+                           "message": f"{'正在重制' if recovering else '制作未完成'}：{item.brief.get('title', '待定选题')}；{item.error or '等待实际成片验收'}",
+                           "next_action": "制作任务已恢复，成片通过实际时长与质量验收后才关闭问题" if recovering else "先补齐来源与画面；无合适素材则更换有依据的选题，保留失败记录，不用旧短片补量"})
+    # Closing an incident does not change its original failed production/job or
+    # turn an abandoned version into a published video. Keep the disposition visible.
+    resolved_issues, pending = [], []
+    for alert in alerts:
+        order = db.get(FactoryWorkOrder, alert["key"]) if alert.get("key") else None
+        if order and order.status == "completed" and order.evidence.get("resolution") and order.evidence.get("checked_at"):
+            resolved_issues.append({**alert, "resolution": order.evidence})
+        else:
+            pending.append(alert)
+    alerts = pending
     slots = db.query(FactoryRelease).filter(FactoryRelease.due_at >= start, FactoryRelease.due_at < start + timedelta(days=1)).all()
     metrics = factory_analytics.overview(db)
     connected = [p["platform"] for p in metrics["platforms"] if p["status"] == "connected"]
@@ -71,7 +86,7 @@ def overview(db, now=None):
         {"name": "评论读取与回复", "owner": "小麦", "status": "联调中", "evidence": "抖音/快手评论入口已检查；小红书公共评论页仍要求独立登录。自动回复尚未通过真实回执验证"},
     ]
     completed = sum(i.status == "completed" for i in items)
-    result = {"day": now.date().isoformat(), "assignments": assignments, "alerts": alerts,
+    result = {"day": now.date().isoformat(), "assignments": assignments, "alerts": alerts, "resolved_issues": resolved_issues,
               "improvements": improvements, "report_time": "22:30", "timezone": "Asia/Shanghai",
               "summary": {"completed": completed, "target": len(slots), "ready_150_seconds": long_ready,
                           "fully_submitted_slots": sum(s.status == "submitted" for s in slots),

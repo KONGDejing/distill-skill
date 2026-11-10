@@ -67,6 +67,40 @@ def test_usage_retains_exact_windows_and_repeated_record_is_idempotent(monkeypat
     assert metadata["uses"][0]["windows"][0]["source_start"] == 2
 
 
+def test_alternate_codecs_of_the_same_shot_are_not_counted_as_different_footage():
+    parser = visuals._MediaParser('https://sumo048.github.io/CS-pi_site/')
+    parser.feed('<video><source src="media/example.mp4"><source src="media/example.webm"></video>'
+                '<video src="media/another.mp4"></video>')
+    assert len(parser.videos) == 2
+
+
+def test_author_reviewed_material_keeps_its_own_credit():
+    data = visuals._metadata({'url': 'https://sumo048.github.io/CS-pi_site/media/hardware/cspi_success_0.mp4',
+                              'source_title': 'CS-Pi'}, {'duration': 3.667})
+    assert 'CS-Pi' in data['credit'] and 'Google' not in data['credit']
+    assert 'pick_place' in data['topic_tags']
+
+
+def test_project_data_is_read_as_json_and_keeps_task_variety():
+    script = 'https://ai4ce.github.io/VICTR/data/rollouts.js'
+    data = {task: {method: [{'video': f'assets/rollouts/{task}/{method}/1.mp4', 'speed': 2}]
+                   for method in ('victr', 'pi05')} for task in ('clean-the-plate', 'another-task')}
+    document = 'window.VICTR_ROLLOUTS = ' + json.dumps(data) + '; throw new Error("must not execute");'
+    results = visuals._project_videos(document, script, 'https://ai4ce.github.io/VICTR/')
+    assert len(results) == 4
+    assert all(v['data_source'] == script for v in results)
+    assert 'another-task' in results[2]['url']
+    assert visuals._project_videos(document, 'https://example.com/data.js', 'https://example.com/') == []
+
+
+def test_project_data_rejects_untrusted_media_urls():
+    document = 'window.SPLAT_GALLERY = ' + json.dumps({'object': [
+        {'preview': 'https://127.0.0.1/private.mp4'}, {'preview': 'images/visualization/object/2/preview.mp4'}]})
+    results = visuals._project_videos(document, 'https://zju3dv.github.io/SplatAnything/assets/js/gallery.js',
+                                      'https://zju3dv.github.io/SplatAnything/')
+    assert len(results) == 1 and results[0]['url'].startswith('https://zju3dv.github.io/SplatAnything/')
+
+
 @pytest.mark.parametrize("url", [
     "http://allenai.github.io/ToyBlocks/media/a.mp4",
     "https://allenai.github.io.evil.example/ToyBlocks/media/a.mp4",

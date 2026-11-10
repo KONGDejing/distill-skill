@@ -176,6 +176,18 @@ def test_calibrated_duration_feedback_reports_actual_characters(isolated_factory
     assert "实测600字符" in calls.call_args_list[1].args[2]["review_feedback"]["reason"]
 
 
+def test_montage_plan_does_not_assign_papers_without_usable_visuals():
+    sources = [{'id': 'paper'}, {'id': 'demo', 'visual_ready': True}]
+    missing = {'title': '只有论文正文', 'source_ids': ['paper']}
+    direct = {'title': '项目演示', 'source_ids': ['paper', 'demo']}
+    background = {'title': '相关概念解读', 'source_ids': ['paper'], 'visual_source_ids': ['demo'],
+                  'visual_support_reason': '同主题背景，不能当作论文实测'}
+    forged = {**background, 'visual_source_ids': ['unknown']}
+    no_reason = {**background, 'visual_support_reason': ''}
+    assert factory_service._eligible_candidates([missing, direct, background, forged, no_reason], sources, 'tech_montage') == [direct, background]
+    assert factory_service._eligible_candidates([missing], sources, 'cards') == [missing]
+
+
 def test_targeted_recovery_does_not_retry_unfixed_items(isolated_factory, monkeypatch):
     from routers import factory as router
     from tasks.factory_tasks import produce_run
@@ -326,6 +338,41 @@ def test_model_budget_stops_before_any_network_request(isolated_factory, monkeyp
     client.assert_not_called()
 
 
+def test_model_quota_error_stops_batch_without_failing_every_remaining_video(isolated_factory, monkeypatch):
+    import redis
+    run_id, item_id = _seed_item(isolated_factory)
+    with isolated_factory() as db:
+        second = FactoryItem(run_id=run_id, position=1, brief={'title': '下一条'})
+        db.add(second); db.commit()
+        second_id = second.id
+    client = Mock()
+    client.lock.return_value.acquire.return_value = True
+    monkeypatch.setattr(redis.Redis, 'from_url', Mock(return_value=client))
+    monkeypatch.setattr(factory_service, '_make_plan', lambda _: None)
+    write = Mock(side_effect=factory_llm.ModelServiceUnavailable('模型服务额度不足'))
+    monkeypatch.setattr(factory_service, '_write_and_review', write)
+    render = Mock(); monkeypatch.setattr(factory_service, '_render', render)
+    assert factory_service.execute_run(run_id)['status'] == 'model_service_blocked'
+    write.assert_called_once()
+    render.assert_not_called()
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        assert run.active_slot is None and '额度不足' in run.error
+        assert db.get(FactoryItem, second_id).status == 'planned'
+        assert db.get(FactoryItem, item_id).status != 'failed'
+
+
+@pytest.mark.parametrize('status,message,expected', [
+    (401, '额度不足 secret-do-not-echo', '额度不足'),
+    (429, 'insufficient quota secret-do-not-echo', '额度不足'),
+    (401, 'invalid credential secret-do-not-echo', '授权未通过'),
+])
+def test_account_errors_report_action_without_echoing_provider_private_details(status, message, expected):
+    from types import SimpleNamespace
+    result = factory_llm._account_error(SimpleNamespace(status_code=status, body={'error': {'message': message}}))
+    assert expected in result and 'secret-do-not-echo' not in result
+
+
 def test_replacement_excludes_assigned_and_rejected_topics_and_only_happens_once(isolated_factory, monkeypatch):
     run_id, item_id = _seed_item(isolated_factory, content={"script": "被拒绝的旧文案"},
                                  review={"approved": False, "reason": "缺少事实证据"}, revisions=1)
@@ -366,6 +413,31 @@ def test_replacement_excludes_assigned_and_rejected_topics_and_only_happens_once
     # A remaining reserve does not permit another substitution at this position.
     assert factory_service._replace_rejected_topic(run_id, item_id) is False
     assert len(decisions) == 1
+
+
+@pytest.mark.parametrize('recover', [True, False])
+def test_malformed_single_topic_decision_gets_one_retry_without_changing_original_early(isolated_factory, monkeypatch, recover):
+    run_id, item_id = _seed_item(isolated_factory, content={'script': '原稿'}, review={'approved': False})
+    with isolated_factory() as db:
+        db.get(FactoryRun, run_id).plan = {'candidates': [{'title': '备用选题', 'source_ids': [SOURCE['id']]}]}
+        db.commit()
+    calls = []
+    def decide(run, agent, payload, **kwargs):
+        calls.append(payload)
+        with isolated_factory() as db:
+            assert db.get(FactoryItem, item_id).content['script'] == '原稿'
+        if len(calls) == 2 and recover:
+            return {'selected': [{'candidate_index': 0}]}
+        return {'selected': [{'candidate_index': 0}, {'candidate_index': 0}]}
+    monkeypatch.setattr(factory_service, 'call_agent', decide)
+    if recover:
+        assert factory_service._replace_rejected_topic(run_id, item_id)
+    else:
+        with pytest.raises(ValueError, match='重试一次'):
+            factory_service._replace_rejected_topic(run_id, item_id)
+        with isolated_factory() as db:
+            assert db.get(FactoryItem, item_id).content == {'script': '原稿'}
+    assert len(calls) == 2 and calls[1]['target'] == 1 and 'format_feedback' in calls[1]
 
 
 def test_rejected_replacement_stops_before_rendering_even_with_more_reserves(isolated_factory, monkeypatch):

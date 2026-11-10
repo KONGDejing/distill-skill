@@ -35,6 +35,11 @@ WATCH_PAGES = (
     ("科技展会：CES官方新闻与活动索引（须区分往届和未来活动）", "https://www.ces.tech/press-releases/"),
 )
 VISUAL_SOURCE_URLS = (
+    ("CS-Pi：机器人约束动作采样（论文作者项目演示）", "https://sumo048.github.io/CS-pi_site/"),
+    ("ForPC：人形机器人推车（论文作者项目演示）", "https://roboforpc.github.io/"),
+    ("Q-OIL：从人工接管学习（论文作者项目演示）", "https://weirdlabuw.github.io/qoil/"),
+    ("VICTR：按任务进展检索演示（论文作者项目演示）", "https://ai4ce.github.io/VICTR/"),
+    ("SplatAnything：跨场景3D重建（论文作者项目演示）", "https://zju3dv.github.io/SplatAnything/"),
     ("Google DeepMind Veo：视频生成与创作控制", "https://deepmind.google/models/veo/"),
     ("Google DeepMind Genie：可交互世界模型", "https://deepmind.google/models/genie/"),
     ("Google DeepMind Gemini Robotics：机器人理解与动作", "https://deepmind.google/models/gemini-robotics/"),
@@ -54,6 +59,7 @@ ALLOWED_HOSTS = frozenset({
     "www.anthropic.com", "anthropic.com",
     "nvidianews.nvidia.com", "about.fb.com", "deepmind.google", "allenai.github.io", "gradium.ai",
     "arxiv.org", "rss.arxiv.org", "export.arxiv.org", "www.ces.tech", "ces.tech", "www.mofcom.gov.cn",
+    "sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io", "weirdlabuw.github.io", "zju3dv.github.io",
 })
 MAX_BYTES = 2_000_000
 MAX_TEXT_CHARS = 6000
@@ -324,7 +330,7 @@ def collect_sources(limit: int = 12) -> dict:
     # Reserve a small documentation pool for tutorials even on busy news days.
     evergreen_slots = min(len(EVERGREEN_URLS), max(1, limit // 3))
     news_slots = max(0, limit - evergreen_slots)
-    visual_count = min(len(VISUAL_SOURCE_URLS), max(1, limit // 3))
+    visual_count = min(len(VISUAL_SOURCE_URLS), max(1, limit // 2))
     watch_count = min(len(WATCH_PAGES), max(0, limit // 8))
     paper_count = min(len(papers), max(1, limit // 5), max(0, news_slots - visual_count - watch_count))
     selected = papers[:paper_count]

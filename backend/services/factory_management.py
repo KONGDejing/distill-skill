@@ -150,6 +150,31 @@ def sync_work_orders(db, state, analytics, now):
         order.title, order.acceptance = title, acceptance
         order.status = "completed" if required and count >= required else "in_progress" if count else "pending"
         order.evidence = {"done": count, "required": required, "checked_at": now.isoformat()}
+    # Incidents retain their own acceptance and disposition, independently of
+    # daily output totals. A completed incident is not a completed video.
+    for alert in state.get("alerts", []):
+        key = alert.get("key")
+        if not key or db.get(FactoryWorkOrder, key):
+            continue
+        db.add(FactoryWorkOrder(key=key, kind="issue", owner=alert.get("owner_id", "director"),
+            title=alert["message"][:190], acceptance=alert["next_action"],
+            due_at=now.astimezone(timezone.utc).replace(tzinfo=None) + timedelta(hours=2),
+            status="blocked", evidence={"blocker": alert["message"], "item_id": alert.get("item_id"),
+                                       "checked_at": now.isoformat()}))
+    for order in db.query(FactoryWorkOrder).filter(FactoryWorkOrder.kind == "issue", FactoryWorkOrder.status != "completed"):
+        identifier = order.key.rsplit(":", 1)[-1]
+        resolved = False
+        if order.key.startswith("issue:production:"):
+            item = db.get(FactoryItem, identifier)
+            resolved = bool(item and item.status == "completed" and 135 <= float(item.media.get("duration", 0)) <= 165)
+        elif order.key.startswith("issue:publication:"):
+            job = db.get(FactoryPublication, identifier)
+            resolved = bool(job and job.status == "submitted")
+        if resolved:
+            order.status = "completed"
+            order.evidence = {**order.evidence, "blocker": None,
+                "resolution": "已取得约150秒成片" if order.key.startswith("issue:production:") else "已取得官方提交回执，公开状态仍以审核为准",
+                "checked_at": now.isoformat()}
     # Separate long-form work orders cannot enter the short-video release queue.
     beginning = plan.started_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Shanghai"))
     for offset in range(28):

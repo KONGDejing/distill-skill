@@ -11,7 +11,7 @@ from config import settings
 from database import SessionLocal
 from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
 from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
-from services.factory_llm import call_agent, RunCancelled
+from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailable
 from services.factory_resources import MemoryPressure, ensure_memory_available
 from services.factory_editorial import STRATEGY, validate_editorial_scenes, validate_follow_prompt
 from services.factory_team import assign_editors, editor_id
@@ -214,6 +214,28 @@ def _save_item(item_id, **updates):
         db.commit()
 
 
+def _eligible_candidates(candidates, sources, visual_style):
+    if not isinstance(candidates, list):
+        return []
+    ids = {s["id"] for s in sources}
+    ready = {s["id"] for s in sources if s.get("visual_ready")}
+    eligible = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not candidate.get("title"):
+            continue
+        refs, visuals = candidate.get("source_ids"), candidate.get("visual_source_ids", [])
+        if (not isinstance(refs, list) or not refs or not all(isinstance(i, str) for i in refs)
+                or not set(refs).issubset(ids) or not isinstance(visuals, list)
+                or not all(isinstance(i, str) for i in visuals) or not set(visuals).issubset(ready)):
+            continue
+        if visual_style == "tech_montage" and not (set(refs) & ready or visuals):
+            continue
+        if visuals and not (isinstance(candidate.get("visual_support_reason"), str) and candidate["visual_support_reason"].strip()):
+            continue
+        eligible.append(candidate)
+    return eligible
+
+
 def _make_plan(run_id):
     with SessionLocal() as db:
         run = db.get(FactoryRun, run_id)
@@ -236,8 +258,8 @@ def _make_plan(run_id):
         if visual_style == "tech_montage":
             from services.factory_visuals import collect_visuals
             from services.factory_research import VISUAL_SOURCE_URLS
-            catalog_urls = {url for _, url in VISUAL_SOURCE_URLS}
-            visual_sources = sorted(sources, key=lambda s: s["url"] not in catalog_urls)[:8]
+            catalog_urls = {url.rstrip("/") for _, url in VISUAL_SOURCE_URLS}
+            visual_sources = sorted(sources, key=lambda s: s["url"].rstrip("/") not in catalog_urls)[:len(catalog_urls)]
             emit(run_id, "researcher", "visual_preflight", "选题前核查动态素材；无匹配画面的题材保留在资料库，暂不进入混剪")
             for source in visual_sources:
                 check_cancel(run_id)
@@ -255,16 +277,18 @@ def _make_plan(run_id):
         else:
             usable = sources
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
-        research = call_agent(run_id, "researcher", {"target": target + 2, "sources": usable,
+        assignment = {"target": target + 2, "sources": usable,
             "recent_titles": recent, "strategy": STRATEGY,
-            "visual_constraint": "可以解释近期论文或新闻，必须同时引用事实来源与同主题visual_ready的素材来源；明确区分本事件画面与相关背景演示。无同主题画面则不要强凑，不能把别家的演示说成论文实验。优先不同事件和研究，避免一个产品拆成多条重复内容。"}, max_tokens=max(3500, (target + 2) * 550))
-        candidates = research.get("candidates", [])
-        if not isinstance(candidates, list) or len(candidates) < target:
-            raise ValueError("情报员提供的有效选题不足")
-        source_ids = {source["id"] for source in usable}
-        candidates = [c for c in candidates if isinstance(c, dict) and c.get("title") and isinstance(c.get("source_ids"), list) and c["source_ids"] and set(c["source_ids"]).issubset(source_ids)]
-        if len(candidates) < target:
-            raise ValueError("候选选题的引用来源不足，未进入制作")
+            "visual_constraint": "混剪选题必须在source_ids引用本题visual_ready来源；或增加visual_source_ids数组引用已就绪的同主题背景来源，说明visual_support_reason并标注background_visuals=true。普通论文正文不等于已有画面。无合适画面就不要凑数。优先不同事件和研究。"}
+        for attempt in range(2):
+            research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
+            candidates = _eligible_candidates(research.get("candidates"), usable, visual_style)
+            if len(candidates) >= target:
+                break
+            if attempt:
+                raise ValueError(f"只有{len(candidates)}个选题同时具备事实来源和可用画面，未安排缺素材的生产任务")
+            emit(run_id, "researcher", "candidate_revision", "候选选题缺少有效来源或已就绪画面，先修正选题清单", "warning")
+            assignment = {**assignment, "format_feedback": "上次只有" + str(len(candidates)) + "个有效选题。必须引用已提供的visual_ready来源，或为有对应背景演示的选题明确列出visual_source_ids；保留不同核心问题，不虚构素材。"}
         plan = {"candidates": candidates}
         with SessionLocal() as db:
             db.get(FactoryRun, run_id).plan = plan
@@ -324,6 +348,11 @@ def _write_and_review(run_id, item_id):
         calibrated_characters = brief.get("target_script_characters")
         recent_prompts = [i.content.get("follow_prompt") for i in db.query(FactoryItem).filter(
             FactoryItem.status == "completed").order_by(FactoryItem.created_at.desc()).limit(10) if i.content.get("follow_prompt")]
+    minimum, maximum = (round(target_duration * 3.3), round(target_duration * 5.7)) if target_duration else (80, 650)
+    if type(calibrated_characters) is int and calibrated_characters > 0:
+        # Character count is an estimate; the actual audio remains subject to
+        # target +/- 15 seconds. Do not discard a usable draft over five letters.
+        minimum, maximum = round(calibrated_characters * .90), round(calibrated_characters * 1.10)
     for attempt in range(revisions, max_revisions + 1):
         check_cancel(run_id)
         _save_item(item_id, status="writing", revisions=attempt)
@@ -331,12 +360,11 @@ def _write_and_review(run_id, item_id):
         content = call_agent(run_id, "writer", {"brief": brief, "sources": sources, "previous_script": prior,
             "review_feedback": feedback, "strategy": STRATEGY, "recent_follow_prompts": recent_prompts,
             "target_duration_seconds": target_duration,
+            "script_characters_range": [minimum, maximum],
+            "length_instruction": "script必须是完整字符串，每个汉字、标点、英文字母均算一个字符；写足背景、具体例子、原理和局限，不能只给提纲。",
             "suggested_script_characters": calibrated_characters or (round(target_duration * 4.5) if target_duration else 220)},
             max_tokens=4200 if target_duration else 2400)
         try:
-            minimum, maximum = (round(target_duration * 3.3), round(target_duration * 5.7)) if target_duration else (80, 650)
-            if type(calibrated_characters) is int and calibrated_characters > 0:
-                minimum, maximum = round(calibrated_characters * .95), round(calibrated_characters * 1.05)
             if not isinstance(content.get("script"), str) or not minimum <= len(content["script"]) <= maximum:
                 actual = len(content["script"]) if isinstance(content.get("script"), str) else 0
                 raise ValueError(f"本次script实测{actual}字符，必须为{minimum}–{maximum}字符；按目标时长讲清背景、例子、原理与边界，不要仅返回提纲")
@@ -349,7 +377,8 @@ def _write_and_review(run_id, item_id):
             feedback = {"approved": False, "reason": str(exc)}
             prior = content
             _save_item(item_id, review=feedback)
-            emit(run_id, "director", "script_revision", "退回小文修正交付格式：" + str(exc), "rejected")
+            emit(run_id, "director", "script_revision", "退回小文修正交付格式：" + str(exc), "rejected",
+                 {"item_id": item_id, "previous_delivery": content})
             if attempt < max_revisions:
                 continue
             raise ReviewRejected(str(exc)) from None
@@ -387,16 +416,22 @@ def _replace_rejected_topic(run_id, item_id):
             return False
         old_title, feedback = item.brief.get("title"), item.review
     emit(run_id, "director", "replacement", "当前选题返工后仍未通过审核，负责人正在评估备用选题")
-    decision = call_agent(run_id, "director", {"target": 1, "candidates": candidates,
-        "recent_titles": list(used | rejected), "rejected_title": old_title, "review_feedback": feedback})
-    selected = decision.get("selected", [])
-    if selected == []:
-        return False
-    if len(selected) != 1:
-        raise ValueError("备用选题决策不符合约定")
-    index = selected[0].get("candidate_index")
-    if type(index) is not int or not 0 <= index < len(candidates):
-        raise ValueError("备用选题索引无效")
+    payload = {"task_mode": "replace_one_rejected_topic", "target": 1, "candidates": candidates,
+        "recent_titles": list(used | rejected), "rejected_title": old_title, "review_feedback": feedback,
+        "selection_contract": "只为当前这一条选择1个备用选题，selected恰好1项；无合适选题则返回空数组。不要重新安排全天计划。"}
+    for attempt in range(2):
+        decision = call_agent(run_id, "director", payload)
+        selected = decision.get("selected")
+        if selected == []:
+            return False
+        index = selected[0].get("candidate_index") if isinstance(selected, list) and len(selected) == 1 and isinstance(selected[0], dict) else None
+        if type(index) is int and 0 <= index < len(candidates):
+            break
+        emit(run_id, "director", "replacement_format", "备用决策数量或索引无效，要求按单条任务重交" if not attempt else "备用决策仍无效，保留原选题与失败证据", "warning",
+             {"item_id": item_id, "decision": decision})
+        if attempt:
+            raise ValueError("备用选题决策不符合单条选择约定，已重试一次")
+        payload = {**payload, "format_feedback": "selected只允许0或1项；candidate_index必须是提供列表中从0开始的整数索引。", "previous_decision": decision}
     with SessionLocal() as db:
         run, item = db.get(FactoryRun, run_id), db.get(FactoryItem, item_id)
         run.plan = {**run.plan, "rejected_titles": [*run.plan.get("rejected_titles", []), old_title]}
@@ -602,7 +637,7 @@ def _finish_report(run_id):
             "failed": "当前尚未完成的作品数量，不是历史失败次数",
             "prohibited_inferences": "没有素材消耗量或素材利用率指标，不得用成片数除以平台版本数推断利用率。"
         }})
-    except (RunCancelled, MemoryPressure):
+    except (RunCancelled, MemoryPressure, ModelServiceUnavailable):
         raise
     except Exception as exc:
         analysis = {"summary": f"完成 {completed} 条原创视频，准备 {packages} 份平台素材包。", "recommendations": ["模型复盘暂不可用，请查看生产日志。"]}
@@ -687,20 +722,29 @@ def execute_run(run_id):
                     try:
                         from services.factory_publishing import auto_submit
                         auto_submit(item_id, run_id)
-                    except (RunCancelled, MemoryPressure):
+                    except (RunCancelled, MemoryPressure, ModelServiceUnavailable):
                         raise
                     except Exception as exc:
                         emit(run_id, "publisher", "platform_submission", f"成片已保留，小红书提交未完成：{str(exc)[:300]}", "warning")
                 with SessionLocal() as db:
                     db.get(FactoryRun, run_id).completed_count = db.query(FactoryItem).filter_by(run_id=run_id, status="completed").count()
                     db.commit()
-            except (RunCancelled, MemoryPressure):
+            except (RunCancelled, MemoryPressure, ModelServiceUnavailable):
                 raise
             except Exception as exc:
                 _save_item(item_id, status="failed", error=str(exc)[:1000])
                 emit(run_id, "director", "item_failed", f"单条生产未完成：{str(exc)[:300]}；继续其他选题", "failed")
         _finish_report(run_id)
         return {"status": "finished", "run_id": run_id}
+    except ModelServiceUnavailable as exc:
+        with SessionLocal() as db:
+            run = db.get(FactoryRun, run_id)
+            run.completed_count = db.query(FactoryItem).filter_by(run_id=run_id, status="completed").count()
+            run.status = "partial" if run.completed_count else "failed"
+            run.error, run.active_slot, run.finished_at = str(exc), None, datetime.utcnow()
+            db.commit()
+        emit(run_id, "director", "model_service_blocked", str(exc), "blocked")
+        return {"status": "model_service_blocked", "run_id": run_id}
     except MemoryPressure as exc:
         with SessionLocal() as db:
             run = db.get(FactoryRun, run_id)
