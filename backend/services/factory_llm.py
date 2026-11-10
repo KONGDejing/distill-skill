@@ -12,6 +12,7 @@ from models.factory import FactoryRun, FactoryEvent
 from agents.registry import AGENT_MAP, COMMON, INSTRUCTIONS, EDIT_REVIEW_INSTRUCTION, VISUAL_MATCH_INSTRUCTION, EDITOR_IDS, DIRECTOR_HOOK_INSTRUCTION
 from services.factory_resources import ensure_memory_available
 from services.factory_openai import create_response, ProviderError
+from services.factory_usage import usage_context
 
 
 class RunCancelled(Exception):
@@ -93,7 +94,7 @@ def compact_payload(payload):
     return visit(payload)
 
 
-def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=False):
+def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=False, work_kind="unclassified"):
     payload = compact_payload(payload)
     instruction = EDIT_REVIEW_INSTRUCTION if agent_id == "reviewer" and payload.get("task_mode") == "edit_review" else INSTRUCTIONS[agent_id]
     if agent_id in EDITOR_IDS and payload.get("task_mode") == "visual_match":
@@ -143,6 +144,12 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=Fals
             break
         except (anthropic.APIError, ProviderError) as exc:
             code = getattr(exc, "status_code", None)
+            with SessionLocal() as db:
+                db.add(FactoryEvent(run_id=run_id, agent_id=agent_id, stage="model_error", status="warning",
+                    message="模型请求失败，服务未返回可记账用量；不按零消耗计算",
+                    detail={**usage_context(run_id), "provider": runtime["provider"], "model": model,
+                            "status_code": code, "usage_available": False, "work_kind": work_kind}))
+                db.commit()
             account_error = _account_error(exc)
             if account_error:
                 raise ModelServiceUnavailable(f"{runtime['provider']} / {model}：{account_error}") from None
@@ -160,9 +167,10 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=Fals
             output_tokens=FactoryRun.output_tokens + response.usage.output_tokens,
             heartbeat_at=datetime.utcnow(),
         ))
-        db.commit()
         db.add(FactoryEvent(run_id=run_id, agent_id=agent_id, stage="model_call", status="info",
-            message=f"模型处理完成：{model}", detail={"provider": runtime["provider"], "model": model, "input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens,
+            message=f"模型处理完成：{model}", detail={**usage_context(run_id), "provider": runtime["provider"], "model": model,
+                "work_kind": "rework" if _format_retry else work_kind, "format_retry": _format_retry,
+                "input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens,
                 "cached_input_tokens": getattr(response.usage, "cached_input_tokens", None)}))
         db.commit()
     text = "\n".join(block.text for block in response.content if block.type == "text")
@@ -177,5 +185,5 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=Fals
         if not _format_retry:
             return call_agent(run_id, agent_id, {**payload, "format_feedback":
                 "上次输出不是合法JSON。请重新执行同一岗位任务，严格返回完整JSON对象。字符串内部的双引号必须转义，或使用中文引号；不要输出Markdown代码围栏。不得改变事实、审核标准或编造通过结果。"},
-                max_tokens=max_tokens, _format_retry=True)
+                max_tokens=max_tokens, _format_retry=True, work_kind=work_kind)
         raise

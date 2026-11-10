@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from database import get_db
 from config import settings
-from agents.registry import AGENTS, PLATFORMS
+from agents.registry import AGENTS, PLATFORMS, DAILY_TARGET
 from models.factory import FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
 from services.factory_service import get_config, config_dict, run_dict, run_detail, start_run, queue_available, FACTORY_DIR, TERMINAL
 from services.factory_resources import MemoryPressure, ensure_memory_available, memory_state
@@ -18,7 +18,7 @@ LOGIN_DIR = Path(__file__).resolve().parents[2] / ".runtime" / "qa"
 
 
 class StartRun(BaseModel):
-    target_count: int | None = Field(default=None, ge=1, le=10)
+    target_count: int | None = Field(default=None, ge=1, le=DAILY_TARGET)
 
 
 class RetryRun(BaseModel):
@@ -27,7 +27,7 @@ class RetryRun(BaseModel):
 
 class SettingsUpdate(BaseModel):
     publish_jitter_seconds: int | None = Field(default=None, ge=0, le=900)
-    daily_target: int | None = Field(default=None, ge=1, le=10)
+    daily_target: int | None = Field(default=None, ge=1, le=DAILY_TARGET)
     target_duration_seconds: int | None = Field(default=None, ge=60, le=180)
     schedule_enabled: bool | None = None
     schedule_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -35,7 +35,7 @@ class SettingsUpdate(BaseModel):
     platforms: list[Literal["douyin", "xiaohongshu", "kuaishou"]] | None = Field(default=None, min_length=1, max_length=3)
     visual_style: Literal["tech_montage", "cards"] | None = None
     publish_enabled: bool | None = None
-    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=10)
+    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=DAILY_TARGET)
 
     @field_validator("publish_times", "platforms")
     @classmethod
@@ -169,6 +169,8 @@ def retry_run(run_id: str, db: Session = Depends(get_db), data: RetryRun | None 
     items = db.query(FactoryItem).filter_by(run_id=run.id).all()
     if selected and not selected.issubset({item.id for item in items}):
         raise HTTPException(422, "只能恢复该批次中的作品")
+    if selected and any(item.id in selected and item.status == "deferred" for item in items):
+        raise HTTPException(409, "待排期作品须先重新排期，不能通过重试恢复为今日生产任务")
     if run.status not in {"failed", "partial", "cancelled", "paused_memory"}:
         raise HTTPException(409, "只有失败、部分完成、已取消或内存暂停的批次可以恢复")
     if run.llm_calls >= run.settings_snapshot.get("max_llm_calls", 32):
@@ -194,6 +196,8 @@ def retry_run(run_id: str, db: Session = Depends(get_db), data: RetryRun | None 
     run.settings_snapshot = snapshot
     run.heartbeat_at = datetime.utcnow()
     for item in items:
+        if item.status == "deferred":
+            continue
         if selected and item.id not in selected:
             continue
         if item.status != "completed" and not was_memory_paused:

@@ -13,6 +13,12 @@ AGENTS = [
 ]
 AGENT_MAP = {a["id"]: a for a in AGENTS}
 EDITOR_IDS = ("producer", "producer2", "producer3")
+DAILY_EDITOR_QUOTAS = {editor: 2 for editor in EDITOR_IDS}
+DAILY_TARGET = sum(DAILY_EDITOR_QUOTAS.values())
+DEFAULT_PUBLISH_TIMES = ("06:00", "08:00", "10:30", "17:00", "20:00", "22:00")
+for _editor in EDITOR_IDS:
+    AGENT_MAP[_editor]["daily_quota"] = DAILY_EDITOR_QUOTAS[_editor]
+    AGENT_MAP[_editor]["description"] += " 每日负责2条原创短视频，三位剪辑师合计6条；每条向抖音、小红书、快手各提交一次。"
 
 PLATFORMS = [
     {"id": "douyin", "name": "抖音", "status": "not_connected", "description": "发布素材包可下载；尚未配置平台授权。"},
@@ -61,3 +67,5 @@ INSTRUCTIONS["researcher3"] = """你是小影3的专属素材研究员。只依�
 DIRECTOR_HOOK_INSTRUCTION = """老周对真实粉丝增长负责。为这一条内容设计两个不同开场备选，只改变开场方式；选择一个，说明观众收益、本条怎样兑现、首镜头需要展示什么证据、持续关注的价值。开场8–40字，优先短问题或真实结果；不可捏造数字、冲突、现场经历或留答案到关注后。只使用给定sources，不得新增未经核实事实。输出 {"hooks":["开场A","开场B"],"selected":0,"viewer_value":"","payoff":"本条将完整回答什么","opening_visual":"首镜头对应的真实证据","follow_value":"持续提供什么","source_ids":["已有id"],"experiment":"只改变开场方式，同平台同系列同发布后时长比较；样本不足不判断有效"}。selected是0或1。"""
 INSTRUCTIONS["writer"] += "\n若brief.engagement_plan存在，hook必须原样采用老周选中的开场；正文兑现payoff并提供payoff_excerpt（正文中回答核心问题的连续原话）。结尾先讲完内容，再用一句关注提醒承接长期价值，可自然补一句有帮助就点个赞，不反复催促或强要三连。"
 INSTRUCTIONS["reviewer"] += "\n有engagement_plan时核查选中开场是否有来源、正文payoff_excerpt是否真正兑现承诺；不能只因字段齐全通过。确认关注提醒自然、有实际长期价值。"
+INSTRUCTIONS["researcher"] += "\n新计划每天6条，小影、小影2、小影3各2条。任务提供editor_quotas时，候选必须覆盖每位剪辑师配额：producer为通用科技/工具/技术讲解，producer2为对应真实论文，producer3为科技热点/公开争议/硬件/展会。category须准确标记论文或热点类别，不能只改标签冒充另一岗位选题；候选可多于目标，但材料不足明确报缺口，不加开生产。"
+INSTRUCTIONS["director"] += "\n任务提供editor_quotas时，选中计划必须逐岗位恰好满足配额；完整日计划各2条、合计6条。论文只分给小影2，科技热点/公开争议/硬件/展会分给小影3，其余科技讲解分给小影。不能把全部选题交给一个人，不能用其他题材填论文名额，不能超出目标或为补配额新增无来源选题。"

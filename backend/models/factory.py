@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from database import Base
+from agents.registry import DAILY_TARGET, DEFAULT_PUBLISH_TIMES
 
 
 def uid():
@@ -12,7 +13,7 @@ def uid():
 class FactoryConfig(Base):
     __tablename__ = "factory_config"
     id = Column(Integer, primary_key=True, default=1)
-    daily_target = Column(Integer, nullable=False, default=10)
+    daily_target = Column(Integer, nullable=False, default=DAILY_TARGET)
     target_duration_seconds = Column(Integer, nullable=False, default=150)
     sector = Column(String(100), nullable=False, default="AI 科技")
     schedule_enabled = Column(Boolean, nullable=False, default=True)
@@ -24,7 +25,7 @@ class FactoryConfig(Base):
     auto_publish_xiaohongshu = Column(Boolean, nullable=False, default=False)
     visual_style = Column(String(30), nullable=False, default="tech_montage")
     publish_enabled = Column(Boolean, nullable=False, default=False)
-    publish_times = Column(JSON, nullable=False, default=lambda: ["06:00", "07:00", "08:00", "09:10", "10:30", "17:00", "19:00", "20:00", "21:00", "22:00"])
+    publish_times = Column(JSON, nullable=False, default=lambda: list(DEFAULT_PUBLISH_TIMES))
     publish_start_at = Column(DateTime, nullable=True)
     publish_jitter_seconds = Column(Integer, nullable=False, default=900)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -39,7 +40,7 @@ class FactoryRun(Base):
     trigger = Column(String(20), nullable=False, default="manual")
     status = Column(String(30), nullable=False, default="queued")
     stage = Column(String(30), nullable=False, default="queued")
-    target_count = Column(Integer, nullable=False, default=3)
+    target_count = Column(Integer, nullable=False, default=DAILY_TARGET)
     completed_count = Column(Integer, nullable=False, default=0)
     cancel_requested = Column(Boolean, nullable=False, default=False)
     settings_snapshot = Column(JSON, nullable=False, default=dict)

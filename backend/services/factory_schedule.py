@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from secrets import randbelow
 from sqlalchemy import func
+from agents.registry import DAILY_TARGET
 
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
@@ -116,6 +117,11 @@ def _set_jitter(db, slot, config, now):
 
 def plan_slots(db, config, now):
     """Persist one draw per date/time; restart and polling never redraw it."""
+    if not 1 <= config.daily_target <= DAILY_TARGET or not 1 <= len(config.publish_times) <= DAILY_TARGET:
+        raise ValueError("未来短视频计划每天最多6条、6个发布时间；请先更新计划配置")
+    if (not config.platforms or len(config.platforms) != len(set(config.platforms))
+            or not set(config.platforms).issubset({"douyin", "xiaohongshu", "kuaishou"})):
+        raise ValueError("短视频计划仅包含抖音、小红书、快手；B站专题保持独立排期")
     now_utc = utc(now)
     for offset in (0, 1):
         day = now.date() + timedelta(days=offset)
@@ -159,7 +165,7 @@ def plan_production(db, config, now):
         nominal_time() < start + timedelta(days=1), FactoryRelease.status != "cancelled").order_by(nominal_time()).all()
     if run and (run.settings_snapshot or {}).get("release_slot_ids"):
         by_id = {slot.id: slot for slot in slots}
-        slots = [by_id[identifier] for identifier in run.settings_snapshot["release_slot_ids"]]
+        slots = [by_id[identifier] for identifier in run.settings_snapshot["release_slot_ids"] if identifier in by_id]
     elif run and any(slot.run_id == run.id for slot in slots):
         slots = [slot for slot in slots if slot.run_id == run.id]
     elif not run:
@@ -167,6 +173,8 @@ def plan_production(db, config, now):
     if not slots or all(s.due_at + LATE_WINDOW < utc(now) for s in slots):
         return {"status": "no_slots"}
     if not run:
+        if len(slots) > min(config.daily_target, DAILY_TARGET):
+            return {"status": "deferred", "reason": "待生产时段超过每日6条或当前目标，请先调整未来排期"}
         try:
             run = start_run(db, target_count=len(slots), trigger="scheduled", schedule_key=key,
                             release_slot_ids=[slot.id for slot in slots])

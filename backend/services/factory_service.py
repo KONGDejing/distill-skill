@@ -14,7 +14,8 @@ from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailable
 from services.factory_resources import MemoryPressure, ensure_memory_available
 from services.factory_editorial import STRATEGY, validate_editorial_scenes, validate_follow_prompt
-from services.factory_team import assign_editors, editor_id
+from services.factory_team import assign_editors, editor_id, editor_quotas, validate_editor_plan, candidate_editor
+from services.factory_usage import item_usage, batch_usage, usage_context, summarize_usage
 
 TERMINAL = {"completed", "partial", "failed", "cancelled", "paused_memory"}
 FACTORY_DIR = settings.STORAGE_DIR / "factory"
@@ -30,7 +31,8 @@ def iso(value):
 
 def config_dict(config):
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times")
-    return {key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")}
+    return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
+            "editor_quotas": editor_quotas(min(config.daily_target, 6))}
 
 
 def get_config(db):
@@ -76,7 +78,11 @@ def run_detail(db, run):
     result["report"] = run.report or {}
     result["plan"] = run.plan or {}
     result["items"] = []
-    for item in db.query(FactoryItem).filter_by(run_id=run.id).order_by(FactoryItem.position):
+    items = db.query(FactoryItem).filter_by(run_id=run.id).order_by(FactoryItem.position).all()
+    events = db.query(FactoryEvent).filter_by(run_id=run.id).order_by(FactoryEvent.id).all()
+    usage = summarize_usage(events, [item.id for item in items])
+    result["token_usage"] = {key: value for key, value in usage.items() if key != "items"}
+    for item in items:
         content, media = item.content or {}, item.media or {}
         preview = media.get("preview") or {}
         packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}"} for package in item.packages or []]
@@ -90,6 +96,7 @@ def run_detail(db, run):
             platform_jobs.setdefault(job.platform, job_dict(job))
         result["items"].append({
             "id": item.id, "title": content.get("title") or item.brief.get("title", "待生成"),
+            "token_usage": {**usage["items"][item.id], "history_may_be_incomplete": usage["has_unattributed_history"]},
             "editor_id": editor_id(item), "editor_name": AGENT_MAP[editor_id(item)]["name"],
             "category": item.brief.get("category", "AI 科技"), "status": item.status,
             "script": content.get("script", ""), "hook": content.get("hook", ""),
@@ -125,7 +132,7 @@ def run_detail(db, run):
                          "agent_name": AGENT_MAP.get(event.agent_id, {}).get("name", event.agent_id),
                          "stage": event.stage, "status": event.status, "message": event.message,
                          "created_at": iso(event.created_at)}
-                        for event in db.query(FactoryEvent).filter_by(run_id=run.id).order_by(FactoryEvent.id)]
+                        for event in events]
     return result
 
 
@@ -135,7 +142,7 @@ def emit(run_id, agent, stage, message, status="running", detail=None):
         run.stage = stage
         run.heartbeat_at = datetime.utcnow()
         db.add(FactoryEvent(run_id=run_id, agent_id=agent, stage=stage,
-                            status=status, message=message, detail=detail or {}))
+                            status=status, message=message, detail={**usage_context(run_id), **(detail or {})}))
         db.commit()
 
 
@@ -157,8 +164,9 @@ def queue_available():
 def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None):
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
-    if not 1 <= target <= 10:
-        raise ValueError("每轮产量应为 1–10 条")
+    if not 1 <= target <= 6:
+        raise ValueError("每轮产量应为 1–6 条")
+    config["editor_quotas"] = editor_quotas(target)
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 12 + 12)
     config["engagement_required"] = True
     config["director_hook_required"] = True
@@ -245,11 +253,13 @@ def _eligible_candidates(candidates, sources, visual_style):
     return eligible
 
 
+@batch_usage("planning")
 def _make_plan(run_id):
     with SessionLocal() as db:
         run = db.get(FactoryRun, run_id)
         sources, plan, target = run.sources or [], run.plan or {}, run.target_count
         visual_style = run.settings_snapshot.get("visual_style", "cards")
+        quotas = run.settings_snapshot.get("editor_quotas")
         recent = [item.content.get("title", "") for item in db.query(FactoryItem).filter(FactoryItem.run_id != run_id).order_by(FactoryItem.created_at.desc()).limit(40)]
     if not sources:
         check_cancel(run_id)
@@ -293,17 +303,21 @@ def _make_plan(run_id):
             usable = sources
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
         assignment = {"target": target + 2, "sources": usable,
+            "editor_quotas": quotas,
+            "editor_specialties": "小影：AI产品与实操；小影2：真实论文；小影3：科技热点、展会与公开争议。候选需满足每岗配额，不能全为论文。",
             "recent_titles": recent, "strategy": STRATEGY,
             "visual_constraint": "先写完整口播再匹配画面。论文选题必须有对应论文原文，制作会提取真实PDF页面及图表，不能用其他研究的背景演示代替。其他选题需有本题可核验画面线索。素材不足不凑数。"}
         for attempt in range(2):
             research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
             candidates = _eligible_candidates(research.get("candidates"), usable, visual_style)
-            if len(candidates) >= target:
+            counts = {owner: sum(candidate_editor(c, usable) == owner for c in candidates) for owner in (quotas or {})}
+            enough = len(candidates) >= target and all(counts[owner] >= count for owner, count in (quotas or {}).items())
+            if enough:
                 break
             if attempt:
-                raise ValueError(f"只有{len(candidates)}个选题同时具备事实来源和可用画面，未安排缺素材的生产任务")
+                raise ValueError(f"有效选题{len(candidates)}个，各岗位候选{counts}未满足配额{quotas}，保留资料等待补齐，不凑数生产")
             emit(run_id, "researcher", "candidate_revision", "候选选题缺少有效来源或已就绪画面，先修正选题清单", "warning")
-            assignment = {**assignment, "format_feedback": "上次只有" + str(len(candidates)) + "个有效选题。必须引用已提供的visual_ready来源，或为有对应背景演示的选题明确列出visual_source_ids；保留不同核心问题，不虚构素材。"}
+            assignment = {**assignment, "format_feedback": "上次只有" + str(len(candidates)) + "个有效选题，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。必须引用已提供的visual_ready来源，或为有对应背景演示的选题明确列出visual_source_ids；保留不同核心问题，不虚构素材。"}
         plan = {"candidates": candidates}
         with SessionLocal() as db:
             db.get(FactoryRun, run_id).plan = plan
@@ -313,16 +327,21 @@ def _make_plan(run_id):
         if db.query(FactoryItem).filter_by(run_id=run_id).count():
             return
     emit(run_id, "director", "planning", f"负责人正在选择 {target} 个选题并安排制作")
-    decision = call_agent(run_id, "director", {"target": target, "candidates": plan["candidates"], "recent_titles": recent})
+    decision = call_agent(run_id, "director", {"target": target, "candidates": plan["candidates"], "recent_titles": recent,
+        "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、科技热点展会归小影3、其余AI产品实操归小影。"})
     selected = decision.get("selected", [])
     indices = [entry.get("candidate_index") for entry in selected if isinstance(entry, dict)]
     if len(indices) != target or len(set(indices)) != target or any(type(i) is not int or i < 0 or i >= len(plan["candidates"]) for i in indices):
         raise ValueError("负责人未提交有效且互不重复的生产计划")
     plan = {**plan, "decision": decision}
+    owners = validate_editor_plan([plan["candidates"][idx] for idx in indices], sources, quotas) if quotas else None
     with SessionLocal() as db:
         db.get(FactoryRun, run_id).plan = plan
         for position, idx in enumerate(indices):
-            db.add(FactoryItem(run_id=run_id, position=position, brief=plan["candidates"][idx]))
+            brief = dict(plan["candidates"][idx])
+            if owners:
+                brief["editor_id"] = owners[position]
+            db.add(FactoryItem(run_id=run_id, position=position, brief=brief))
         db.commit()
     emit(run_id, "director", "planning", decision.get("reason", "生产计划已下达"), "completed")
 
@@ -346,6 +365,7 @@ def _ensure_visual_support(run_id, item_id):
          {"item_id": item_id, "paper_url": document["url"], "sha256": document["sha256"]})
 
 
+@item_usage("script")
 def _write_and_review(run_id, item_id):
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
@@ -369,7 +389,7 @@ def _write_and_review(run_id, item_id):
     if owner == "producer3" and not brief.get("research_packet"):
         from services.factory_newsroom import validate_packet
         emit(run_id, "researcher3", "material_research", "小探3正在核对热点原文、事件日期与所需画面，交接给小影3")
-        packet = call_agent(run_id, "researcher3", {"brief": brief, "sources": sources})
+        packet = call_agent(run_id, "researcher3", {"brief": brief, "sources": sources}, work_kind="initial")
         validate_packet(packet, sources)
         brief = {**brief, "research_packet": packet, "researcher_id": "researcher3"}
         _save_item(item_id, brief=brief)
@@ -379,7 +399,7 @@ def _write_and_review(run_id, item_id):
         plan = brief.get("engagement_plan")
         if not plan:
             emit(run_id, "director", "hook_planning", "老周正在确定两版开场、正文兑现方式、首镜头证据与关注价值")
-            plan = call_agent(run_id, "director", {"task_mode": "hook_plan", "brief": brief, "sources": sources, "strategy": STRATEGY})
+            plan = call_agent(run_id, "director", {"task_mode": "hook_plan", "brief": brief, "sources": sources, "strategy": STRATEGY}, work_kind="initial")
             validate_engagement_plan(plan, sources)
             brief = {**brief, "engagement_plan": plan}
             _save_item(item_id, brief=brief)
@@ -401,7 +421,7 @@ def _write_and_review(run_id, item_id):
             "script_characters_range": [minimum, maximum],
             "length_instruction": "script必须是完整字符串，每个汉字、标点、英文字母均算一个字符；写足背景、具体例子、原理和局限，不能只给提纲。",
             "suggested_script_characters": calibrated_characters or (round(target_duration * 4.5) if target_duration else 220)},
-            max_tokens=4200 if target_duration else 2400)
+            max_tokens=4200 if target_duration else 2400, work_kind="rework" if prior else "initial")
         try:
             if not isinstance(content.get("script"), str) or not minimum <= len(content["script"]) <= maximum:
                 actual = len(content["script"]) if isinstance(content.get("script"), str) else 0
@@ -433,7 +453,7 @@ def _write_and_review(run_id, item_id):
         _save_item(item_id, content=content, status="reviewing")
         emit(run_id, "writer", "writing", f"脚本已提交：{content['title']}", "completed")
         emit(run_id, "reviewer", "reviewing", f"独立核对文案事实与出处：{content['title']}")
-        review = call_agent(run_id, "reviewer", {"task_mode": "script_review", "script": content, "sources": sources})
+        review = call_agent(run_id, "reviewer", {"task_mode": "script_review", "script": content, "sources": sources}, work_kind="rework" if prior else "initial")
         score = review.get("score", 0)
         approved = review.get("approved") is True and type(score) in (int, float) and score >= 80
         review["approved"] = approved
@@ -450,6 +470,7 @@ def _write_and_review(run_id, item_id):
     raise ReviewRejected("文案未通过审核，已达到本轮返工上限")
 
 
+@item_usage("topic_replacement")
 def _replace_rejected_topic(run_id, item_id):
     """The director may substitute one researched reserve topic, within the run budget."""
     with SessionLocal() as db:
@@ -459,6 +480,8 @@ def _replace_rejected_topic(run_id, item_id):
         used = {i.brief.get("title") for i in db.query(FactoryItem).filter_by(run_id=run_id)}
         rejected = set(run.plan.get("rejected_titles", []))
         candidates = [c for c in run.plan.get("candidates", []) if c.get("title") not in used | rejected]
+        if run.settings_snapshot.get("editor_quotas"):
+            candidates = [c for c in candidates if candidate_editor(c, run.sources) == editor_id(item)]
         if not candidates:
             return False
         old_title, feedback = item.brief.get("title"), item.review
@@ -467,7 +490,7 @@ def _replace_rejected_topic(run_id, item_id):
         "recent_titles": list(used | rejected), "rejected_title": old_title, "review_feedback": feedback,
         "selection_contract": "只为当前这一条选择1个备用选题，selected恰好1项；无合适选题则返回空数组。不要重新安排全天计划。"}
     for attempt in range(2):
-        decision = call_agent(run_id, "director", payload)
+        decision = call_agent(run_id, "director", payload, work_kind="rework")
         selected = decision.get("selected")
         if selected == []:
             return False
@@ -493,10 +516,12 @@ def _replace_rejected_topic(run_id, item_id):
 def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
     available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page")} for a in assets]
     feedback = {}
+    prior_edit = bool(content.get("editorial_review"))
     for attempt in range(2):
         check_cancel(run_id)
         arrangement = call_agent(run_id, owner, {"content": content, "visual_style": visual_style,
-            "available_assets": available, "editorial_feedback": feedback}, max_tokens=6500)
+            "available_assets": available, "editorial_feedback": feedback}, max_tokens=6500,
+            work_kind="rework" if feedback or prior_edit else "initial")
         scenes = arrangement.get("scenes", [])
         try:
             if not isinstance(scenes, list) or not 2 <= len(scenes) <= 18 or not all(isinstance(s, dict) and s.get("heading") and isinstance(s.get("body", ""), str) for s in scenes):
@@ -514,7 +539,8 @@ def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
                                 highlight_rectangles(asset, highlight["text"], scene.get("paper_focus", [0, 0, 1, 1]))
                 review = call_agent(run_id, "reviewer", {"task_mode": "edit_review",
                     "script": content, "arrangement": arrangement, "available_assets": available,
-                    "review_scope": "仅核对已提供素材描述与口播，未直接观看视频，不得声称成片视觉已验收"})
+                    "review_scope": "仅核对已提供素材描述与口播，未直接观看视频，不得声称成片视觉已验收"},
+                    work_kind="rework" if feedback or prior_edit else "initial")
                 if review.get("approved") is not True or type(review.get("score")) not in (int, float) or review["score"] < 80:
                     feedback = review
                     raise ValueError("口播与画面搭配未通过审核：" + str(review.get("reason", ""))[:300])
@@ -529,6 +555,7 @@ def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
                 raise
 
 
+@item_usage("editing")
 def _render(run_id, item_id):
     with SessionLocal() as db:
         item = db.get(FactoryItem, item_id)
@@ -653,6 +680,7 @@ def _render(run_id, item_id):
     emit(run_id, "reviewer", "media_review", "成片文件、音轨、时长与编码检查完成", "completed", media.get("quality", {}))
 
 
+@item_usage("platform_adaptation")
 def _package(run_id, item_id):
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
@@ -663,7 +691,8 @@ def _package(run_id, item_id):
             return
     check_cancel(run_id)
     emit(run_id, "publisher", "adapting", f"准备 {len(platforms)} 个平台的标题、简介、封面及素材包：{content['title']}")
-    adapted = call_agent(run_id, "publisher", {"content": content, "platforms": platforms}, max_tokens=3000)
+    adapted = call_agent(run_id, "publisher", {"content": content, "platforms": platforms}, max_tokens=3000,
+                         work_kind="rework" if existing else "initial")
     variants = adapted.get("platforms", [])
     if not isinstance(variants, list) or len(variants) != len(platforms) or {p.get("platform") for p in variants} != set(platforms):
         raise ValueError("运营员未交付全部平台版本")
@@ -708,10 +737,11 @@ def _package(run_id, item_id):
     emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份平台素材包，等待平台接入", "completed")
 
 
+@batch_usage("reporting")
 def _finish_report(run_id):
     with SessionLocal() as db:
         run = db.get(FactoryRun, run_id)
-        items = db.query(FactoryItem).filter_by(run_id=run_id).all()
+        items = db.query(FactoryItem).filter(FactoryItem.run_id == run_id, FactoryItem.status != "deferred").all()
         completed = sum(item.status == "completed" for item in items)
         packages = sum(len(item.packages or []) for item in items if item.status == "completed")
         production = {"completed": completed, "target": run.target_count, "packages": packages,
@@ -788,7 +818,7 @@ def execute_run(run_id):
             assign_editors(db, run_id)
             selected = db.get(FactoryRun, run_id).settings_snapshot.get("retry_item_ids")
             item_ids = [item.id for item in db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position)
-                        if not selected or item.id in selected]
+                        if item.status != "deferred" and (not selected or item.id in selected)]
         for item_id in item_ids:
             check_cancel(run_id)
             ensure_memory_available()

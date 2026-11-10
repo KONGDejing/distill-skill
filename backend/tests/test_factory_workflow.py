@@ -103,6 +103,29 @@ def test_invalid_model_json_gets_one_budgeted_retry_without_fabricating_approval
         assert (run.llm_calls, run.input_tokens, run.output_tokens) == (2, 20, 10)
 
 
+def test_model_usage_preserves_item_through_format_retry(isolated_factory, monkeypatch):
+    from types import SimpleNamespace
+    from services.factory_usage import item_usage
+    run_id, item_id = _seed_item(isolated_factory)
+    client = Mock()
+    client.messages.create.side_effect = [SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=text)],
+        usage=SimpleNamespace(input_tokens=20, output_tokens=5, cached_input_tokens=12), stop_reason="end_turn")
+        for text in ["invalid", '{"approved": true}']]
+    monkeypatch.setattr(factory_llm.anthropic, "Anthropic", Mock(return_value=client))
+
+    @item_usage("script")
+    def scoped(run_id, item_id):
+        return factory_llm.call_agent(run_id, "reviewer", {}, work_kind="initial")
+
+    assert scoped(run_id, item_id)["approved"] is True
+    with isolated_factory() as db:
+        events = db.query(FactoryEvent).filter_by(stage="model_call").order_by(FactoryEvent.id).all()
+        assert [event.detail["item_id"] for event in events] == [item_id, item_id]
+        assert [event.detail["work_kind"] for event in events] == ["initial", "rework"]
+        assert sum(e.detail["input_tokens"] for e in events) == db.get(FactoryRun, run_id).input_tokens
+
+
 def test_source_validation_rejects_mixed_invented_ids_and_wrong_shape():
     assert factory_service._sources_for([SOURCE["id"]], [SOURCE]) == [SOURCE]
     for source_ids in (["invented"], [SOURCE["id"], "invented"], SOURCE["id"], []):

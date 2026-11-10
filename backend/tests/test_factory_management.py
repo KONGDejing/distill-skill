@@ -71,7 +71,7 @@ def test_zero_baseline_is_recorded_but_percentage_is_undefined(db):
 def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     now = datetime.now(timezone.utc)
     analytics = {"platforms": [{"platform": p, "status": "not_connected"} for p in ("douyin", "xiaohongshu", "kuaishou", "bilibili")]}
-    state = {"summary": {"target": 10, "fully_submitted_slots": 0}}
+    state = {"summary": {"target": 6, "fully_submitted_slots": 0}}
     manager.sync_work_orders(db, state, analytics, now)
     manager.sync_work_orders(db, state, analytics, now)
     daily = db.query(FactoryWorkOrder).filter_by(kind="daily").all()
@@ -80,6 +80,10 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     assert all(r.status != "completed" for r in daily)
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
+    policy = db.get(FactoryGrowthPlan, 1).policy
+    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 18
+    assert policy["editor_quotas"] == {"producer": 2, "producer2": 2, "producer3": 2}
+    assert all(order.evidence["required"] == 2 for order in daily if order.owner in policy["editor_quotas"])
 
 
 def test_scorecards_do_not_invent_full_scores_when_evidence_is_missing(db):
@@ -89,6 +93,21 @@ def test_scorecards_do_not_invent_full_scores_when_evidence_is_missing(db):
     reviewer = next(c for c in cards if c["agent_id"] == "reviewer")
     assert reviewer["measured_weight"] == 0
     assert all(c["earned"] is None for c in reviewer["checks"])
+
+
+def test_editor_work_orders_keep_two_required_when_only_one_is_assigned(db):
+    from models.factory import FactoryItem, FactoryRun
+    now = datetime.now(timezone.utc)
+    run = FactoryRun(settings_snapshot={"target_duration_seconds": 150})
+    db.add(run); db.flush()
+    db.add(FactoryItem(run_id=run.id, position=0, status="completed", brief={"editor_id": "producer2"}, media={"duration": 150}))
+    db.add(FactoryItem(run_id=run.id, position=1, status="deferred", brief={"editor_id": "producer2"}, media={"duration": 150}))
+    db.commit()
+    manager.sync_work_orders(db, {"summary": {"target": 6, "fully_submitted_slots": 0}}, {"platforms": []}, now)
+    editor_orders = db.query(FactoryWorkOrder).filter(FactoryWorkOrder.kind == "daily", FactoryWorkOrder.owner.in_(["producer", "producer2", "producer3"])).all()
+    assert len(editor_orders) == 3 and all(row.evidence["required"] == 2 for row in editor_orders)
+    paper = next(row for row in editor_orders if row.owner == "producer2")
+    assert paper.evidence["done"] == 1 and paper.status == "in_progress"
 
 
 def test_incident_disposition_never_converts_failed_job_or_video_into_published(db, monkeypatch):

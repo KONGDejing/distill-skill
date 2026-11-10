@@ -7,21 +7,21 @@ from zoneinfo import ZoneInfo
 
 from models.factory import FactoryAnalyticsSnapshot, FactoryGrowthPlan, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
 from services.factory_editorial import validate_follow_prompt
-from services.factory_team import editor_id
-from agents.registry import EDITOR_IDS
+from services.factory_team import editor_id, editor_quotas
+from agents.registry import EDITOR_IDS, DAILY_EDITOR_QUOTAS, DAILY_TARGET
 
 WEEKS = [
-    {"week": 1, "focus": "建立基线、修复交付，验证150秒样片", "actions": ["同一主题只改变开场方式做对照", "每日核对原始资料、声音与画面", "启用三平台数据采集，接入B站账号"], "decision": "先保证真实完整的发布与数据；样片不过关就返工，不用重复视频凑10条"},
+    {"week": 1, "focus": "建立基线、修复交付，验证150秒样片", "actions": ["同一主题只改变开场方式做对照", "每日核对原始资料、声音与画面", "启用三平台数据采集，接入B站账号"], "decision": "先保证真实完整的发布与数据；样片不过关就返工，不用重复视频凑6条"},
     {"week": 2, "focus": "优化开头和讲解结构", "actions": ["每个平台至少比较3组同系列内容", "单独比较问题式与结果式开场", "根据评论里的真实疑问补充下一条选题"], "decision": "样本不足就继续收集，不把一次高播放当规律"},
-    {"week": 3, "focus": "形成系列，验证持续关注理由", "actions": ["在有实际数据支持的栏目增加2个制作名额", "比较两种自然关注提醒，每次只变一个因素", "B站专题用多个来源解释一个完整问题"], "decision": "同时检查完播与净增粉丝，避免只追播放或堆砌热点"},
+    {"week": 3, "focus": "形成系列，验证持续关注理由", "actions": ["在每日6条、每位剪辑师2条内调整选题，不增加制作名额", "比较两种自然关注提醒，每次只变一个因素", "B站专题用多个来源解释一个完整问题"], "decision": "同时检查完播与净增粉丝，避免只追播放或堆砌热点"},
     {"week": 4, "focus": "复核可重复的内容方式", "actions": ["复测表现较好的结构，核对相同统计周期", "停止反复低效且没有明确改进依据的内容套路", "提交四平台月报、遗留问题和下月安排"], "decision": "报告未达标平台与原因，不承诺必然涨粉，不买粉、不互粉冲数"},
 ]
 RHYTHM = [
-    {"time": "00:30", "owner": "老周 / 小探", "task": "自动开工，筛选有出处的候选与素材，确定10条原创计划"},
+    {"time": "00:30", "owner": "老周 / 小探", "task": "自动开工，筛选有出处的候选与素材，确定6条原创计划；小影、小影2、小影3各2条"},
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "每30分钟", "owner": "小数", "task": "读取官方数据，保留采集时间、平台统计周期与缺失字段"},
-    {"time": "10个既定时段", "owner": "小麦", "task": "提前上传并按时提交；逐条保存回执，异常结果不盲目重发"},
+    {"time": "6个既定时段（±15分钟）", "owner": "小麦", "task": "每条向抖音、小红书、快手各提交一次，每天最多18次；逐条保存回执，异常结果不盲目重发"},
     {"time": "每周三 / 周六 20:00", "owner": "小麦 / 小影", "task": "B站每周2条6–10分钟专题；账号与长视频流程完成接入后启用"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -64,7 +64,8 @@ def initialize(db):
         baselines[platform] = {"followers": followers, "snapshot_id": snapshot.id if snapshot else None,
                                "observed_at": snapshot.collected_at.replace(tzinfo=timezone.utc).isoformat() if snapshot else None}
     plan = FactoryGrowthPlan(id=1, baselines=baselines, policy={"weeks": 4, "weekly_min": .05, "weekly_stretch": .10,
-        "shorts_per_day": 10, "short_seconds": 150, "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
+        "shorts_per_day": DAILY_TARGET, "editor_quotas": dict(DAILY_EDITOR_QUOTAS),
+        "max_short_submissions_per_day": DAILY_TARGET * 3, "short_seconds": 150, "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
         "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_login_and_long_video_integration"}})
     db.add(plan); db.commit()
     return plan
@@ -118,15 +119,16 @@ def sync_work_orders(db, state, analytics, now):
     local = now.astimezone(ZoneInfo("Asia/Shanghai"))
     start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
     runs = db.query(FactoryRun).filter(FactoryRun.created_at >= start).all()
-    items = db.query(FactoryItem).filter(FactoryItem.created_at >= start).all()
-    target = state["summary"]["target"] or plan.policy["shorts_per_day"]
+    items = db.query(FactoryItem).filter(FactoryItem.created_at >= start, FactoryItem.status != "deferred").all()
+    target = min(state["summary"]["target"] or plan.policy["shorts_per_day"], DAILY_TARGET)
+    quotas = editor_quotas(target)
     current_run_ids = {r.id for r in runs if r.settings_snapshot.get("target_duration_seconds") == 150}
     approved = [i for i in items if i.run_id in current_run_ids and i.review.get("approved") is True and i.content]
     ready = [i for i in items if i.status == "completed" and 135 <= float(i.media.get("duration", 0)) <= 165]
     connected = sum(p["status"] == "connected" for p in analytics["platforms"])
     specs = [
-        ("researcher", "05:00", "选题与素材清单", "至少10份有正文与出处的资料，形成不少于今日目标的选题", min(sum(bool(s.get("url") and s.get("text")) for r in runs for s in r.sources), sum(len(r.plan.get("candidates", [])) for r in runs)), max(10, target)),
-        ("researcher3", "05:15", "给小影3交接热点与展会素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if editor_id(i) == "producer3"), sum(editor_id(i) == "producer3" for i in items if i.run_id in current_run_ids)),
+        ("researcher", "05:00", "选题与素材清单", f"至少{target}份有正文与出处的资料，候选按三位剪辑师配额覆盖通用科技、论文和热点展会", min(sum(bool(s.get("url") and s.get("text")) for r in runs for s in r.sources), sum(len(r.plan.get("candidates", [])) for r in runs)), target),
+        ("researcher3", "05:15", "给小影3交接热点与展会素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
         ("publisher", "22:15", "逐时段发布并核对三平台回执", "今日各时段三平台均取得真实提交回执；公开审核另行核对", state["summary"]["fully_submitted_slots"], target),
@@ -135,8 +137,8 @@ def sync_work_orders(db, state, analytics, now):
     ]
     for index, owner in enumerate(EDITOR_IDS):
         assigned = [i for i in items if i.run_id in current_run_ids and editor_id(i) == owner]
-        required = len(assigned) if current_run_ids else target // 3 + int(index < target % 3)
-        specs.insert(2 + index, (owner, "05:45", "独立制作分配的约150秒视频", "本人的成片实际135–165秒，保留脚本、配音、素材来源、分镜与审核记录",
+        required = quotas[owner]
+        specs.insert(2 + index, (owner, "05:45", f"独立制作{required}条约150秒视频", "按本人配额交付，缺选题不能挪用其他岗位名额；成片实际135–165秒，保留脚本、配音、素材来源、分镜与审核记录",
                                sum(i in ready for i in assigned), required))
     for owner, clock, title, acceptance, count, required in specs:
         key = f"daily:{local.date()}:{owner}"
