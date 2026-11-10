@@ -11,6 +11,7 @@ from .submission import SubmissionWatch
 
 HOME_URL = "https://cp.kuaishou.com/"
 OFFICIAL_HOSTS = {"cp.kuaishou.com", "passport.kuaishou.com"}
+UPLOAD_FINISH_PATH = "/rest/cp/works/v2/video/pc/upload/finish"
 
 
 class Adapter(SubmissionWatch, BaseAdapter):
@@ -156,14 +157,52 @@ class Adapter(SubmissionWatch, BaseAdapter):
             control.click(timeout=5000)
             self.page.wait_for_timeout(300)
 
+    def _observe_upload_finish(self, response):
+        address = urlsplit(response.url)
+        if (address.scheme != "https" or address.hostname != self.portal_host
+                or address.path != UPLOAD_FINISH_PATH or response.request.method != "POST"
+                or response.status != 200):
+            return
+        try:
+            value = response.json()
+        except Exception:
+            return
+        if not isinstance(value, dict) or type(value.get("result")) is not int:
+            return
+        if value["result"] != 1:
+            self._upload_error = value["result"]
+            return
+        data = value.get("data")
+        if (not isinstance(data, dict) or type(data.get("fileId")) is not int or data["fileId"] <= 0
+                or type(data.get("videoDuration")) is not int or data["videoDuration"] <= 0):
+            return
+        self._upload_receipt = {"type": "upload_receipt", "success": True,
+            "url": clean_url(response.url), "file_id": str(data["fileId"]), "duration_ms": data["videoDuration"]}
+
+    def _wait_for_upload(self, timeout=600):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._upload_error is not None:
+                raise ValueError(f"快手上传完成接口返回错误码 {self._upload_error}，未进入提交步骤")
+            if self._upload_receipt:
+                return self._upload_receipt
+            self.page.wait_for_timeout(500)
+        raise ValueError("尚未取得快手官方上传完成回执，已保留表单，未点击发布")
+
     def prepare(self, payload):
         # The home shortcut opens a new tab. Navigate to its observed official
         # target in this owned page so login inspection and publishing share it.
+        self._upload_receipt, self._upload_error, self._verified_upload_item = None, None, None
         self.page.goto("https://cp.kuaishou.com/article/publish/video", wait_until="domcontentloaded", timeout=45000)
-        self.page.locator('input[type=file][accept*="video"]').set_input_files(payload["video_path"], timeout=30000)
+        self.page.on("response", self._observe_upload_finish)
+        try:
+            self.page.locator('input[type=file][accept*="video"]').set_input_files(payload["video_path"], timeout=30000)
+            receipt = self._wait_for_upload()
+        finally:
+            self.page.remove_listener("response", self._observe_upload_finish)
+        self._verified_upload_item = payload["item_id"]
         editor = self.page.locator('[contenteditable=true]')
         editor.wait_for(state="visible", timeout=90000)
-        self.page.get_by_text("重新上传", exact=True).wait_for(state="visible", timeout=180000)
         self._dismiss_editor_tour()
         caption = payload["title"] + "\n" + payload.get("caption", "") + "\n" + " ".join("#" + tag for tag in payload.get("tags", []))
         editor.fill(caption.strip())
@@ -173,16 +212,21 @@ class Adapter(SubmissionWatch, BaseAdapter):
             self.page.locator('input[type=file][accept*="image"]').set_input_files(payload["cover_path"])
             self.page.wait_for_timeout(1500)
         self.publication_control(payload, payload)
-        return {"status": "prepared", "uploaded": True, "ai_disclosure": "内容为AI生成",
+        return {"status": "prepared", "uploaded": True, "upload_evidence": receipt, "ai_disclosure": "内容为AI生成",
                 "message": "视频、文案、封面及AI声明已准备，等待定时提交"}
 
     def publication_control(self, payload, prepared):
-        if urlsplit(self.page.url).path != "/article/publish/video":
+        if (not getattr(self, "_upload_receipt", None)
+                or getattr(self, "_verified_upload_item", None) != payload["item_id"]):
+            raise ValueError("未取得本条视频的官方上传完成回执，未点击提交")
+        address = urlsplit(self.page.url)
+        if (address.scheme != "https" or address.hostname != self.portal_host
+                or address.path != "/article/publish/video"):
             raise ValueError("当前不是这条作品的官方发布表单，未点击提交")
         if not self.page.locator('[contenteditable=true]').inner_text().startswith(prepared["title"]):
             raise ValueError("发布表单的文案与已准备作品不一致")
         if self.visible([self.page.locator(".ant-select-selection-item").filter(has_text="内容为AI生成")]) is None:
             raise ValueError("未核验到AI内容声明，尚未提交")
         if self.visible([self.page.get_by_text("重新上传", exact=True)]) is None:
-            raise ValueError("视频上传尚未完成")
+            raise ValueError("当前发布表单已没有已上传的视频，未点击提交")
         return self.page.get_by_text("发布", exact=True)
