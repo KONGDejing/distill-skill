@@ -148,9 +148,9 @@ def step_platform(db, slot, item, platform, now, enabled):
         if submitted.status in {"queued", "running"}:
             return _result("publishing", "正在核对平台提交回执", submitted)
         detail = (submitted.result or {}).get("message") or "提交未完成"
-        if (submitted.result or {}).get("submission_uncertain"):
-            detail = "小麦正在核对官方记录，暂不需用户操作；不会重复提交。" + detail
-        if item.media.get("publication_hold"):
+        if (submitted.result or {}).get("submission_uncertain") and "核对官方作品列表" not in detail:
+            detail = "小麦正在核对官方记录；仅官方要求本人验证时需你操作，不会重复提交。" + detail
+        if item.media.get("publication_hold") and "旧版已停发" not in detail:
             detail += "；此旧版已停发，保留历史提交记录"
         return _result("blocked", detail, submitted)
     if prepared and prepared.status in {"queued", "running"}:
