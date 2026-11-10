@@ -2,7 +2,7 @@
 from collections import Counter
 
 from agents.registry import AGENT_MAP, EDITOR_IDS
-from models.factory import FactoryEvent, FactoryItem
+from models.factory import FactoryEvent, FactoryItem, FactoryRun
 
 
 def editor_id(item):
@@ -12,6 +12,8 @@ def editor_id(item):
 
 
 def assign_editors(db, run_id):
+    from services.factory_papers import is_paper_story
+    run = db.get(FactoryRun, run_id)
     items = db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position).all()
     counts = Counter({key: 0 for key in EDITOR_IDS})
     for item in items:
@@ -24,7 +26,8 @@ def assign_editors(db, run_id):
     for item in items:
         if item.brief.get("editor_id") in EDITOR_IDS:
             continue
-        owner = min(EDITOR_IDS, key=lambda key: counts[key])
+        sources = [s for s in (run.sources or []) if s.get("id") in item.brief.get("source_ids", [])]
+        owner = "producer2" if is_paper_story(item.brief, sources) else min(("producer", "producer3"), key=lambda key: counts[key])
         item.brief = {**item.brief, "editor_id": owner}
         counts[owner] += 1
         assigned.append({"item_id": item.id, "position": item.position, "editor_id": owner})

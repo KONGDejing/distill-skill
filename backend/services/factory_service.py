@@ -101,6 +101,7 @@ def run_detail(db, run):
             "cover_url": storage_url(media.get("cover_path")), "duration": media.get("duration"),
             "tts_engine": media.get("tts_engine"), "packages": packages, "error": item.error,
             "preview": {"video_url": storage_url(preview.get("video_path")),
+                        "title": preview.get("title"), "quality": preview.get("quality", {}),
                         "webm_url": storage_url(preview.get("webm_path")),
                         "cover_url": storage_url(preview.get("cover_path")),
                         "audio_url": storage_url(preview.get("audio_path")),
@@ -215,6 +216,7 @@ def _save_item(item_id, **updates):
 
 
 def _eligible_candidates(candidates, sources, visual_style):
+    from services.factory_papers import is_paper_story
     if not isinstance(candidates, list):
         return []
     ids = {s["id"] for s in sources}
@@ -228,7 +230,8 @@ def _eligible_candidates(candidates, sources, visual_style):
                 or not set(refs).issubset(ids) or not isinstance(visuals, list)
                 or not all(isinstance(i, str) for i in visuals) or not set(visuals).issubset(ready)):
             continue
-        if visual_style == "tech_montage" and not (set(refs) & ready or visuals):
+        paper = is_paper_story(candidate, [s for s in sources if s["id"] in refs])
+        if visual_style == "tech_montage" and not (set(refs) & ready or visuals or paper):
             continue
         if visuals and not (isinstance(candidate.get("visual_support_reason"), str) and candidate["visual_support_reason"].strip()):
             continue
@@ -271,7 +274,8 @@ def _make_plan(run_id):
                 db.get(FactoryRun, run_id).sources = sources
                 db.commit()
             visual_ready = [s for s in sources if s.get("visual_ready")]
-            if not visual_ready:
+            from services.factory_papers import is_paper_story
+            if not visual_ready and not is_paper_story({}, sources):
                 raise ValueError("选题预检未找到足够动态素材，保留资料但不进入配音与渲染")
             usable = [s for s in sources if s.get("kind") != "reference_index"]
         else:
@@ -279,7 +283,7 @@ def _make_plan(run_id):
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
         assignment = {"target": target + 2, "sources": usable,
             "recent_titles": recent, "strategy": STRATEGY,
-            "visual_constraint": "混剪选题必须在source_ids引用本题visual_ready来源；或增加visual_source_ids数组引用已就绪的同主题背景来源，说明visual_support_reason并标注background_visuals=true。普通论文正文不等于已有画面。无合适画面就不要凑数。优先不同事件和研究。"}
+            "visual_constraint": "先写完整口播再匹配画面。论文选题必须有对应论文原文，制作会提取真实PDF页面及图表，不能用其他研究的背景演示代替。其他选题需有本题可核验画面线索。素材不足不凑数。"}
         for attempt in range(2):
             research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
             candidates = _eligible_candidates(research.get("candidates"), usable, visual_style)
@@ -313,26 +317,22 @@ def _make_plan(run_id):
 
 
 def _ensure_visual_support(run_id, item_id):
+    # Source reading precedes writing. Picture selection happens after the script.
+    from services.factory_papers import is_paper_story, collect_paper
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
-        if run.settings_snapshot.get("visual_style") != "tech_montage" or item.brief.get("visual_source_ids"):
+        if run.settings_snapshot.get("visual_style") != "tech_montage":
             return
         facts = _sources_for(item.brief.get("source_ids", []), run.sources)
-        if any(s.get("visual_ready") for s in facts):
-            return
-        ready = [s for s in run.sources if s.get("visual_ready")]
         brief = dict(item.brief)
-        owner = editor_id(item)
-    match = call_agent(run_id, owner, {"task_mode": "visual_match", "brief": brief,
-        "fact_sources": [{"id": s["id"], "title": s["title"], "text": s["text"][:2000]} for s in facts],
-        "visual_sources": [{"id": s["id"], "title": s["title"], "visual_assets": s.get("visual_assets", [])} for s in ready]}, max_tokens=1200)
-    ids = match.get("visual_source_ids")
-    if not isinstance(ids, list) or not 1 <= len(ids) <= 2 or any(not isinstance(i, str) or i not in {s["id"] for s in ready} for i in ids):
-        raise ReviewRejected("该选题没有相符的可用画面，先补素材或更换选题，未进入配音")
-    if not isinstance(match.get("reason"), str) or not match["reason"].strip():
-        raise ReviewRejected("未说明背景演示与事实的关系，未进入配音")
-    _save_item(item_id, brief={**brief, "visual_source_ids": ids, "visual_support_reason": match["reason"], "background_visuals": True})
-    emit(run_id, owner, "visual_handoff", "先确认画面支持，再交给小文：" + match["reason"], "completed", {"item_id": item_id, "visual_source_ids": ids})
+        if not is_paper_story(brief, facts) or brief.get("paper_document"):
+            return
+    document = collect_paper(facts, FACTORY_DIR / run_id / "papers")
+    _save_item(item_id, brief={**brief, "paper_document": document, "background_visuals": False,
+                              "visual_source_ids": []},
+               review={"approved": False, "reason": "按真实论文全文重写约150秒口播，之后再匹配原文图表与作者演示"})
+    emit(run_id, "researcher", "paper_reading", f"已取得论文原文，共{len(document['pages'])}页；先写口播，再逐句匹配画面", "completed",
+         {"item_id": item_id, "paper_url": document["url"], "sha256": document["sha256"]})
 
 
 def _write_and_review(run_id, item_id):
@@ -342,6 +342,11 @@ def _write_and_review(run_id, item_id):
             return
         brief, prior, feedback = item.brief, item.content or {}, item.review or {}
         sources = _sources_for([*brief.get("source_ids", []), *brief.get("visual_source_ids", [])], run.sources)
+        if brief.get("paper_document"):
+            document = brief["paper_document"]
+            sources = [*sources, {"id": "paper-fulltext", "title": "论文原文按页提取",
+                "url": document["url"], "kind": "paper", "pages": document["pages"],
+                "text": "\n".join(f"第{p['page']}页：{p['text']}" for p in document["pages"])[:65000]}]
         max_revisions, revisions = run.settings_snapshot.get("max_revisions", 1), item.revisions
         engagement_required = run.settings_snapshot.get("engagement_required", False)
         target_duration = run.settings_snapshot.get("target_duration_seconds")
@@ -383,6 +388,8 @@ def _write_and_review(run_id, item_id):
                 continue
             raise ReviewRejected(str(exc)) from None
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
+        if brief.get("paper_document"):
+            content["paper_document"] = brief["paper_document"]
         _save_item(item_id, content=content, status="reviewing")
         emit(run_id, "writer", "writing", f"脚本已提交：{content['title']}", "completed")
         emit(run_id, "reviewer", "reviewing", f"独立核对文案事实与出处：{content['title']}")
@@ -444,7 +451,7 @@ def _replace_rejected_topic(run_id, item_id):
 
 
 def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
-    available = [{k: a.get(k) for k in ("id", "description", "source_title", "topic_tags", "clips")} for a in assets]
+    available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page")} for a in assets]
     feedback = {}
     for attempt in range(2):
         check_cancel(run_id)
@@ -456,6 +463,15 @@ def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
                 raise ValueError("制作员未提供有效的画面安排")
             if assets:
                 validate_editorial_scenes(content["script"], scenes, assets)
+                if content.get("paper_document"):
+                    from services.factory_papers import validate_paper_scenes, highlight_rectangles
+                    validate_paper_scenes(scenes, assets)
+                    by_id = {a["id"]: a for a in assets}
+                    for scene in scenes:
+                        asset = by_id[scene["asset_ids"][0]]
+                        if asset.get("kind") == "paper_page":
+                            for highlight in scene["paper_highlights"]:
+                                highlight_rectangles(asset, highlight["text"], scene.get("paper_focus", [0, 0, 1, 1]))
                 review = call_agent(run_id, "reviewer", {"task_mode": "edit_review",
                     "script": content, "arrangement": arrangement, "available_assets": available,
                     "review_scope": "仅核对已提供素材描述与口播，未直接观看视频，不得声称成片视觉已验收"})
@@ -483,13 +499,31 @@ def _render(run_id, item_id):
         visual_style = db.get(FactoryRun, run_id).settings_snapshot.get("visual_style", "cards")
         target_duration = db.get(FactoryRun, run_id).settings_snapshot.get("target_duration_seconds")
         if media.get("video_path") and Path(media["video_path"]).is_file():
+            from services.factory_montage import validate_publication_media
+            from services.factory_papers import require_paper_publication
+            validate_publication_media(media)
+            require_paper_publication(content, brief, media)
             return
     check_cancel(run_id)
     ensure_memory_available()
     _save_item(item_id, status="rendering")
     directory = FACTORY_DIR / run_id / item_id
     assets = []
-    if visual_style == "tech_montage":
+    if visual_style == "tech_montage" and brief.get("paper_document"):
+        from services.factory_papers import paper_assets
+        from services.factory_visuals import collect_visuals
+        document = brief["paper_document"]
+        content = {**content, "paper_document": document, "background_visuals": False}
+        assets = paper_assets(document, directory / "paper-pages")
+        direct_sources = [s for s in run_sources if s["url"].rstrip("/") in document["verified_project_urls"]]
+        if direct_sources:
+            visuals = collect_visuals(direct_sources, directory / "visual-assets")
+            assets += [a for a in visuals.get("assets", []) if a.get("source_url", "").rstrip("/") in document["verified_project_urls"]]
+        emit(run_id, owner, "paper_picture_matching", "口播已定稿，匹配真实论文页、图表及同论文作者演示", "completed")
+    elif visual_style == "tech_montage":
+        from services.factory_papers import is_paper_story
+        if is_paper_story(brief, content.get("sources", [])):
+            raise ValueError("论文讲解尚未取得真实原文，请先读取论文并重写口播，不能用背景演示填充")
         emit(run_id, "researcher", "visual_research", "正在获取与本条来源对应的真实演示视频")
         from services.factory_visuals import collect_visuals
         visual_sources = list(content.get("sources", []))
@@ -504,6 +538,11 @@ def _render(run_id, item_id):
              {"manifest_path": str(visuals.get("manifest_path", "")), "warnings": visuals.get("warnings", [])})
     elif visual_style != "cards":
         raise ValueError("不支持的画面风格")
+    if assets:
+        from services.factory_montage import validate_assets, require_footage_budget
+        assets = validate_assets(assets)
+        if target_duration:
+            require_footage_budget(assets, target_duration)
     emit(run_id, owner, "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
     arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner)
     scenes = arrangement.get("scenes", [])

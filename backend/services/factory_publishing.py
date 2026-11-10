@@ -149,6 +149,10 @@ def _begin_publication(db, item_id, action, platform):
         if existing.status == "prepared" and _connection_state(platform).get("prepared_item_id") == item_id:
             return existing
         reuse_job = True
+    from services.factory_montage import validate_publication_media
+    from services.factory_papers import require_paper_publication
+    validate_publication_media(item.media)
+    require_paper_publication(item.content, item.brief, item.media)
     if action == "publish":
         prepared = db.query(FactoryPublication).filter_by(item_id=item_id, platform=platform, action="prepare").first()
         if prepared:

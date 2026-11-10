@@ -109,6 +109,22 @@ def test_media_quality_hold_prevents_any_upload_or_submission(publishing):
     env.submit.assert_not_called()
 
 
+@pytest.mark.parametrize("old_media,paper", [(True, False), (False, True)])
+def test_unverified_reuse_or_paper_without_original_blocks_new_submission(publishing, old_media, paper):
+    env = publishing
+    with env.sessions() as db:
+        item = db.get(FactoryItem, env.item_id)
+        if old_media:
+            item.media = {**item.media, "renderer_kind": "tech_montage", "renderer_version": 3}
+        if paper:
+            item.content = {**item.content, "sources": [{"url": "https://arxiv.org/abs/0000.00000", "kind": "paper"}]}
+        db.commit()
+        for action in ("prepare", "publish"):
+            with pytest.raises(ValueError, match="暂缓提交"):
+                factory_publishing.begin_publication(db, env.item_id, action)
+    env.submit.assert_not_called()
+
+
 def test_new_upload_cannot_replace_another_prepared_video(publishing, monkeypatch):
     env = publishing
     monkeypatch.setattr(xiaohongshu_connector, "connection_state", lambda: {

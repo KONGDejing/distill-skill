@@ -110,36 +110,40 @@ def test_source_validation_rejects_mixed_invented_ids_and_wrong_shape():
 
 
 @pytest.mark.parametrize("matched", [True, False])
-def test_paper_visual_support_is_matched_before_speech_and_labeled_background(isolated_factory, monkeypatch, matched):
+def test_paper_requires_fulltext_before_writing_and_never_substitutes_background(isolated_factory, monkeypatch, matched):
+    from services import factory_papers
     run_id, item_id = _seed_item(isolated_factory)
     visual = {**SOURCE, "id": "visual", "visual_ready": True, "visual_assets": []}
     with isolated_factory() as db:
         run = db.get(FactoryRun, run_id)
-        run.sources = [SOURCE, visual]
+        run.sources = [{**SOURCE, "kind": "paper"}, visual]
         run.settings_snapshot = {**run.settings_snapshot, "visual_style": "tech_montage"}
         db.commit()
-    call = Mock(return_value={"visual_source_ids": ["visual"] if matched else ["invented"], "reason": "同类动作原理背景，非本论文实验"})
+    document = {"id": "test-paper", "url": "https://arxiv.org/pdf/0000.00000", "pages": [{"page": 1, "text": "Original paper"}], "sha256": "test"}
+    monkeypatch.setattr(factory_papers, "collect_paper", Mock(return_value=document, side_effect=None if matched else ValueError("原文不足")))
+    call = Mock()
     monkeypatch.setattr(factory_service, "call_agent", call)
     if not matched:
-        with pytest.raises(factory_service.ReviewRejected, match="未进入配音"):
+        with pytest.raises(ValueError, match="原文不足"):
             factory_service._ensure_visual_support(run_id, item_id)
     else:
         factory_service._ensure_visual_support(run_id, item_id)
         with isolated_factory() as db:
             brief = db.get(FactoryItem, item_id).brief
             assert brief["source_ids"] == [SOURCE["id"]]
-            assert brief["visual_source_ids"] == ["visual"]
-            assert brief["background_visuals"] is True
-    assert call.call_args.args[1] == "producer"
-    assert call.call_args.args[2]["task_mode"] == "visual_match"
+            assert brief["visual_source_ids"] == []
+            assert brief["background_visuals"] is False
+            assert brief["paper_document"] == document
+    call.assert_not_called()
 
 
-def test_director_balances_three_editors_and_resume_keeps_ownership(isolated_factory):
+def test_director_assigns_papers_to_specialist_and_resume_keeps_ownership(isolated_factory):
     from services.factory_team import assign_editors, editor_id
     run_id, first = _seed_item(isolated_factory)
     with isolated_factory() as db:
         for position in range(1, 10):
-            db.add(FactoryItem(run_id=run_id, position=position, brief={"title": f"Topic {position}"}))
+            db.add(FactoryItem(run_id=run_id, position=position, brief={"title": f"Topic {position}",
+                "category": "论文讲解" if position in [1, 4, 7] else "科技动态"}))
         db.commit()
         assert assign_editors(db, run_id) == {"producer": 4, "producer2": 3, "producer3": 3}
         before = {i.id: editor_id(i) for i in db.query(FactoryItem).filter_by(run_id=run_id)}
@@ -158,7 +162,7 @@ def test_new_editors_do_not_take_credit_for_started_or_historical_videos(isolate
         assign_editors(db, run_id)
         assert editor_id(db.get(FactoryItem, first)) == "producer"
         other = db.query(FactoryItem).filter_by(run_id=run_id, position=1).one()
-        assert editor_id(other) == "producer2"
+        assert editor_id(other) == "producer3"
 
 
 def test_calibrated_duration_feedback_reports_actual_characters(isolated_factory, monkeypatch):

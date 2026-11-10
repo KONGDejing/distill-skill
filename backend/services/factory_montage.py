@@ -66,6 +66,8 @@ def _anchor_time(anchor: str, cues: list[dict]) -> float | None:
 
 
 def _source_label(asset: dict) -> str:
+    if asset.get("kind") == "paper_page":
+        return f"论文原文 · 第{asset['paper_page']}页"
     if asset.get("kind") == "schematic_animation":
         return "示意动画"
     tags = set(asset.get("topic_tags", []))
@@ -101,6 +103,13 @@ def validate_assets(assets: list[dict]) -> list[dict]:
         path = Path(asset["path"]).resolve()
         if not path.is_file():
             raise ValueError(f"素材不存在：{identifier}")
+        if asset.get("kind") == "paper_page":
+            if (_sha256(path) != asset.get("page_sha256")
+                    or _sha256(Path(asset["paper_path"])) != asset.get("paper_sha256")):
+                raise ValueError("论文页面或原文改变，需重新提取原文画面")
+            prepared.append({**asset, "sha256": asset["page_sha256"], "duration": 35,
+                             "display_label": _source_label(asset)})
+            continue
         if asset.get("kind") not in {"official_video", "schematic_animation"}:
             raise ValueError("只接受真实官方视频或明确标注的示意动画")
         if asset["kind"] == "official_video" and not str(asset.get("source_url", "")).startswith("https://"):
@@ -126,7 +135,7 @@ def validate_assets(assets: list[dict]) -> list[dict]:
         prepared.append({**asset, "path": str(path), "duration": length, "clips": clips,
                          "sha256": _sha256(path), "display_label": _source_label(asset)})
     official = [a for a in prepared if a["kind"] == "official_video"]
-    if len({a["sha256"] for a in official}) < 3:
+    if len({a["sha256"] for a in official}) < 3 and len([a for a in prepared if a["kind"] == "paper_page"]) < 3:
         raise ValueError("科技演示混剪至少需要 3 个不同的官方视频素材")
     return prepared
 
@@ -152,6 +161,41 @@ def _scene_assets(scene: dict, assets: list[dict]) -> tuple[list[dict], str]:
     return selected, "topic_tag_heuristic_requires_editorial_review"
 
 
+def _available_windows(asset: dict, occupied: dict) -> list[tuple[float, float]]:
+    """Subtract used source time, including aliases and overlapping clip windows."""
+    windows = []
+    for clip in sorted(asset["clips"], key=lambda c: c["start"]):
+        start = math.ceil(clip["start"] * FPS - 1e-6) / FPS
+        end = math.floor(clip["end"] * FPS + 1e-6) / FPS
+        if windows and start <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(end, windows[-1][1]))
+        elif end > start:
+            windows.append((start, end))
+    for used_start, used_end in occupied.get(asset["sha256"], []):
+        remaining = []
+        for start, end in windows:
+            if used_end <= start or used_start >= end:
+                remaining.append((start, end))
+            else:
+                if used_start > start:
+                    remaining.append((start, used_start))
+                if used_end < end:
+                    remaining.append((used_end, end))
+        windows = remaining
+    return windows
+
+
+def require_footage_budget(assets: list[dict], duration: float) -> dict:
+    occupied, total = {}, 0.0
+    for asset in assets:
+        windows = _available_windows(asset, occupied)
+        total += sum(end - start for start, end in windows)
+        occupied.setdefault(asset["sha256"], []).extend(windows)
+    if total + 1e-6 < math.ceil(duration * FPS) / FPS:
+        raise ValueError(f"不重复素材不足：可用{total:.1f}秒，口播需要{duration:.1f}秒；请补充对应素材，禁止循环或重复取片段凑时长")
+    return {"available_unique_seconds": round(total, 3), "required_seconds": duration}
+
+
 def build_shot_plan(content: dict, cues: list[dict], assets: list[dict], duration: float) -> list[dict]:
     """Resolve explicit source selections, then cut on subtitle-based anchors."""
     scenes = [s for s in content.get("scenes", []) if isinstance(s, dict)]
@@ -166,13 +210,17 @@ def build_shot_plan(content: dict, cues: list[dict], assets: list[dict], duratio
             raise ValueError("分镜口播锚点必须按原稿顺序且不能重叠")
         starts.append(anchored)
         timing.append("exact_text_match_within_cue_time_interpolation")
-    plan, asset_uses = [], {}
+    require_footage_budget(assets, duration)
+    plan, asset_uses, occupied = [], {}, {}
     for index, scene in enumerate(scenes):
         start, end = starts[index], starts[index + 1] if index + 1 < len(starts) else duration
         if end - start < 2:
             raise ValueError("分镜不足两秒，请与相邻分镜合并")
         choices, selection = _scene_assets(scene, assets)
-        count = max(1, math.ceil((end - start) / 4.5))
+        paper = any(a["kind"] == "paper_page" for a in choices)
+        if paper and (len(choices) != 1 or end - start > 35):
+            raise ValueError("论文页镜头只能选择一页原文且最多35秒，不能反复铺同一页")
+        count = 1 if paper else max(1, math.ceil((end - start) / 4.5))
         if (end - start) / count < 2:
             count -= 1
         # Quantize every cut to a video frame, without altering the voice.
@@ -183,21 +231,25 @@ def build_shot_plan(content: dict, cues: list[dict], assets: list[dict], duratio
             cuts[-1] = math.ceil(duration * FPS) / FPS
         for number in range(count):
             shot_duration = cuts[number + 1] - cuts[number]
-            eligible = [a for a in choices if any(c["end"] - c["start"] >= shot_duration for c in a["clips"])]
+            eligible = [a for a in choices if not (a["kind"] == "paper_page" and a["sha256"] in occupied)
+                        and any(end - start + 1e-6 >= shot_duration for start, end in _available_windows(a, occupied))]
             if not eligible:
-                raise ValueError("分镜所选素材没有足够长的可用时间窗")
+                raise ValueError(f"第{index + 1}段没有足够的不重复素材；请补素材或重排分镜，禁止重复片段")
             previous = plan[-1]["asset_id"] if plan else None
             candidates = [a for a in eligible if a["id"] != previous] or eligible
             asset = min(candidates, key=lambda a: asset_uses.get(a["id"], 0))
             uses = asset_uses.get(asset["id"], 0)
-            windows = [c for c in asset["clips"] if c["end"] - c["start"] >= shot_duration]
-            window = windows[uses % len(windows)]
-            slack = max(0.0, window["end"] - window["start"] - shot_duration)
-            # Revisit a different source moment on subsequent uses, never loop
-            # a frozen endpoint to fill missing footage.
-            source_start = window["start"] + slack * ((uses * 0.61803398875) % 1)
+            source_start = next(start for start, end in _available_windows(asset, occupied)
+                                if end - start + 1e-6 >= shot_duration)
+            occupied.setdefault(asset["sha256"], []).append((source_start, source_start + shot_duration))
             regions = asset.get("focus_regions", [])
             region = regions[uses % len(regions)] if regions else None
+            highlights = []
+            for highlight in scene.get("paper_highlights", []):
+                anchored = _anchor_time(highlight.get("narration_exact", ""), cues)
+                if anchored is None or not start <= anchored < end:
+                    raise ValueError("论文高亮的口播锚点不在当前讲解段落中")
+                highlights.append({"text": highlight["text"], "start": max(0, anchored - cuts[number])})
             plan.append({"shot_index": len(plan), "scene_index": index, "asset_id": asset["id"],
                          "timeline_start": cuts[number], "timeline_end": cuts[number + 1],
                          "duration": shot_duration, "source_start": round(source_start, 6),
@@ -207,7 +259,11 @@ def build_shot_plan(content: dict, cues: list[dict], assets: list[dict], duratio
                          "asset_selection": selection, "narration_anchor": scene.get("narration_exact"),
                          "match_reason": scene.get("match_reason", ""),
                          "timing_basis": timing[index], "heading": str(scene.get("heading", "")),
+                         "body": str(scene.get("body", "")),
                          "focus_region": region, "layout": "full_frame_and_detail" if region else "full_frame",
+                         "paper_focus": scene.get("paper_focus", [0, 0, 1, 1]),
+                         "paper_page": asset.get("paper_page"), "evidence_quote": scene.get("evidence_quote"),
+                         "paper_highlights": highlights,
                          "complete_source_frame_preserved": True})
             asset_uses[asset["id"]] = uses + 1
     validate_shot_plan(plan, duration)
@@ -222,14 +278,33 @@ def validate_shot_plan(plan: list[dict], duration: float) -> dict:
             raise ValueError("镜头清单存在空隙或重叠")
     if abs(plan[-1]["timeline_end"] - duration) > 2 / FPS:
         raise ValueError("镜头清单没有覆盖完整口播")
-    if any(s["duration"] < 2 - 1 / FPS or s["duration"] > 6 + 1 / FPS for s in plan):
+    if any(s["duration"] < 2 - 1 / FPS or s["duration"] > (35 if s["kind"] == "paper_page" else 6) + 1 / FPS for s in plan):
         raise ValueError("镜头时长必须在 2–6 秒之间")
     official_duration = sum(s["duration"] for s in plan if s["kind"] == "official_video")
     distinct = len({s["source_sha256"] for s in plan if s["kind"] == "official_video"})
     coverage = min(1.0, official_duration / duration)
-    if coverage < 0.75 or distinct < 3:
+    paper_shots = [s for s in plan if s["kind"] == "paper_page"]
+    if paper_shots:
+        if (len({s["source_sha256"] for s in paper_shots}) != len(paper_shots)
+                or len(paper_shots) < 3 or plan[0].get("paper_page") != 1):
+            raise ValueError("论文画面需从标题作者页开始，至少三页原文且不能重复回放同页")
+    elif coverage < 0.75 or distinct < 3:
         raise ValueError("成片必须至少 75% 官方动态素材并使用 3 个不同素材")
+    used = {}
+    for shot in plan:
+        start, end = shot.get("source_start"), shot.get("source_end")
+        if (not isinstance(start, (int, float)) or not isinstance(end, (int, float))
+                or not math.isfinite(start) or not math.isfinite(end) or start < 0
+                or abs(end - start - shot["duration"]) > 1e-5
+                or abs(shot["timeline_end"] - shot["timeline_start"] - shot["duration"]) > 1e-5):
+            raise ValueError("镜头必须记录与成片时长一致的真实源时间窗，不能延长或冻结补帧")
+        key = shot["source_sha256"]
+        for old_start, old_end in used.get(key, []):
+            if min(end, old_end) - max(start, old_start) > 1e-5:
+                raise ValueError("检测到重复源画面：同一素材的时间窗重叠，裁切或放大也不能重复使用")
+        used.setdefault(key, []).append((start, end))
     return {"dynamic_coverage": round(coverage, 4), "distinct_asset_count": distinct,
+            "source_reuse_seconds": 0, "source_uniqueness_passed": True,
             "shot_count": len(plan), "shortest_shot": round(min(s["duration"] for s in plan), 3),
             "longest_shot": round(max(s["duration"] for s in plan), 3)}
 
@@ -253,7 +328,67 @@ def measure_motion(path: Path, start: float, duration: float) -> dict:
             "method": "decoded_96x54_grayscale_at_3fps; motion_test_not_semantic_proof"}
 
 
+def _check_repeated_samples(frames, positions, sample_fps=4) -> dict:
+    """Find sustained repeated source sequences, not ordinary adjacent video frames."""
+    import numpy as np
+    frames = np.asarray(frames, dtype=np.float32)
+    length = int(sample_fps * 1.5)
+    thumb = frames.reshape((-1, 9, 6, 16, 6)).mean(axis=(2, 4)).reshape((-1, 144))
+    for index in range(sample_fps * 2, len(frames) - length + 1):
+        candidates = np.flatnonzero(np.abs(thumb[:index - sample_fps * 2 + 1] - thumb[index]).mean(axis=1) < 0.8)
+        for earlier in candidates:
+            difference = float(np.abs(frames[earlier:earlier + length] - frames[index:index + length]).mean())
+            if difference < 0.8:
+                raise ValueError(f"检测到疑似重复画面序列：镜头{positions[earlier][0] + 1}与镜头{positions[index][0] + 1}，"
+                                 "请换用不重复的动作片段并复核；换文件名或转码不能视为新素材")
+    return {"passed": True, "sampled_frames": len(frames), "sample_fps": sample_fps,
+            "minimum_sequence_seconds": 1.5,
+            "method": "source_pixels_96x54_sequence_comparison; sampled_check_not_semantic_guarantee"}
+
+
+def check_visual_repeats(plan, sources):
+    import numpy as np
+    frames, positions = [], []
+    for shot in plan:
+        if shot["kind"] == "paper_page":
+            continue  # A held original document is not looping action footage.
+        ensure_memory_available()
+        result = subprocess.run(["ffmpeg", "-v", "error", "-threads", "1", "-ss", str(shot["source_start"]),
+            "-t", str(shot["duration"]), "-i", sources[shot["asset_id"]]["path"], "-an",
+            "-vf", "fps=4,scale=96:54", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
+            capture_output=True, timeout=60)
+        if result.returncode or len(result.stdout) // (96 * 54) < math.floor(shot["duration"] * 4) - 1:
+            raise ValueError("素材解码帧不足，不能冻结尾帧填充")
+        samples = np.frombuffer(result.stdout, dtype=np.uint8).reshape((-1, 54, 96))
+        frames.extend(samples)
+        positions.extend((shot["shot_index"], n / 4) for n in range(len(samples)))
+    if not frames:
+        return {"passed": True, "sampled_frames": 0, "method": "no_action_footage; original_pages_checked_by_hash"}
+    return _check_repeated_samples(frames, positions)
+
+
+def validate_publication_media(media):
+    """New submissions must reference exactly the files that passed the checks."""
+    if media.get("renderer_kind", media.get("style")) != "tech_montage":
+        return
+    quality = media.get("quality", {})
+    evidence = quality.get("uniqueness_evidence", {})
+    if (media.get("renderer_version", 0) < 4 or evidence.get("version") != 1
+            or quality.get("source_uniqueness_passed") is not True
+            or quality.get("visual_repeat_check", {}).get("passed") is not True):
+        raise ValueError("暂缓提交：成片未通过不重复画面检查，请按新标准重新剪辑")
+    try:
+        video, edl = Path(media["video_path"]), Path(media["edl_path"])
+        if _sha256(video) != evidence["video_sha256"] or _sha256(edl) != evidence["edl_sha256"]:
+            raise ValueError("成片或剪辑记录已变化，需要重新验收")
+        validate_shot_plan(json.loads(edl.read_text()), media["duration"])
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("暂缓提交：不重复画面验收证据无效：" + str(exc)) from exc
+
+
 def _render_shot(asset: dict, shot: dict, target: Path):
+    if asset["kind"] == "paper_page":
+        return _render_paper_shot(asset, shot, target)
     # Keep the complete source frame visible. Portrait phone demonstrations use
     # the available height; wide footage may add a labelled detail view below.
     region = shot.get("focus_region")
@@ -274,6 +409,50 @@ def _render_shot(asset: dict, shot: dict, target: Path):
                "-map", "[out]", "-an", "-t", f"{shot['duration']:.6f}", "-r", str(FPS),
                "-c:v", "libx264", "-threads", "2", "-preset", "veryfast", "-crf", "20", str(target)]
     _run(command, timeout=240)
+
+
+def _render_paper_shot(asset, shot, target):
+    """Show a real PDF crop with its page context; no invented figures or text."""
+    from PIL import Image, ImageDraw, ImageOps
+    page = Image.open(asset["path"]).convert("RGB")
+    x, y, w, h = shot["paper_focus"]
+    crop = page.crop((round(x * page.width), round(y * page.height),
+                      round((x + w) * page.width), round((y + h) * page.height)))
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), (13, 23, 36))
+    detail = ImageOps.contain(crop, (1008, 1070))
+    canvas.paste(detail, ((WIDTH - detail.width) // 2, 450 + (1070 - detail.height) // 2))
+    context = ImageOps.contain(page, (190, 260))
+    canvas.paste(context, (56, 175))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((56 + x * context.width, 175 + y * context.height,
+                    56 + (x + w) * context.width, 175 + (y + h) * context.height), outline=(80, 220, 180), width=4)
+    draw.text((280, 205), "原文定位", font=_font(33, True), fill=(110, 230, 190))
+    draw.text((280, 263), f"第 {asset['paper_page']} 页", font=_font(46, True), fill="white")
+    for line, text in enumerate(_wrap(shot.get("body", ""), _font(30, True), 960)[:2]):
+        draw.text((60, 1540 + line * 37), text, font=_font(30, True), fill=(215, 235, 230))
+    still = target.with_suffix(".png")
+    canvas.save(still)
+    # Hold the authentic crop for reading; highlights appear with the narration.
+    frame_count = math.ceil(shot["duration"] * FPS)
+    filters = [f"zoompan=z=1:x=0:y=0:d={frame_count}:s=1080x1920:fps={FPS}"]
+    from services.factory_papers import highlight_rectangles
+    offset_x, offset_y = (WIDTH - detail.width) / 2, 450 + (1070 - detail.height) / 2
+    for highlight in shot.get("paper_highlights", []):
+        for hx, hy, hw, hh in highlight_rectangles(asset, highlight["text"], shot["paper_focus"]):
+            # Only mark text inside the actual displayed crop.
+            left, top = max(x, hx), max(y, hy)
+            right, bottom = min(x + w, hx + hw), min(y + h, hy + hh)
+            if right <= left or bottom <= top:
+                raise ValueError("高亮原文位于裁切区域之外，请调整原文取景")
+            bx, by = offset_x + (left - x) / w * detail.width, offset_y + (top - y) / h * detail.height
+            bw, bh = (right - left) / w * detail.width, (bottom - top) / h * detail.height
+            enable = f"gte(t,{highlight['start']:.3f})"
+            filters.append(f"drawbox=x={bx:.1f}:y={by:.1f}:w={max(3,bw):.1f}:h={max(3,bh):.1f}:color=yellow@0.25:t=fill:enable='{enable}'")
+            filters.append(f"drawbox=x={bx-2:.1f}:y={by-2:.1f}:w={max(3,bw)+4:.1f}:h={max(3,bh)+4:.1f}:color=0xE5BE42:t=2:enable='{enable}'")
+    filters.append("format=yuv420p")
+    _run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-filter_threads", "1", "-i", str(still),
+          "-vf", ",".join(filters),
+          "-an", "-t", str(shot["duration"]), "-c:v", "libx264", "-threads", "2", "-preset", "veryfast", "-crf", "20", str(target)], timeout=240)
 
 
 def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content: dict, target: Path):
@@ -303,10 +482,11 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
             add(2, start, end, "Credit", r"{\pos(54,894)\fs24}" + _ass_escape("局部放大 · " + str(shot["focus_region"].get("label", "动作细节"))))
         if shot["scene_index"] not in seen_scenes:
             seen_scenes.add(shot["scene_index"])
-            until = min(end, start + 1.3)
+            until = end if shot["kind"] == "paper_page" else min(end, start + 1.3)
             annotation_intervals.append((start, until))
             heading = f"{shot['scene_index'] + 1:02d}  /  {shot['heading']}"
-            add(3, start, until, "Accent", r"{\move(40,205,54,205,0,260)\fad(120,180)}" + _ass_escape(heading[:28]))
+            position = r"{\pos(280,350)\fs32}" if shot["kind"] == "paper_page" else r"{\move(40,205,54,205,0,260)\fad(120,180)}"
+            add(3, start, until, "Accent", position + _ass_escape(heading[:23]))
     channel = str(content.get("channel_name") or "AI 科技观察")
     add(2, 0, plan[-1]["timeline_end"], "Credit", r"{\pos(54,1824)\fs24\alpha&H45&}" + _ass_escape(channel))
     add(2, 0, plan[-1]["timeline_end"], "Credit", r"{\pos(872,1824)\fs24\alpha&H45&}AI 配音")
@@ -348,17 +528,24 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     if not 10 <= duration <= 240:
         raise ValueError("混剪口播时长必须在 10–240 秒内")
     prepared = validate_assets(assets)
+    paper_evidence = None
+    if any(a["kind"] == "paper_page" for a in prepared):
+        from services.factory_papers import validate_paper_scenes
+        paper_evidence = validate_paper_scenes(content.get("scenes", []), prepared)
     cues = read_subtitle_cues(subtitle_path)
     plan = build_shot_plan(content, cues, prepared, duration)
     quality = validate_shot_plan(plan, duration)
+    if paper_evidence:
+        quality["paper_evidence"] = paper_evidence
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
-        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v3"},
+        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v4"},
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     if (target / "media.json").exists():
         old = json.loads((target / "media.json").read_text())
         if old.get("fingerprint") == fingerprint:
+            validate_publication_media(old)
             old["quality"] = {**old["quality"], **inspect_media(Path(old["video_path"]))}
             return old
         raise ValueError("输出目录已包含另一版混剪，请为新版本选择新目录")
@@ -368,23 +555,11 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     for shot in plan:
         key = str(shot["shot_index"])
         asset = sources[shot["asset_id"]]
-        candidates = [shot["source_start"]]
-        for window in asset["clips"]:
-            slack = window["end"] - window["start"] - shot["duration"]
-            if slack >= 0:
-                candidates.extend(window["start"] + slack * fraction for fraction in (0.5, 1.0))
-        failure = None
-        for attempt, start in enumerate(candidates[:5]):
-            try:
-                motion[key] = measure_motion(Path(asset["path"]), start, shot["duration"])
-                if attempt:
-                    shot.update(source_start=round(start, 6), source_end=round(start + shot["duration"], 6),
-                                motion_window_reselected=True)
-                break
-            except ValueError as exc:
-                failure = exc
-        else:
-            raise ValueError(f"素材 {asset['id']} 的可用时间窗均未通过动态质检") from failure
+        if asset["kind"] == "paper_page":
+            continue
+        # Do not silently move a failed window into footage already used elsewhere.
+        motion[key] = measure_motion(Path(asset["path"]), shot["source_start"], shot["duration"])
+    quality["visual_repeat_check"] = check_visual_repeats(plan, sources)
     (target / "edit-decision-list.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2))
     (target / "visual-sources.json").write_text(json.dumps({"assets": [a for a in prepared if a["id"] in used_ids]}, ensure_ascii=False, indent=2))
     video, audio, subtitle = target / "video.mp4", target / "narration.mp3", target / "subtitles.ass"
@@ -423,7 +598,8 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     quality.update(inspect_media(video))
     quality.update({"cover_design": cover_design, "editorial_review": content.get("editorial_review", {}),
                     "source_motion_samples": motion, "official_footage_ratio": quality["dynamic_coverage"],
-                    "self_made_animation_ratio": round(1 - quality["dynamic_coverage"], 4),
+                    "self_made_animation_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "schematic_animation") / duration, 4),
+                    "original_paper_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "paper_page") / duration, 4),
                     "emphasis_annotation_ratio": round(sum(end - start for start, end in annotations) / duration, 4),
                     "complete_source_frames_preserved": True, "source_audio_unchanged_sha256": _sha256(audio),
                     "subtitle_timing": "original_approved_narration_cues_preserved",
@@ -432,11 +608,13 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
                     "review_required": "Motion sampling does not verify scene semantics; inspect the edit list and preview."})
     result = {"video_path": str(video), "audio_path": str(audio), "cover_path": str(cover),
               "subtitle_path": str(subtitle), "mixed_audio_path": str(soundtrack), "duration": quality["duration"],
-              "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 3,
+              "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 4,
               "tts_engine": "existing_verified_narration_reused", "quality": quality,
               "edl_path": str(target / "edit-decision-list.json"),
               "visual_manifest_path": str(target / "visual-sources.json"),
               "visual_sources": [{key: a.get(key) for key in ("id", "source_title", "source_url", "credit", "rights_note", "license_url", "sha256")} for a in prepared if a["id"] in used_ids],
               "fingerprint": fingerprint, "published": False}
+    quality["uniqueness_evidence"] = {"version": 1, "video_sha256": _sha256(video),
+        "edl_sha256": _sha256(target / "edit-decision-list.json")}
     (target / "media.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result

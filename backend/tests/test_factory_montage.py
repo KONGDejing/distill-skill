@@ -42,7 +42,7 @@ def test_anchor_inside_one_long_sentence_uses_subtitle_position():
 
 def test_plan_rejects_fake_diversity_and_insufficient_official_footage():
     base = [{"timeline_start": i * 4, "timeline_end": (i + 1) * 4, "duration": 4,
-             "kind": "official_video", "source_sha256": str(i)} for i in range(3)]
+             "kind": "official_video", "source_sha256": str(i), "source_start": 0, "source_end": 4} for i in range(3)]
     assert validate_shot_plan(base, 12)["distinct_asset_count"] == 3
     base[2]["source_sha256"] = "1"
     with pytest.raises(ValueError, match="75%"):
@@ -80,3 +80,56 @@ def test_invalid_item_cannot_escape_montage_output_directory(tmp_path):
     with pytest.raises(ValueError, match="编号"):
         render_tech_montage("../escape", {}, Path("audio"), Path("subtitle"), [], tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_long_narration_cannot_recycle_short_source_windows():
+    short = [{**a, "clips": [{"start": 0, "end": 8}]} for a in assets()]
+    scenes = [{"heading": "演示", "narration_exact": "第一段机器人动作", "asset_ids": [a["id"] for a in short]}]
+    with pytest.raises(ValueError, match="不重复素材不足"):
+        build_shot_plan({"scenes": scenes}, [], short, 157.467)
+
+
+def test_overlapping_windows_and_aliases_do_not_inflate_available_time():
+    from services.factory_montage import require_footage_budget
+    first = {**assets()[0], "clips": [{"start": 0, "end": 8}, {"start": 4, "end": 12}]}
+    alias = {**first, "id": "renamed-copy"}
+    assert require_footage_budget([first, alias], 12)["available_unique_seconds"] == 12
+    with pytest.raises(ValueError, match="不足"):
+        require_footage_budget([first, alias], 13)
+
+
+def test_allocator_uses_only_unused_intervals_even_across_scenes():
+    scenes = [{"heading": "演示", "narration_exact": "完整机器人动作", "asset_ids": [a["id"] for a in assets()]}]
+    plan = build_shot_plan({"scenes": scenes}, [], assets(), 36)
+    assert validate_shot_plan(plan, 36)["source_reuse_seconds"] == 0
+    plan[-1].update(source_sha256=plan[0]["source_sha256"], source_start=plan[0]["source_start"], source_end=plan[0]["source_end"])
+    with pytest.raises(ValueError, match="重复源画面"):
+        validate_shot_plan(plan, 36)
+
+
+def test_reencoded_repeated_action_is_detected_without_confusing_adjacent_frames():
+    from services.factory_montage import _check_repeated_samples
+    rng = np.random.default_rng(42)
+    unique = rng.integers(20, 230, size=(24, 54, 96), dtype=np.uint8)
+    assert _check_repeated_samples(unique, [(i // 12, i / 4) for i in range(24)])["passed"]
+    repeated = np.concatenate([unique, unique[:8]])
+    with pytest.raises(ValueError, match="重复画面序列"):
+        _check_repeated_samples(repeated, [(i // 12, i / 4) for i in range(32)])
+
+
+def test_decoded_video_check_rejects_duplicate_footage_in_different_files(tmp_path, monkeypatch):
+    import shutil
+    from services import factory_montage
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg required for real decoded footage verification")
+    monkeypatch.setattr(factory_montage, "ensure_memory_available", lambda: None)
+    first, second = tmp_path / "original.mp4", tmp_path / "reencoded.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=192x108:rate=24", "-t", "4",
+                    "-c:v", "libx264", "-threads", "1", "-crf", "18", str(first)], check=True, timeout=20)
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(first), "-c:v", "libx264", "-threads", "1",
+                    "-crf", "20", str(second)], check=True, timeout=20)
+    assert factory_montage._sha256(first) != factory_montage._sha256(second)
+    plan = [{"shot_index": i, "kind": "official_video", "asset_id": str(i), "source_start": 0, "duration": 4}
+            for i in range(2)]
+    with pytest.raises(ValueError, match="重复画面序列"):
+        factory_montage.check_visual_repeats(plan, {"0": {"path": str(first)}, "1": {"path": str(second)}})
