@@ -21,6 +21,10 @@ class StartRun(BaseModel):
     target_count: int | None = Field(default=None, ge=1, le=10)
 
 
+class RetryRun(BaseModel):
+    item_ids: list[str] | None = Field(default=None, min_length=1, max_length=10)
+
+
 class SettingsUpdate(BaseModel):
     daily_target: int | None = Field(default=None, ge=1, le=10)
     target_duration_seconds: int | None = Field(default=None, ge=60, le=180)
@@ -157,8 +161,12 @@ def catch_up_run(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/runs/{run_id}/retry", status_code=202)
-def retry_run(run_id: str, db: Session = Depends(get_db)):
+def retry_run(run_id: str, db: Session = Depends(get_db), data: RetryRun | None = None):
     run = require_run(db, run_id)
+    selected = set(data.item_ids) if data and data.item_ids else None
+    items = db.query(FactoryItem).filter_by(run_id=run.id).all()
+    if selected and not selected.issubset({item.id for item in items}):
+        raise HTTPException(422, "只能恢复该批次中的作品")
     if run.status not in {"failed", "partial", "cancelled", "paused_memory"}:
         raise HTTPException(409, "只有失败、部分完成、已取消或内存暂停的批次可以恢复")
     if run.llm_calls >= run.settings_snapshot.get("max_llm_calls", 32):
@@ -177,8 +185,15 @@ def retry_run(run_id: str, db: Session = Depends(get_db)):
     run.status, run.stage, run.active_slot = "queued", "queued", "factory"
     run.cancel_requested, run.error, run.finished_at = False, None, None
     run.report = {}
+    snapshot = dict(run.settings_snapshot)
+    snapshot.pop("retry_item_ids", None)
+    if selected:
+        snapshot["retry_item_ids"] = sorted(selected)
+    run.settings_snapshot = snapshot
     run.heartbeat_at = datetime.utcnow()
-    for item in db.query(FactoryItem).filter_by(run_id=run.id):
+    for item in items:
+        if selected and item.id not in selected:
+            continue
         if item.status != "completed" and not was_memory_paused:
             item.status, item.error, item.revisions = "planned", None, 0
     try:

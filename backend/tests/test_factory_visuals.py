@@ -29,6 +29,44 @@ def test_library_reuses_verified_bytes_but_rejects_corruption(monkeypatch, tmp_p
     assert not copy.exists()
 
 
+def test_collector_reuses_only_exact_cited_verified_assets_offline(monkeypatch, tmp_path):
+    import hashlib
+    requested = []
+    def offline(request):
+        requested.append(str(request.url))
+        return httpx.Response(503)
+    sources = _collector(monkeypatch, tmp_path, offline)
+    for index in range(3):
+        source = tmp_path / f"clip{index}.mp4"
+        source.write_bytes(f"verified independent clip {index}".encode())
+        visuals._archive_asset({"id": f"clip{index}", "path": str(source),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "bytes": source.stat().st_size,
+            "reference_source_url": sources[0]["url"], "source_title": sources[0]["title"]})
+    result = visuals.collect_visuals(sources, tmp_path / "cached-output", limit=3)
+    assert result["status"] == "ready" and not requested
+    assert all(a["reuse_basis"] == "exact_cited_source_and_verified_hash" for a in result["assets"])
+    unrelated = [{**sources[0], "url": "https://deepmind.google/models/veo/"}]
+    assert not visuals.collect_visuals(unrelated, tmp_path / "other-output", limit=3)["assets"]
+
+
+def test_usage_retains_exact_windows_and_repeated_record_is_idempotent(monkeypatch, tmp_path):
+    import hashlib
+    monkeypatch.setattr(visuals, "STORAGE", tmp_path)
+    source = tmp_path / "clip.mp4"; source.write_bytes(b"test clip")
+    asset = {"id": "clip", "path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+             "reference_source_url": "https://example.org/one", "source_title": "One"}
+    visuals._archive_asset(asset)
+    edl = tmp_path / "edit-list.json"
+    edl.write_text(json.dumps([{"asset_id": "clip", "source_start": 2, "source_end": 6,
+                               "narration_anchor": "具体动作", "match_reason": "与演示动作对应"}]))
+    visuals.record_asset_usage("item-1", {"edl_path": str(edl)})
+    visuals.record_asset_usage("item-1", {"edl_path": str(edl)})
+    visuals._archive_asset(asset)
+    metadata = json.loads((tmp_path / "factory/asset-library/clip.json").read_text())
+    assert len(metadata["uses"]) == 1
+    assert metadata["uses"][0]["windows"][0]["source_start"] == 2
+
+
 @pytest.mark.parametrize("url", [
     "http://allenai.github.io/ToyBlocks/media/a.mp4",
     "https://allenai.github.io.evil.example/ToyBlocks/media/a.mp4",

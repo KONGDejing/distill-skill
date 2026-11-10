@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 
 from models.factory import FactoryAnalyticsSnapshot, FactoryGrowthPlan, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
 from services.factory_editorial import validate_follow_prompt
+from services.factory_team import editor_id
+from agents.registry import EDITOR_IDS
 
 WEEKS = [
     {"week": 1, "focus": "建立基线、修复交付，验证150秒样片", "actions": ["同一主题只改变开场方式做对照", "每日核对原始资料、声音与画面", "启用三平台数据采集，接入B站账号"], "decision": "先保证真实完整的发布与数据；样片不过关就返工，不用重复视频凑10条"},
@@ -32,6 +34,8 @@ UPGRADES = {
     "publisher": "同一账号串行上传与发布，先核对真实回执；评论按问题回复，商业承诺和无法确定的技术问题转待处理。",
     "analyst": "用同平台同周期比较，区分新增和净增、当前粉丝和累计统计；缺失数据不填0，不将账号整体涨粉归因给单条。",
 }
+UPGRADES["producer2"] = "为自己负责的视频保留完整分镜、配音和素材记录；技术概念用具体动作解释，逐段检查术语与画面的对应。"
+UPGRADES["producer3"] = "为自己负责的视频打磨开场、转折和结尾；热点画面标明事件出处与时间，不能靠无关镜头制造刺激。"
 
 
 def initialize(db):
@@ -122,12 +126,16 @@ def sync_work_orders(db, state, analytics, now):
     specs = [
         ("researcher", "05:00", "选题与素材清单", "至少10份有正文与出处的资料，形成不少于今日目标的选题", min(sum(bool(s.get("url") and s.get("text")) for r in runs for s in r.sources), sum(len(r.plan.get("candidates", [])) for r in runs)), max(10, target)),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
-        ("producer", "05:45", "制作并归档约150秒成片", "实际135–165秒，有音轨、字幕、素材来源与剪辑记录", len(ready), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
         ("publisher", "22:15", "逐时段发布并核对三平台回执", "今日各时段三平台均取得真实提交回执；公开审核另行核对", state["summary"]["fully_submitted_slots"], target),
         ("analyst", "22:25", "补齐四平台经营数据", "4个平台有2小时内官方数据，缺失指标和统计周期明确标记", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]
+    for index, owner in enumerate(EDITOR_IDS):
+        assigned = [i for i in items if i.run_id in current_run_ids and editor_id(i) == owner]
+        required = len(assigned) if current_run_ids else target // 3 + int(index < target % 3)
+        specs.insert(2 + index, (owner, "05:45", "独立制作分配的约150秒视频", "本人的成片实际135–165秒，保留脚本、配音、素材来源、分镜与审核记录",
+                               sum(i in ready for i in assigned), required))
     for owner, clock, title, acceptance, count, required in specs:
         key = f"daily:{local.date()}:{owner}"
         order = db.get(FactoryWorkOrder, key)
@@ -139,7 +147,8 @@ def sync_work_orders(db, state, analytics, now):
         from models.factory import FactoryDailyReport
         if owner == "director":
             count = int(db.get(FactoryDailyReport, str(local.date())) is not None)
-        order.status = "completed" if count >= required else "in_progress" if count else "pending"
+        order.title, order.acceptance = title, acceptance
+        order.status = "completed" if required and count >= required else "in_progress" if count else "pending"
         order.evidence = {"done": count, "required": required, "checked_at": now.isoformat()}
     # Separate long-form work orders cannot enter the short-video release queue.
     beginning = plan.started_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Shanghai"))
@@ -213,6 +222,12 @@ def scorecards(db, analytics):
                     _score("统计周期完整", 20, ratio(sum(bool(p.get("period", {}).get("start") and p.get("period", {}).get("end")) for p in connected), len(connected)), "核对每个平台周期", len(connected)),
                     pending("归因与实验结论质量", 25), pending("日报数据校验", 15)],
     }
+    for owner in EDITOR_IDS:
+        own_complete = [i for i in complete if editor_id(i) == owner]
+        own_timed = [i for i in timed if editor_id(i) == owner]
+        data[owner] = [_score("实际时长验收", 25, ratio(sum(abs(float(i.media.get("duration", 0)) - runs[i.run_id].settings_snapshot["target_duration_seconds"]) <= 15 for i in own_timed), len(own_timed)), "仅核验本人完成作品的实际时长", len(own_timed)),
+                       _score("素材描述对齐审核", 25, ratio(sum(i.content.get("editorial_review", {}).get("approved") is True for i in own_complete), len(own_complete)), "仅核验本人的分镜审核结果，不等于成片逐帧验收", len(own_complete)),
+                       pending("成片逐帧语义与听感抽检", 30), pending("平台观看体验", 20)]
     return [{"agent_id": agent, "checks": checks, "earned": round(sum(c["earned"] or 0 for c in checks), 1),
              "measured_weight": sum(c["weight"] for c in checks if c["earned"] is not None),
              "total_score": round(sum(c["earned"] for c in checks), 1) if all(c["earned"] is not None for c in checks) else None,

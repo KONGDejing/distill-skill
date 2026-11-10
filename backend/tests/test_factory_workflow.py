@@ -109,6 +109,96 @@ def test_source_validation_rejects_mixed_invented_ids_and_wrong_shape():
             factory_service._sources_for(source_ids, [SOURCE])
 
 
+@pytest.mark.parametrize("matched", [True, False])
+def test_paper_visual_support_is_matched_before_speech_and_labeled_background(isolated_factory, monkeypatch, matched):
+    run_id, item_id = _seed_item(isolated_factory)
+    visual = {**SOURCE, "id": "visual", "visual_ready": True, "visual_assets": []}
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        run.sources = [SOURCE, visual]
+        run.settings_snapshot = {**run.settings_snapshot, "visual_style": "tech_montage"}
+        db.commit()
+    call = Mock(return_value={"visual_source_ids": ["visual"] if matched else ["invented"], "reason": "同类动作原理背景，非本论文实验"})
+    monkeypatch.setattr(factory_service, "call_agent", call)
+    if not matched:
+        with pytest.raises(factory_service.ReviewRejected, match="未进入配音"):
+            factory_service._ensure_visual_support(run_id, item_id)
+    else:
+        factory_service._ensure_visual_support(run_id, item_id)
+        with isolated_factory() as db:
+            brief = db.get(FactoryItem, item_id).brief
+            assert brief["source_ids"] == [SOURCE["id"]]
+            assert brief["visual_source_ids"] == ["visual"]
+            assert brief["background_visuals"] is True
+    assert call.call_args.args[1] == "producer"
+    assert call.call_args.args[2]["task_mode"] == "visual_match"
+
+
+def test_director_balances_three_editors_and_resume_keeps_ownership(isolated_factory):
+    from services.factory_team import assign_editors, editor_id
+    run_id, first = _seed_item(isolated_factory)
+    with isolated_factory() as db:
+        for position in range(1, 10):
+            db.add(FactoryItem(run_id=run_id, position=position, brief={"title": f"Topic {position}"}))
+        db.commit()
+        assert assign_editors(db, run_id) == {"producer": 4, "producer2": 3, "producer3": 3}
+        before = {i.id: editor_id(i) for i in db.query(FactoryItem).filter_by(run_id=run_id)}
+        assign_editors(db, run_id)
+        assert before == {i.id: editor_id(i) for i in db.query(FactoryItem).filter_by(run_id=run_id)}
+        assert db.query(FactoryEvent).filter_by(stage="editor_assignment").count() == 1
+
+
+def test_new_editors_do_not_take_credit_for_started_or_historical_videos(isolated_factory):
+    from services.factory_team import assign_editors, editor_id
+    run_id, first = _seed_item(isolated_factory, status="rendering")
+    with isolated_factory() as db:
+        for position in range(1, 4):
+            db.add(FactoryItem(run_id=run_id, position=position, brief={"title": f"Topic {position}"}))
+        db.commit()
+        assign_editors(db, run_id)
+        assert editor_id(db.get(FactoryItem, first)) == "producer"
+        other = db.query(FactoryItem).filter_by(run_id=run_id, position=1).one()
+        assert editor_id(other) == "producer2"
+
+
+def test_calibrated_duration_feedback_reports_actual_characters(isolated_factory, monkeypatch):
+    run_id, item_id = _seed_item(isolated_factory)
+    with isolated_factory() as db:
+        run, item = db.get(FactoryRun, run_id), db.get(FactoryItem, item_id)
+        run.settings_snapshot = {**run.settings_snapshot, "target_duration_seconds": 150}
+        item.brief = {**item.brief, "target_script_characters": 700}
+        db.commit()
+    script = {"title": "已校准的讲解", "source_ids": [SOURCE["id"]]}
+    calls = Mock(side_effect=[{**script, "script": "文" * 600}, {**script, "script": "文" * 700}, {"approved": True, "score": 90}])
+    monkeypatch.setattr(factory_service, "call_agent", calls)
+    factory_service._write_and_review(run_id, item_id)
+    assert calls.call_args_list[0].args[2]["suggested_script_characters"] == 700
+    assert "实测600字符" in calls.call_args_list[1].args[2]["review_feedback"]["reason"]
+
+
+def test_targeted_recovery_does_not_retry_unfixed_items(isolated_factory, monkeypatch):
+    from routers import factory as router
+    from tasks.factory_tasks import produce_run
+    run_id, item_id = _seed_item(isolated_factory, status="failed")
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id);run.status="failed";run.active_slot=None
+        other=FactoryItem(run_id=run_id,position=1,status="failed",brief={"title":"缺少素材"},error="无匹配画面")
+        db.add(other);db.commit();other_id=other.id
+        monkeypatch.setattr(router, "queue_available", lambda: True)
+        monkeypatch.setattr(produce_run, "delay", Mock(return_value=Mock(id="recovery")))
+        router.retry_run(run_id, db, router.RetryRun(item_ids=[item_id]))
+        assert db.get(FactoryItem, other_id).status == "failed"
+        assert db.get(FactoryItem, other_id).error == "无匹配画面"
+    _fake_lock(monkeypatch)
+    monkeypatch.setattr(factory_service, "_make_plan", lambda *_: None)
+    monkeypatch.setattr(factory_service, "_write_and_review", lambda *_: None)
+    render=Mock();monkeypatch.setattr(factory_service, "_render", render)
+    monkeypatch.setattr(factory_service, "_package", lambda *_: None)
+    monkeypatch.setattr(factory_service, "_finish_report", lambda *_: None)
+    factory_service.execute_run(run_id)
+    render.assert_called_once_with(run_id, item_id)
+
+
 def test_single_active_lane_and_daily_schedule_are_database_invariants(isolated_factory):
     sessions = isolated_factory
     with sessions() as db:

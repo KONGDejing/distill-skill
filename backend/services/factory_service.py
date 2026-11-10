@@ -1,4 +1,4 @@
-"""Factory application service and durable seven-agent production workflow."""
+"""Factory application service and durable production workflow."""
 import json
 import os
 import threading
@@ -14,6 +14,7 @@ from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled
 from services.factory_resources import MemoryPressure, ensure_memory_available
 from services.factory_editorial import STRATEGY, validate_editorial_scenes, validate_follow_prompt
+from services.factory_team import assign_editors, editor_id
 
 TERMINAL = {"completed", "partial", "failed", "cancelled", "paused_memory"}
 FACTORY_DIR = settings.STORAGE_DIR / "factory"
@@ -89,6 +90,7 @@ def run_detail(db, run):
             platform_jobs.setdefault(job.platform, job_dict(job))
         result["items"].append({
             "id": item.id, "title": content.get("title") or item.brief.get("title", "待生成"),
+            "editor_id": editor_id(item), "editor_name": AGENT_MAP[editor_id(item)]["name"],
             "category": item.brief.get("category", "AI 科技"), "status": item.status,
             "script": content.get("script", ""), "hook": content.get("hook", ""),
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
@@ -296,7 +298,8 @@ def _ensure_visual_support(run_id, item_id):
             return
         ready = [s for s in run.sources if s.get("visual_ready")]
         brief = dict(item.brief)
-    match = call_agent(run_id, "producer", {"task_mode": "visual_match", "brief": brief,
+        owner = editor_id(item)
+    match = call_agent(run_id, owner, {"task_mode": "visual_match", "brief": brief,
         "fact_sources": [{"id": s["id"], "title": s["title"], "text": s["text"][:2000]} for s in facts],
         "visual_sources": [{"id": s["id"], "title": s["title"], "visual_assets": s.get("visual_assets", [])} for s in ready]}, max_tokens=1200)
     ids = match.get("visual_source_ids")
@@ -305,7 +308,7 @@ def _ensure_visual_support(run_id, item_id):
     if not isinstance(match.get("reason"), str) or not match["reason"].strip():
         raise ReviewRejected("未说明背景演示与事实的关系，未进入配音")
     _save_item(item_id, brief={**brief, "visual_source_ids": ids, "visual_support_reason": match["reason"], "background_visuals": True})
-    emit(run_id, "producer", "visual_handoff", "先确认画面支持，再交给小文：" + match["reason"], "completed", {"item_id": item_id, "visual_source_ids": ids})
+    emit(run_id, owner, "visual_handoff", "先确认画面支持，再交给小文：" + match["reason"], "completed", {"item_id": item_id, "visual_source_ids": ids})
 
 
 def _write_and_review(run_id, item_id):
@@ -318,6 +321,7 @@ def _write_and_review(run_id, item_id):
         max_revisions, revisions = run.settings_snapshot.get("max_revisions", 1), item.revisions
         engagement_required = run.settings_snapshot.get("engagement_required", False)
         target_duration = run.settings_snapshot.get("target_duration_seconds")
+        calibrated_characters = brief.get("target_script_characters")
         recent_prompts = [i.content.get("follow_prompt") for i in db.query(FactoryItem).filter(
             FactoryItem.status == "completed").order_by(FactoryItem.created_at.desc()).limit(10) if i.content.get("follow_prompt")]
     for attempt in range(revisions, max_revisions + 1):
@@ -327,12 +331,15 @@ def _write_and_review(run_id, item_id):
         content = call_agent(run_id, "writer", {"brief": brief, "sources": sources, "previous_script": prior,
             "review_feedback": feedback, "strategy": STRATEGY, "recent_follow_prompts": recent_prompts,
             "target_duration_seconds": target_duration,
-            "suggested_script_characters": round(target_duration * 4.5) if target_duration else 220},
+            "suggested_script_characters": calibrated_characters or (round(target_duration * 4.5) if target_duration else 220)},
             max_tokens=4200 if target_duration else 2400)
         try:
             minimum, maximum = (round(target_duration * 3.3), round(target_duration * 5.7)) if target_duration else (80, 650)
+            if type(calibrated_characters) is int and calibrated_characters > 0:
+                minimum, maximum = round(calibrated_characters * .95), round(calibrated_characters * 1.05)
             if not isinstance(content.get("script"), str) or not minimum <= len(content["script"]) <= maximum:
-                raise ValueError(f"文案必须有完整script字符串字段，长度为{minimum}–{maximum}字符；按目标时长讲清背景、例子、原理与边界，不要仅返回提纲")
+                actual = len(content["script"]) if isinstance(content.get("script"), str) else 0
+                raise ValueError(f"本次script实测{actual}字符，必须为{minimum}–{maximum}字符；按目标时长讲清背景、例子、原理与边界，不要仅返回提纲")
             if not isinstance(content.get("title"), str) or not content["title"].strip():
                 raise ValueError("文案缺少标题")
             _sources_for(content.get("source_ids", []), sources)
@@ -383,6 +390,8 @@ def _replace_rejected_topic(run_id, item_id):
     decision = call_agent(run_id, "director", {"target": 1, "candidates": candidates,
         "recent_titles": list(used | rejected), "rejected_title": old_title, "review_feedback": feedback})
     selected = decision.get("selected", [])
+    if selected == []:
+        return False
     if len(selected) != 1:
         raise ValueError("备用选题决策不符合约定")
     index = selected[0].get("candidate_index")
@@ -391,7 +400,7 @@ def _replace_rejected_topic(run_id, item_id):
     with SessionLocal() as db:
         run, item = db.get(FactoryRun, run_id), db.get(FactoryItem, item_id)
         run.plan = {**run.plan, "rejected_titles": [*run.plan.get("rejected_titles", []), old_title]}
-        item.brief = {**candidates[index], "replacement_count": 1}
+        item.brief = {**candidates[index], "replacement_count": 1, "editor_id": editor_id(item)}
         item.content, item.review, item.revisions, item.status = {}, {}, 0, "planned"
         db.commit()
     emit(run_id, "director", "replacement", f"改用备用选题：{candidates[index]['title']}", "completed",
@@ -399,12 +408,12 @@ def _replace_rejected_topic(run_id, item_id):
     return True
 
 
-def _plan_edit(run_id, content, assets, visual_style):
+def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
     available = [{k: a.get(k) for k in ("id", "description", "source_title", "topic_tags", "clips")} for a in assets]
     feedback = {}
     for attempt in range(2):
         check_cancel(run_id)
-        arrangement = call_agent(run_id, "producer", {"content": content, "visual_style": visual_style,
+        arrangement = call_agent(run_id, owner, {"content": content, "visual_style": visual_style,
             "available_assets": available, "editorial_feedback": feedback}, max_tokens=6500)
         scenes = arrangement.get("scenes", [])
         try:
@@ -424,7 +433,7 @@ def _plan_edit(run_id, content, assets, visual_style):
         except ValueError as exc:
             feedback = {**feedback, "error": str(exc), "required_fields": ["heading", "body", "narration_exact", "asset_ids", "match_reason"],
                         "previous_arrangement": arrangement}
-            emit(run_id, "director", "edit_revision", "要求小影重排口播与镜头：" + str(exc), "rejected")
+            emit(run_id, "director", "edit_revision", f"要求{AGENT_MAP[owner]['name']}重排口播与镜头：" + str(exc), "rejected")
             if attempt:
                 raise
 
@@ -432,6 +441,7 @@ def _plan_edit(run_id, content, assets, visual_style):
 def _render(run_id, item_id):
     with SessionLocal() as db:
         item = db.get(FactoryItem, item_id)
+        owner = editor_id(item)
         content, media = item.content, item.media or {}
         brief = item.brief
         run_sources = db.get(FactoryRun, run_id).sources
@@ -459,8 +469,8 @@ def _render(run_id, item_id):
              {"manifest_path": str(visuals.get("manifest_path", "")), "warnings": visuals.get("warnings", [])})
     elif visual_style != "cards":
         raise ValueError("不支持的画面风格")
-    emit(run_id, "producer", "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
-    arrangement = _plan_edit(run_id, content, assets, visual_style)
+    emit(run_id, owner, "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
+    arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner)
     scenes = arrangement.get("scenes", [])
     if content.get("background_visuals"):
         scenes = [{**scene, "evidence_role": "background"} for scene in scenes]
@@ -471,7 +481,7 @@ def _render(run_id, item_id):
         if any(not isinstance(s.get("asset_ids"), list) or not s["asset_ids"]
                or not all(isinstance(a, str) and a in known for a in s["asset_ids"]) for s in scenes):
             raise ValueError("镜头计划引用了不存在的演示素材")
-    content = {**content, "scenes": scenes, "visual_note": arrangement.get("visual_note", ""),
+    content = {**content, "editor_id": owner, "scenes": scenes, "visual_note": arrangement.get("visual_note", ""),
                "editorial_review": arrangement.get("editorial_review", {})}
     _save_item(item_id, content=content)
     if visual_style == "tech_montage":
@@ -485,7 +495,7 @@ def _render(run_id, item_id):
                 if item.brief.get("duration_revisions", 0) >= 1:
                     raise ValueError(f"配音实际{voice['duration']:.1f}秒，未达到{target_duration}±15秒，已保留并暂停此条")
                 suggested = round(len(content["script"]) * target_duration / voice["duration"])
-                item.brief = {**item.brief, "duration_revisions": 1}
+                item.brief = {**item.brief, "duration_revisions": 1, "target_script_characters": suggested}
                 item.revisions = 0
                 item.review = {"approved": False, "reason": f"实际配音{voice['duration']:.1f}秒，目标{target_duration}秒。按约{suggested}字重写，增加有依据的讲解或删去重复，不能拉慢语音、填充静音或循环画面凑时长。"}
                 db.commit()
@@ -510,7 +520,7 @@ def _render(run_id, item_id):
     if media.get("edl_path"):
         from services.factory_visuals import record_asset_usage
         record_asset_usage(item_id, media)
-    emit(run_id, "producer", "rendering", f"成片已生成，时长 {media['duration']:.1f} 秒", "completed")
+    emit(run_id, owner, "rendering", f"成片已生成，时长 {media['duration']:.1f} 秒", "completed")
     emit(run_id, "reviewer", "media_review", "成片文件、音轨、时长与编码检查完成", "completed", media.get("quality", {}))
 
 
@@ -646,7 +656,10 @@ def execute_run(run_id):
         emit(run_id, "director", "starting", "生产团队已开工，按预算和质量门槛逐步交接")
         _make_plan(run_id)
         with SessionLocal() as db:
-            item_ids = [item.id for item in db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position)]
+            assign_editors(db, run_id)
+            selected = db.get(FactoryRun, run_id).settings_snapshot.get("retry_item_ids")
+            item_ids = [item.id for item in db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position)
+                        if not selected or item.id in selected]
         for item_id in item_ids:
             check_cancel(run_id)
             ensure_memory_available()
@@ -659,7 +672,8 @@ def execute_run(run_id):
                     try:
                         _ensure_visual_support(run_id, item_id)
                         _write_and_review(run_id, item_id)
-                    except ReviewRejected:
+                    except ReviewRejected as exc:
+                        _save_item(item_id, review={"approved": False, "reason": str(exc)})
                         if not _replace_rejected_topic(run_id, item_id):
                             raise
                         _ensure_visual_support(run_id, item_id)

@@ -60,6 +60,18 @@ def test_rejected_picture_alignment_is_returned_to_producer_before_rendering(mon
     assert calls.call_args_list[2].args[2]["editorial_feedback"]["approved"] is False
 
 
+@pytest.mark.parametrize("owner", ["producer2", "producer3"])
+def test_each_new_editor_executes_its_own_model_step(monkeypatch, owner):
+    from unittest.mock import Mock
+    from services import factory_service
+    monkeypatch.setattr(factory_service, "check_cancel", lambda *_: None)
+    monkeypatch.setattr(factory_service, "emit", lambda *_: None)
+    calls = Mock(return_value={"scenes": [{"heading": "开场", "body": ""}, {"heading": "结尾", "body": ""}]})
+    monkeypatch.setattr(factory_service, "call_agent", calls)
+    factory_service._plan_edit("run", {"script": "测试"}, [], "cards", owner=owner)
+    assert calls.call_args.args[1] == owner
+
+
 def test_persistent_edit_rejection_stops_after_bounded_revision(monkeypatch):
     bad = deepcopy(scenes())
     bad[0]["asset_ids"] = []
