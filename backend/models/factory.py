@@ -13,6 +13,7 @@ class FactoryConfig(Base):
     __tablename__ = "factory_config"
     id = Column(Integer, primary_key=True, default=1)
     daily_target = Column(Integer, nullable=False, default=10)
+    target_duration_seconds = Column(Integer, nullable=False, default=150)
     sector = Column(String(100), nullable=False, default="AI 科技")
     schedule_enabled = Column(Boolean, nullable=False, default=True)
     schedule_time = Column(String(5), nullable=False, default="00:30")
@@ -109,3 +110,19 @@ class FactoryRelease(Base):
     results = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FactoryAnalyticsSnapshot(Base):
+    __tablename__ = "factory_analytics_snapshots"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform = Column(String(30), nullable=False, index=True)
+    collected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    status = Column(String(30), nullable=False)
+    data = Column(JSON, nullable=False, default=dict)
+
+
+class FactoryDailyReport(Base):
+    __tablename__ = "factory_daily_reports"
+    day = Column(String(10), primary_key=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    data = Column(JSON, nullable=False, default=dict)

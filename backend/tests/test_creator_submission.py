@@ -39,3 +39,12 @@ def test_business_rejection_is_reported_without_automatic_retry():
     with pytest.raises(ValueError, match="错误码 8"):
         adapter.wait_for_submission()
     adapter.page.click.assert_not_called()
+
+
+def test_observed_kuaishou_acceptance_is_valid_without_premature_public_claim():
+    from services.creator_connector import _valid_evidence
+    receipt = observe("cp.kuaishou.com", {"result": 1, "data": {}}, "/rest/cp/works/v2/video/pc/submit")._submission_receipt
+    assert receipt["type"] == "api_acceptance" and _valid_evidence("kuaishou", receipt)
+    assert not _valid_evidence("douyin", receipt)
+    assert not _valid_evidence("kuaishou", {**receipt, "code": True})
+    assert not _valid_evidence("kuaishou", {**receipt, "url": "https://cp.kuaishou.com/draft/create"})

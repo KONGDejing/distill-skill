@@ -7,6 +7,15 @@ import pytest
 from services import creator_connector as connector
 
 
+def test_kuaishou_hashtag_limit_includes_caption_and_deduplicates(monkeypatch):
+    monkeypatch.setattr(connector, "_media", lambda value, suffixes: value)
+    payload = {"item_id": "item", "title": "演示", "caption": "内容 #人工智能", "video_path": "video.mp4",
+               "tags": ["科技", "科技", "演示", "工具", "模型"]}
+    assert connector._payload("kuaishou", "prepare", payload)["tags"] == ["科技", "演示", "工具"]
+    with pytest.raises(ValueError, match="4个"):
+        connector._payload("kuaishou", "prepare", {**payload, "caption": "#a #b #c #d #e"})
+
+
 def _browser(monkeypatch, tmp_path):
     monkeypatch.setattr(connector, "RUNTIME", tmp_path)
     browser = object.__new__(connector._Browser)

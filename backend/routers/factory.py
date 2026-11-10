@@ -23,6 +23,7 @@ class StartRun(BaseModel):
 
 class SettingsUpdate(BaseModel):
     daily_target: int | None = Field(default=None, ge=1, le=10)
+    target_duration_seconds: int | None = Field(default=None, ge=60, le=180)
     schedule_enabled: bool | None = None
     schedule_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     auto_publish_xiaohongshu: bool | None = None
@@ -85,7 +86,10 @@ def overview(db: Session = Depends(get_db)):
     from services.factory_schedule import upcoming_releases
     from services.factory_editorial import STRATEGY
     from services.factory_visuals import library_summary
+    from services.factory_analytics import overview as analytics_overview
+    from services.factory_operations import overview as operations_overview
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
+            "analytics": analytics_overview(db), "operations": operations_overview(db),
             "strategy": STRATEGY, "asset_library": library_summary(),
             "releases": upcoming_releases(db, get_config(db)),
             "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available(), "memory": memory_state()}}

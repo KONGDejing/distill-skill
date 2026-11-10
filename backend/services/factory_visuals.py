@@ -310,7 +310,13 @@ def library_summary():
             sources.setdefault(reference["url"], set()).add(entry["sha256"])
     return {"videos": len({r["sha256"] for r in records}), "source_pages": len(sources),
             "ready_source_pages": sum(len(hashes) >= 3 for hashes in sources.values()),
-            "bytes": sum(r.get("bytes", 0) for r in records)}
+            "bytes": sum(r.get("bytes", 0) for r in records),
+            "assets": [{"id": r["id"], "description": r.get("description", "待核对画面内容"),
+                        "topic_tags": r.get("topic_tags", []), "clips": r.get("clips", []),
+                        "source_url": r.get("source_url"), "rights_note": r.get("rights_note"),
+                        "preview_url": "/storage/" + Path(r["path"]).resolve().relative_to(STORAGE.resolve()).as_posix(),
+                        "usage_count": len(r.get("uses", [])), "last_used_at": r.get("last_used_at"),
+                        "reviewed": bool(r.get("topic_tags"))} for r in records]}
 
 
 def _archive_asset(asset):
@@ -328,10 +334,37 @@ def _archive_asset(asset):
         references = {r["url"]: r for r in old.get("references", [])}
         references[asset["reference_source_url"]] = {"url": asset["reference_source_url"], "title": asset["source_title"]}
         entry = {**asset, "path": str(target), "references": list(references.values()),
+                 "uses": old.get("uses", []), "last_used_at": old.get("last_used_at"),
                  "last_seen_at": datetime.now(timezone.utc).isoformat()}
         temporary = metadata_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(entry, ensure_ascii=False, indent=2))
         temporary.replace(metadata_path)
+
+
+def record_asset_usage(item_id, media):
+    """Retain the exact source windows used, for deliberate future reuse."""
+    path = Path(media.get("edl_path", "")).resolve()
+    if not path.is_relative_to(STORAGE.resolve()) or not path.is_file():
+        return
+    edl = json.loads(path.read_text())
+    shots = edl if isinstance(edl, list) else edl.get("shots", [])
+    directory = STORAGE / "factory/asset-library"
+    with (directory / "index.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for identifier in {s["asset_id"] for s in shots}:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", identifier):
+                continue
+            metadata_path = directory / f"{identifier}.json"
+            if not metadata_path.is_file():
+                continue
+            entry = json.loads(metadata_path.read_text())
+            uses = [u for u in entry.get("uses", []) if u.get("item_id") != item_id]
+            used = {"item_id": item_id, "at": datetime.now(timezone.utc).isoformat(),
+                    "windows": [{k: s.get(k) for k in ("source_start", "source_end", "narration_anchor", "match_reason")}
+                                for s in shots if s["asset_id"] == identifier]}
+            entry.update(uses=[*uses, used][-100:], last_used_at=used["at"])
+            temp = metadata_path.with_suffix(".tmp")
+            temp.write_text(json.dumps(entry, ensure_ascii=False, indent=2)); temp.replace(metadata_path)
 
 
 def _reuse_archived(identifier, path):

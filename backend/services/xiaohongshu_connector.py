@@ -279,7 +279,8 @@ class _Browser:
     def __init__(self, playwright):
         self.context = playwright.chromium.launch_persistent_context(
             str(PROFILE), headless=True, viewport={"width": 1440, "height": 1000},
-            locale="zh-CN", args=["--disable-dev-shm-usage"],
+            locale="zh-CN", args=["--disable-dev-shm-usage",
+                                  "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"],
         )
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.page.set_default_timeout(15000)

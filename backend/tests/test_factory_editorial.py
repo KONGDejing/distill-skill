@@ -3,12 +3,24 @@ from unittest.mock import Mock
 
 import pytest
 
-from services.factory_editorial import validate_editorial_scenes
+from services.factory_editorial import validate_editorial_scenes, validate_follow_prompt
 from services import factory_service
 
 
 SCRIPT = "先看雪地冠鹤。再看滑雪移动。最后看水面小船。"
 ASSETS = [{"id": str(i)} for i in range(3)]
+
+
+def test_follow_prompt_must_be_once_in_spoken_ending_with_recurring_value():
+    prompt = "想看懂AI演示里的门道，可以关注这个系列。"
+    content = {"script": "为什么演示好看还不能证明可靠？这里给出判断方法。" + prompt,
+               "hook": "为什么演示好看还不能证明可靠？", "follow_prompt": prompt,
+               "follow_value": "持续拆解官方演示的能力与限制"}
+    assert validate_follow_prompt(content)["follow_prompt"] == prompt
+    for update in ({"script": content["script"] + "另一个结尾"}, {"follow_value": "涨粉"},
+                   {"hook": "不存在的开场"}, {"script": content["script"] + prompt}):
+        with pytest.raises(ValueError):
+            validate_follow_prompt({**content, **update})
 
 
 def scenes():

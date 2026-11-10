@@ -48,7 +48,14 @@ def _sample():
             processes += 1
         except (OSError, ValueError, StopIteration):
             if process.exists():
-                unreadable += 1
+                # A finished child can remain as a zombie until reaped. It has
+                # no address space/smaps and must not pause the whole factory.
+                try:
+                    state = (process / "stat").read_text().rsplit(")", 1)[1].split()[0]
+                except (OSError, IndexError):
+                    state = None
+                if state not in {"Z", "X"} and process.exists():
+                    unreadable += 1
     stall = None
     try:
         line = next(line for line in (PROC / "pressure/memory").read_text().splitlines()

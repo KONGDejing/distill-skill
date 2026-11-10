@@ -38,6 +38,8 @@ def _ensure_factory_columns():
         return
     with engine.begin() as conn:
         existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(factory_config)").fetchall()}
+        if "target_duration_seconds" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN target_duration_seconds INTEGER NOT NULL DEFAULT 150")
         if "auto_publish_xiaohongshu" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN auto_publish_xiaohongshu BOOLEAN NOT NULL DEFAULT 0")
         if "visual_style" not in existing:

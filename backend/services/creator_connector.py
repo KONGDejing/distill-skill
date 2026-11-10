@@ -280,6 +280,12 @@ def _payload(platform, action, payload):
         raise ValueError("正文或标签格式无效")
     body = caption.strip()
     clean_tags = [tag.lstrip("#").strip() for tag in tags[:10] if tag.strip()]
+    if platform == "kuaishou":
+        # Observed official submit response rejects more than four hashtags.
+        in_caption = len(re.findall(r"(?<!\S)#[^\s#]+", body))
+        if in_caption > 4:
+            raise ValueError("快手正文中的话题不能超过4个，请精简后上传")
+        clean_tags = list(dict.fromkeys(clean_tags))[:4 - in_caption]
     if len(body) + sum(len(tag) + 2 for tag in clean_tags) > config["caption_limit"]:
         raise ValueError("正文与标签超过平台连接器长度上限")
     result = {"item_id": item_id, "title": title.strip(), "caption": body, "tags": clean_tags,
@@ -338,6 +344,10 @@ def _valid_evidence(platform, evidence):
     parts = urlsplit(evidence.get("url", ""))
     if parts.scheme != "https" or parts.hostname not in PLATFORMS[platform]["hosts"]:
         return False
+    if evidence.get("type") == "api_acceptance":
+        return (platform == "kuaishou" and parts.hostname == "cp.kuaishou.com"
+                and parts.path == "/rest/cp/works/v2/video/pc/submit"
+                and evidence.get("success") is True and type(evidence.get("code")) is int and evidence["code"] == 1)
     if evidence.get("type") == "success_page":
         return str(evidence.get("text", "")).strip(" 。!！") in {
             "发布成功", "作品发布成功", "视频发布成功", "投稿成功", "视频投稿成功", "发表成功", "提交成功"}

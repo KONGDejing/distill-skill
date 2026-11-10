@@ -1,5 +1,7 @@
 """Durable publication jobs. Upload, submission and public visibility are distinct."""
 import time
+import fcntl
+from pathlib import Path
 from urllib.parse import urlsplit
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal
@@ -108,6 +110,18 @@ def refresh_job(db, job):
 
 
 def begin_publication(db, item_id, action, platform="xiaohongshu"):
+    _platform_name(platform)
+    directory = Path(__file__).resolve().parents[2] / ".runtime"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    with (directory / f"publication-{platform}.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("平台正在安排另一项操作，请稍后继续") from None
+        return _begin_publication(db, item_id, action, platform)
+
+
+def _begin_publication(db, item_id, action, platform):
     platform_name = _platform_name(platform)
     from services.factory_service import get_config
     if platform not in get_config(db).platforms:
@@ -141,6 +155,18 @@ def begin_publication(db, item_id, action, platform="xiaohongshu"):
             refresh_job(db, prepared)
         if not prepared or prepared.status != "prepared":
             raise ValueError("请先上传并准备这条视频，再提交发布")
+    if action == "prepare":
+        pending = db.query(FactoryPublication).filter(FactoryPublication.platform == platform,
+            FactoryPublication.item_id != item_id, FactoryPublication.status.in_(["queued", "running"])).all()
+        for other in pending:
+            if refresh_job(db, other).status in {"queued", "running"}:
+                raise ValueError("平台仍在处理另一条作品，不能覆盖上传页面")
+        held = _connection_state(platform).get("prepared_item_id")
+        if held and held != item_id:
+            receipt = db.query(FactoryPublication).filter_by(item_id=held, platform=platform,
+                action="publish", status="submitted").first()
+            if receipt is None:
+                raise ValueError("平台已有作品上传待发布或待核验，不能覆盖当前页面")
     if platform != "xiaohongshu":
         state = _connection_state(platform)
         if not state.get("authenticated"):

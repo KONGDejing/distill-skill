@@ -203,7 +203,7 @@ def build_shot_plan(content: dict, cues: list[dict], assets: list[dict], duratio
                          "duration": shot_duration, "source_start": round(source_start, 6),
                          "source_end": round(source_start + shot_duration, 6),
                          "source_url": asset.get("source_url"), "source_sha256": asset["sha256"],
-                         "kind": asset["kind"], "display_label": asset["display_label"],
+                         "kind": asset["kind"], "display_label": ("相关背景演示 · 非本事件实拍" if scene.get("evidence_role") == "background" else asset["display_label"]),
                          "asset_selection": selection, "narration_anchor": scene.get("narration_exact"),
                          "match_reason": scene.get("match_reason", ""),
                          "timing_basis": timing[index], "heading": str(scene.get("heading", "")),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,12 @@ FEED_URLS = (
     "https://blog.google/technology/ai/rss/",
     "https://nvidianews.nvidia.com/rss.xml",
     "https://about.fb.com/news/feed/",
+    "https://rss.arxiv.org/rss/cs.RO",
+    "https://rss.arxiv.org/rss/cs.AI",
+)
+WATCH_PAGES = (
+    ("科技贸易：商务部政策解读与公告索引（须打开原文核对日期和适用范围）", "https://www.mofcom.gov.cn/zcjd/"),
+    ("科技展会：CES官方新闻与活动索引（须区分往届和未来活动）", "https://www.ces.tech/press-releases/"),
 )
 VISUAL_SOURCE_URLS = (
     ("Google DeepMind Veo：视频生成与创作控制", "https://deepmind.google/models/veo/"),
@@ -46,9 +53,10 @@ ALLOWED_HOSTS = frozenset({
     "aistudio.google.com", "docs.anthropic.com", "platform.claude.com",
     "www.anthropic.com", "anthropic.com",
     "nvidianews.nvidia.com", "about.fb.com", "deepmind.google", "allenai.github.io", "gradium.ai",
+    "arxiv.org", "rss.arxiv.org", "export.arxiv.org", "www.ces.tech", "ces.tech", "www.mofcom.gov.cn",
 })
 MAX_BYTES = 2_000_000
-MAX_TEXT_CHARS = 3500
+MAX_TEXT_CHARS = 6000
 NEWS_MAX_AGE_DAYS = 21
 HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 USER_AGENT = "ShortVideoAIContentFactory/0.2 (official-source-research)"
@@ -220,7 +228,7 @@ def _parse_feed(document: str, base_url: str, now: datetime) -> list[dict]:
         excerpt, _ = _extract_text(fields.get("encoded") or fields.get("content")
                                    or fields.get("description") or fields.get("summary") or "")
         records.append({"title": title, "url": url, "published_at": _iso(published),
-                        "excerpt": excerpt, "kind": "news"})
+                        "excerpt": excerpt, "kind": "paper" if urlsplit(url).hostname == "arxiv.org" else "news"})
     return records
 
 
@@ -255,7 +263,33 @@ def _load_source(record: dict) -> tuple[dict | None, str | None]:
         "fetched_at": _iso(_utcnow()),
         "text": text[:MAX_TEXT_CHARS],
         "kind": record["kind"],
+        **{key: record[key] for key in ("popularity", "evidence_scope") if key in record},
     }, warning
+
+
+def _load_daily_papers(now):
+    """HF is a discovery/popularity source; the original abstract is evidence."""
+    try:
+        document, _ = _fetch_url("https://huggingface.co/api/daily_papers")
+        entries = json.loads(document)
+        if not isinstance(entries, list):
+            raise ValueError("invalid paper feed")
+        records = []
+        for entry in entries[:80]:
+            paper = entry.get("paper", {})
+            identifier = paper.get("id", "")
+            published = _parse_date(paper.get("publishedAt"))
+            if not re.fullmatch(r"\d{4}\.\d{4,5}", identifier) or not published or not now - timedelta(days=21) <= published <= now:
+                continue
+            votes = paper.get("upvotes")
+            records.append({"title": paper.get("title", ""), "url": "https://arxiv.org/abs/" + identifier,
+                "published_at": _iso(published), "kind": "paper", "excerpt": paper.get("summary", ""),
+                "evidence_scope": "论文原始摘要或所取得原文；预印本不等于同行评审，不从AI生成摘要补造实验细节",
+                "popularity": {"source": "Hugging Face Daily Papers", "url": "https://huggingface.co/papers/" + identifier,
+                               "upvotes": votes if type(votes) is int and votes >= 0 else None, "observed_at": _iso(now)}})
+        return sorted(records, key=lambda r: r["popularity"]["upvotes"] or 0, reverse=True)[:6], None
+    except Exception as exc:
+        return [], f"AI论文发现源暂不可用（{type(exc).__name__}）；不编造热门论文"
 
 
 def collect_sources(limit: int = 12) -> dict:
@@ -276,6 +310,9 @@ def collect_sources(limit: int = 12) -> dict:
             candidates.extend(records)
             if warning:
                 warnings.append(warning)
+    papers, paper_warning = _load_daily_papers(now)
+    if paper_warning:
+        warnings.append(paper_warning)
 
     seen: set[str] = set()
     recent: list[dict] = []
@@ -288,7 +325,14 @@ def collect_sources(limit: int = 12) -> dict:
     evergreen_slots = min(len(EVERGREEN_URLS), max(1, limit // 3))
     news_slots = max(0, limit - evergreen_slots)
     visual_count = min(len(VISUAL_SOURCE_URLS), max(1, limit // 3))
-    selected = recent[:max(0, news_slots - visual_count)]
+    watch_count = min(len(WATCH_PAGES), max(0, limit // 8))
+    paper_count = min(len(papers), max(1, limit // 5), max(0, news_slots - visual_count - watch_count))
+    selected = papers[:paper_count]
+    selected.extend(r for r in recent if r["url"] not in {p["url"] for p in selected})
+    selected = selected[:max(paper_count, news_slots - visual_count - watch_count)]
+    selected.extend({"title": title, "url": url, "kind": "reference_index", "published_at": None,
+                     "evidence_scope": "监测索引，仅用作线索；缺少原始公告或活动原文时不得据此写具体新规或当天现场"}
+                    for title, url in WATCH_PAGES[:watch_count])
     selected.extend({"title": title, "url": url, "kind": "evergreen", "published_at": None}
                     for title, url in VISUAL_SOURCE_URLS[:visual_count])
     docs_count = min(len(EVERGREEN_URLS), limit - len(selected))

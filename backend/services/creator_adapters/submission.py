@@ -43,6 +43,11 @@ class SubmissionWatch:
         if identifier:
             self._submission_receipt = {"type": "api_receipt", "success": True,
                 "video_id": str(identifier), "url": clean_url(response.url)}
+        elif self.portal_host == "cp.kuaishou.com" and data.get("data") == {}:
+            # The observed PC submit API acknowledges acceptance before its
+            # management refresh API returns a workId. This is not public approval.
+            self._submission_receipt = {"type": "api_acceptance", "success": True,
+                "code": 1, "url": clean_url(response.url)}
 
     def wait_for_submission(self, timeout=60):
         deadline = time.monotonic() + timeout

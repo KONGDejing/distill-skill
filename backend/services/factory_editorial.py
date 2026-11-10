@@ -6,13 +6,31 @@ STRATEGY = {
     "objective": "打造有辨识度的 AI 个人IP，持续增长真实关注者",
     "positioning": "AI热点解读者",
     "audience_promise": "讲清AI发生了什么、证据是什么、与你有什么关系",
-    "series": ["AI热点讲明白", "看懂一个AI演示", "AI实用指南"],
+    "series": ["科技圈有意思", "科技争议看证据", "科技贸易与产业", "逛懂科技展会", "一篇AI论文讲明白", "具身智能观察", "AI实用指南"],
+    "video_structure": "约150秒：开场问题、事件与背景、实例或原理、价值与限制、自然关注提醒；每段必须增加新信息。",
+    "material_policy": "先有叙事再选素材；保存来源、画面描述、可用时间窗与使用记录；复用片段不得冒充新事件或新实验。",
     "primary_metrics": ["净增粉丝", "关注转化"],
     "diagnostic_metrics": ["开头留存", "完播率", "收藏与有效评论"],
-    "measurement_status": "not_connected",
-    "measurement_note": "平台增长数据尚未接入；不以产量或提交次数推断涨粉效果。",
+    "measurement_status": "partial",
+    "measurement_note": "以运营看板的实际接入状态、统计周期与采集时间为准；不以产量或提交次数推断涨粉效果。",
     "experiment": "同一内容系列只改变一个因素（如开场方式），取得同口径真实数据后再决定是否扩大使用。",
 }
+
+
+def validate_follow_prompt(content):
+    script = content.get("script", "")
+    hook = content.get("hook")
+    prompt = content.get("follow_prompt")
+    value = content.get("follow_value")
+    if not isinstance(hook, str) or not hook.strip() or not script.startswith(hook):
+        raise ValueError("开场hook必须是完整口播的原样开头")
+    if not isinstance(prompt, str) or not 8 <= len(prompt) <= 55 or "关注" not in prompt:
+        raise ValueError("需要8–55字自然关注提醒follow_prompt，说明持续关注的价值")
+    if not script.rstrip().endswith(prompt) or script.count(prompt) != 1:
+        raise ValueError("关注提醒须原样融入完整口播结尾，且只出现一次")
+    if not isinstance(value, str) or not 6 <= len(value) <= 60:
+        raise ValueError("follow_value需要说明这个账号将持续提供的具体价值")
+    return {"hook": hook, "follow_prompt": prompt, "follow_value": value}
 
 
 def validate_editorial_scenes(script, scenes, assets):
@@ -21,8 +39,8 @@ def validate_editorial_scenes(script, scenes, assets):
     This checks coverage, not visual semantics. A separate editorial review of
     the source descriptions is required before rendering.
     """
-    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 6:
-        raise ValueError("需要2–6段完整口播分镜")
+    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 18:
+        raise ValueError("需要2–18段完整口播分镜")
     known = {a["id"] for a in assets}
     cursor, selected = 0, set()
     substantive = lambda value: re.search(r"[\w\u4e00-\u9fff]", value)

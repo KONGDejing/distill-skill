@@ -4,6 +4,7 @@ import { factoryApi } from '../api/factory'
 import XiaohongshuPublisher from '../components/XiaohongshuPublisher'
 import PlatformConnection from '../components/PlatformConnection'
 import PlatformPublisher from '../components/PlatformPublisher'
+import FactoryOperations from '../components/FactoryOperations'
 
 const VISUAL_STYLES = { tech_montage: '科技演示混剪', cards: '文字卡片（旧版）' }
 const VOICE_LABELS = { 'cosyvoice2-local-reference': '本地标准音色', 'edge-tts': '系统音色', edge: '系统音色' }
@@ -58,12 +59,13 @@ function Stat({ icon: Icon, label, value, suffix, detail }) {
 }
 
 function SettingsPanel({ settings, onSave, onClose, busy }) {
-  const [form, setForm] = useState({ daily_target: settings.daily_target || 3, schedule_enabled: Boolean(settings.schedule_enabled), schedule_time: settings.schedule_time || '00:30', publish_enabled: Boolean(settings.publish_enabled), publish_times: settings.publish_times || [], auto_publish_xiaohongshu: Boolean(settings.auto_publish_xiaohongshu), visual_style: settings.visual_style || 'tech_montage' })
+  const [form, setForm] = useState({ daily_target: settings.daily_target || 3, target_duration_seconds: settings.target_duration_seconds || 150, schedule_enabled: Boolean(settings.schedule_enabled), schedule_time: settings.schedule_time || '00:30', publish_enabled: Boolean(settings.publish_enabled), publish_times: settings.publish_times || [], auto_publish_xiaohongshu: Boolean(settings.auto_publish_xiaohongshu), visual_style: settings.visual_style || 'tech_montage' })
   return (
     <form onSubmit={e => { e.preventDefault(); onSave({ ...form, auto_publish_xiaohongshu: form.publish_enabled ? false : form.auto_publish_xiaohongshu }) }} className="factory-enter mb-6 rounded-2xl border border-emerald-300/15 bg-[#101e24] p-5 sm:p-6">
       <div className="mb-5 flex items-center justify-between"><div><h3 className="text-sm font-semibold">生产计划</h3><p className="mt-1 text-xs text-slate-400">新设置用于后续生产批次，正在执行的任务按原计划继续。</p></div><button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-400 hover:text-white" aria-label="关闭生产设置"><X size={18} /></button></div>
       <div className="flex flex-col gap-5 sm:flex-row sm:flex-wrap sm:items-end">
         <label className="text-xs text-slate-400">每日原创目标<div className="mt-2 flex items-center gap-2"><input type="number" min="1" max="10" required value={form.daily_target} onChange={e => setForm({ ...form, daily_target: e.target.value === '' ? '' : Number(e.target.value) })} className="w-24 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white" /><span>条</span></div></label>
+        <label className="text-xs text-slate-400">每条目标时长（秒）<input aria-label="视频目标时长" type="number" min="60" max="180" required value={form.target_duration_seconds} onChange={e => setForm({ ...form, target_duration_seconds: Number(e.target.value) })} className="mt-2 block w-28 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white" /><span className="mt-2 block text-[11px] text-slate-500">150秒约2分30秒，成片允许±15秒</span></label>
         <label className="text-xs text-slate-400">每日提前开工（北京时间）<input type="time" required value={form.schedule_time} onChange={e => setForm({ ...form, schedule_time: e.target.value })} className="mt-2 block rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white [color-scheme:dark]" /></label>
         <label className="text-xs text-slate-400">视频视觉风格<select value={form.visual_style} onChange={e => setForm({ ...form, visual_style: e.target.value })} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2.5 text-sm text-white"><option value="tech_montage">科技演示混剪（推荐）</option><option value="cards">文字卡片（旧版）</option></select><span className="mt-2 block max-w-64 text-[11px] leading-relaxed text-slate-500">{form.visual_style === 'tech_montage' ? '使用真实视频素材；素材不足时暂停该条制作并提示。' : '使用文字卡片与配音制作。'}</span></label>
         <label className="flex cursor-pointer items-center gap-3 py-3 text-sm text-slate-300"><input type="checkbox" checked={form.schedule_enabled} onChange={e => setForm({ ...form, schedule_enabled: e.target.checked })} className="h-4 w-4 accent-emerald-300" />启用每日自动生产</label>
@@ -262,6 +264,7 @@ export default function FactoryDashboard() {
 
       <section className="grid grid-cols-2 gap-3 xl:grid-cols-4"><Stat icon={Film} label="每日原创目标" value={overview ? target : '—'} suffix="条 / 天" detail="从选题到通过质检的完整成片" /><Stat icon={Bot} label="AI 员工团队" value={overview ? agents.length : '—'} suffix="个岗位" detail="负责人统筹，专业员工逐步交接" /><Stat icon={Layers3} label="平台适配" value={overview ? configuredPlatforms : '—'} suffix="个平台" detail={platforms.filter(platform => platform.enabled !== false).map(platform => platform.name || PLATFORM_NAMES[platform.id] || platform.id).join(' · ')} /><Stat icon={Clock3} label="每日自动开工" value={overview ? settings.schedule_enabled ? settings.schedule_time || '08:00' : '已暂停' : '—'} suffix={settings.schedule_enabled ? '北京时间' : ''} detail={settings.schedule_enabled ? `每日生成 ${target} 条，最多 ${target * configuredPlatforms} 个发布素材包` : '可在生产计划中启用定时任务'} /></section>
 
+      <FactoryOperations analytics={overview?.analytics} operations={overview?.operations} library={overview?.asset_library} />
       {overview?.strategy && <section className="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.04] p-5">
         <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs text-emerald-300">老周的共同目标 · {overview.strategy.positioning}</p><h3 className="mt-2 text-lg font-semibold text-slate-100">{overview.strategy.objective}</h3><p className="mt-2 text-sm text-slate-400">{overview.strategy.audience_promise}</p></div><div className="text-xs leading-6 text-slate-400">素材库 · {overview.asset_library?.videos || 0} 段动态素材<br />{overview.asset_library?.ready_source_pages || 0} 个来源具备混剪素材</div></div>
         <div className="mt-4 flex flex-wrap gap-2">{overview.strategy.series.map(name => <span key={name} className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300">{name}</span>)}</div>

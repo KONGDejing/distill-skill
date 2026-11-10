@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     FACTORY_FALLBACK_MODEL: str = "claude-sonnet-4-5-20250929"
 
     # Stop admitting work under memory pressure; resume requires user action.
-    FACTORY_MAX_MEMORY_GIB: float = Field(default=8, gt=0)
+    FACTORY_MAX_MEMORY_GIB: float = Field(default=16, gt=0)
     FACTORY_MIN_AVAILABLE_GIB: float = Field(default=2, gt=0)
     FACTORY_MIN_AVAILABLE_PERCENT: float = Field(default=8, gt=0, lt=100)
     FACTORY_MAX_MEMORY_STALL_PERCENT: float = Field(default=5, gt=0, le=100)

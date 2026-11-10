@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "short-video-ai-factory"
 CREATOR_PLATFORMS = ("douyin", "kuaishou", "bilibili")
 UNITS = [f"{PREFIX}-{role}.service" for role in
-         ("api", "worker", "scheduler", "xiaohongshu", *(f"creator-{platform}" for platform in CREATOR_PLATFORMS))]
+         ("api", "worker", "scheduler", "operations", "xiaohongshu", *(f"creator-{platform}" for platform in CREATOR_PLATFORMS))]
 
 
 def run(*args, check=True):
@@ -34,6 +34,7 @@ def install(port):
         "api": f"{sys.executable} -m uvicorn main:app --host 0.0.0.0 --port {port}",
         "worker": f"{sys.executable} -m celery -A tasks.celery_app worker -l info -c 1 -Q short_video_ai_factory --hostname=factory@%h",
         "scheduler": f"{sys.executable} -m services.factory_scheduler",
+        "operations": f"{sys.executable} -m services.factory_operations",
         "xiaohongshu": f"{sys.executable} {ROOT / 'backend/services/xiaohongshu_connector.py'} --serve",
     }
     commands.update({f"creator-{platform}": f"{sys.executable} {ROOT / 'backend/services/creator_connector.py'} --serve --platform {platform}"

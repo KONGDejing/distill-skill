@@ -109,6 +109,29 @@ def test_media_quality_hold_prevents_any_upload_or_submission(publishing):
     env.submit.assert_not_called()
 
 
+def test_new_upload_cannot_replace_another_prepared_video(publishing, monkeypatch):
+    env = publishing
+    monkeypatch.setattr(xiaohongshu_connector, "connection_state", lambda: {
+        "authenticated": True, "prepared_item_id": "another-item"})
+    with env.sessions() as db:
+        with pytest.raises(ValueError, match="不能覆盖"):
+            factory_publishing.begin_publication(db, env.item_id, "prepare")
+    env.submit.assert_not_called()
+
+
+def test_another_queued_upload_reserves_the_platform(publishing):
+    env = publishing
+    with env.sessions() as db:
+        other = FactoryItem(run_id=env.run_id, position=1, status="completed")
+        db.add(other)
+        db.flush()
+        db.add(FactoryPublication(item_id=other.id, platform="xiaohongshu", action="prepare", status="queued"))
+        db.commit()
+        with pytest.raises(ValueError, match="不能覆盖"):
+            factory_publishing.begin_publication(db, env.item_id, "prepare")
+    env.submit.assert_not_called()
+
+
 def test_removed_platform_cannot_upload_or_submit_existing_short_video(publishing):
     env = publishing
     with env.sessions() as db:
