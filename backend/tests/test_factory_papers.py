@@ -73,3 +73,18 @@ def test_highlight_boxes_are_extracted_from_real_pdf_glyphs(tmp_path):
     for text, focus in [("invented improvement", None), ("68.2", [0, .5, 1, .5])]:
         with pytest.raises(ValueError, match="找不到"):
             highlight_rectangles(asset, text, focus)
+
+
+def test_tool_documentation_is_not_mislabeled_as_a_paper():
+    sources=[{'url':'https://allenai.github.io/ToyBlocks/','kind':'evergreen'}]
+    assert not is_paper_story({'category':'工具指南'},sources)
+    assert is_paper_story({'category':'论文讲解'},sources)
+
+
+def test_project_forward_link_accepts_pdf_line_wrap_but_not_similar_host_or_path():
+    from services.factory_papers import _has_project_link
+    project='https://ai4ce.github.io/VICTR/'
+    assert _has_project_link('Code: https://ai4ce.github.io/\nVICTR/',project)
+    assert _has_project_link('<a href="https://ai4ce.github.io/VICTR/">Project</a>',project)
+    assert not _has_project_link('https://fake-ai4ce.github.io/VICTR/',project)
+    assert not _has_project_link('https://ai4ce.github.io/VICTR-other/',project)

@@ -50,6 +50,15 @@ def _ensure_factory_columns():
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_times JSON NOT NULL DEFAULT '[\"06:00\",\"07:00\",\"08:00\",\"09:10\",\"10:30\",\"17:00\",\"19:00\",\"20:00\",\"21:00\",\"22:00\"]'")
         if "publish_start_at" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_start_at DATETIME")
+        if "publish_jitter_seconds" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_jitter_seconds INTEGER NOT NULL DEFAULT 900")
+        releases = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(factory_releases)").fetchall()}
+        if "nominal_at" not in releases:
+            conn.exec_driver_sql("ALTER TABLE factory_releases ADD COLUMN nominal_at DATETIME")
+            conn.exec_driver_sql("UPDATE factory_releases SET nominal_at = due_at")
+        if "jitter_seconds" not in releases:
+            conn.exec_driver_sql("ALTER TABLE factory_releases ADD COLUMN jitter_seconds INTEGER")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_factory_releases_nominal_at ON factory_releases (nominal_at)")
 
 
 def _ensure_user_profile_columns():

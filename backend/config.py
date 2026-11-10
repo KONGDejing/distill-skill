@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     FACTORY_CODEX_MODEL: str = "gpt-6-astra"
     FACTORY_CODEX_BIN: str = "codex"
     FACTORY_CODEX_TIMEOUT_SECONDS: int = Field(default=180, ge=30, le=600)
-    FACTORY_MAX_TOTAL_TOKENS: int = Field(default=1_000_000, ge=10_000)
+    # Zero disables the optional per-run token stop. Subscription limits remain external.
+    FACTORY_MAX_TOTAL_TOKENS: int = Field(default=0, ge=0)
 
     # Stop admitting work under memory pressure; resume requires user action.
     FACTORY_MAX_MEMORY_GIB: float = Field(default=16, gt=0)

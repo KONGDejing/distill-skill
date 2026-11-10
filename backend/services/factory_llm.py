@@ -55,11 +55,14 @@ def _reserve_call(run_id):
         if run.llm_calls >= limit:
             raise RuntimeError(f"本轮已达到 {limit} 次模型调用上限")
         token_limit = run.settings_snapshot.get("max_total_tokens", settings.FACTORY_MAX_TOTAL_TOKENS)
-        if run.input_tokens + run.output_tokens >= token_limit:
+        if token_limit and run.input_tokens + run.output_tokens >= token_limit:
             raise ModelServiceUnavailable(f"本轮已记录用量达到{token_limit} token预算，停止新模型调用并保留进度；最后一次响应可能超过阈值")
         # Reserve before the network call, so failures also consume the budget.
-        run.llm_calls += 1
-        run.heartbeat_at = datetime.utcnow()
+        reserved = db.execute(update(FactoryRun).where(FactoryRun.id == run_id,
+            FactoryRun.cancel_requested.is_(False), FactoryRun.llm_calls < limit).values(
+                llm_calls=FactoryRun.llm_calls + 1, heartbeat_at=datetime.utcnow()))
+        if not reserved.rowcount:
+            raise RuntimeError("模型调用预算已用完或任务已取消，未发起新调用")
         db.commit()
 
 

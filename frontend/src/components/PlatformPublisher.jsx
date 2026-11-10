@@ -6,7 +6,7 @@ const TERMINAL = new Set(['prepared', 'submitted', 'failed'])
 const STATUS_LABELS = {
   loading: '读取发布状态', queued: '发布任务排队中', running: '发布任务处理中',
   preparing: '上传准备中', uploading: '视频上传中', submitting: '正在提交平台',
-  prepared: '已上传待提交', submitted: '已提交待平台审核', failed: '发布任务未完成',
+  prepared: '已上传待提交', submitted: '平台已接收，公开状态待核对', failed: '发布任务未完成',
 }
 const STATUS_ORDER = { loading: 0, queued: 1, running: 2, preparing: 2, uploading: 2, submitting: 2, prepared: 3, submitted: 4, failed: 4 }
 
@@ -48,7 +48,7 @@ export default function PlatformPublisher({ itemId, platform, platformName, init
       rememberJob(itemId, platform, incoming.id)
       return sameJob && current.status === incoming.status ? { ...current, ...incoming } : incoming
     })
-  }, [itemId, platform, initialJob?.id, initialJob?.status, initialJob?.message, initialJob?.result?.command_id, publicationJobId, packageStatus])
+  }, [itemId, platform, initialJob?.id, initialJob?.status, initialJob?.message, initialJob?.result?.command_id, initialJob?.result?.official_observation?.checked_at, publicationJobId, packageStatus])
 
   useEffect(() => {
     // Batch summaries omit the full result; fetch even a terminal job once before deciding whether retry is safe.
@@ -106,7 +106,7 @@ export default function PlatformPublisher({ itemId, platform, platformName, init
     <div className="mt-3 space-y-2 border-t border-white/[0.06] pt-3">
       {job && <p className={`flex items-start gap-1.5 text-[10px] leading-relaxed ${job.status === 'failed' ? 'text-rose-300' : submitted ? 'text-sky-300' : 'text-amber-200'}`}>
         {waiting && <Loader2 size={11} className="mt-0.5 shrink-0 animate-spin" />}
-        {STATUS_LABELS[job.status] || '正在同步发布状态'}
+        {job.status === 'submitted' && job.result?.official_observation ? `官方作品状态：${job.result.official_observation.label}` : STATUS_LABELS[job.status] || '正在同步发布状态'}
       </p>}
       {!job && !submitted && <button type="button" onClick={() => act('prepare')} disabled={busy || !canPrepare} className={`${buttonClass} border-sky-300/15 bg-sky-300/5 text-sky-300 hover:bg-sky-300/10`}>{busy ? <Loader2 size={11} className="shrink-0 animate-spin" /> : <Upload size={11} className="shrink-0" />}上传并准备发布</button>}
       {job?.status === 'prepared' && !submitted && <button type="button" onClick={() => act('publish')} disabled={busy || !canPublish} className={`${buttonClass} border-emerald-300/20 bg-emerald-300/10 text-emerald-200 hover:bg-emerald-300/20`}>{busy ? <Loader2 size={11} className="shrink-0 animate-spin" /> : <Send size={11} className="shrink-0" />}提交{platformName}</button>}
@@ -118,7 +118,7 @@ export default function PlatformPublisher({ itemId, platform, platformName, init
         {connectionState?.capabilities?.publish !== true && <p>提交能力尚未完成联调。</p>}
         <a href={`/api/factory/platforms/${encodeURIComponent(platform)}/login`} target="_blank" rel="noopener noreferrer" className="inline-block text-sky-300 hover:text-sky-200">打开{platformName}扫码登录页</a>
       </div>}
-      {submitted && <p className="text-[10px] leading-relaxed text-slate-500">提交回执已记录，公开状态以平台审核结果为准。</p>}
+      {submitted && <p className="text-[10px] leading-relaxed text-slate-500">{job?.result?.official_observation ? `核对时间：${new Date(job.result.official_observation.checked_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}；后续状态以官方页面为准。` : '提交回执已记录，尚未核对最新公开状态；不代表仍在审核。'}</p>}
       {(error || (job?.status === 'failed' && job.message)) && <p role="alert" className="flex gap-1 break-words text-[10px] leading-relaxed text-rose-300"><AlertCircle size={11} className="mt-0.5 shrink-0" /><span className="min-w-0">{error || job.message}</span></p>}
       {job?.message && job.status !== 'failed' && !submitted && <p className="break-words text-[10px] leading-relaxed text-slate-500">{job.message}</p>}
     </div>

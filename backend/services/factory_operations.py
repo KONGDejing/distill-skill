@@ -75,7 +75,8 @@ def overview(db, now=None):
         else:
             pending.append(alert)
     alerts = pending
-    slots = db.query(FactoryRelease).filter(FactoryRelease.due_at >= start, FactoryRelease.due_at < start + timedelta(days=1)).all()
+    from services.factory_schedule import nominal_time
+    slots = db.query(FactoryRelease).filter(nominal_time() >= start, nominal_time() < start + timedelta(days=1)).all()
     metrics = factory_analytics.overview(db)
     connected = [p["platform"] for p in metrics["platforms"] if p["status"] == "connected"]
     long_ready = sum(i.status == "completed" and 135 <= float(i.media.get("duration", 0)) <= 165 for i in items)

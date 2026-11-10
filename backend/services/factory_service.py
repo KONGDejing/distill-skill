@@ -30,7 +30,7 @@ def iso(value):
 
 def config_dict(config):
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times")
-    return {key: getattr(config, key) for key in keys}
+    return {key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")}
 
 
 def get_config(db):

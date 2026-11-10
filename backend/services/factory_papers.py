@@ -10,7 +10,7 @@ import httpx
 
 PDF_LOCK = threading.Lock()  # PDFium is not thread safe.
 PROJECTS = {"sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io",
-            "weirdlabuw.github.io", "zju3dv.github.io", "allenai.github.io"}
+            "weirdlabuw.github.io", "zju3dv.github.io"}
 
 
 def is_paper_story(brief, sources):
@@ -28,19 +28,28 @@ def _paper_id(url):
     return None
 
 
+def _has_project_link(original, candidate):
+    origin = urlsplit(candidate)
+    needle = (origin.netloc + origin.path).rstrip("/")
+    normalized = re.sub(r"\s+", "", original)
+    return bool(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(needle) + r'(?=[/<>"\x27),.;]|$)', normalized))
+
+
 def collect_paper(sources, directory):
     from services.factory_research import _fetch_url
     from services.factory_montage import _sha256
     identifiers = {_paper_id(s.get("url", "")) for s in sources} - {None}
     project_urls = []
+    project_candidates = []
     for source in sources:
         if urlsplit(source.get("url", "")).hostname not in PROJECTS:
             continue
         document, url = _fetch_url(source["url"])
+        project_candidates.append(url.rstrip("/"))
         linked = {m for m in re.findall(r'https://arxiv.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)', document)}
         if not identifiers and len(linked) == 1:
             identifiers.update(linked)
-        if linked & identifiers:
+        if {re.sub(r"v\d+$", "", i) for i in linked} & {re.sub(r"v\d+$", "", i) for i in identifiers}:
             project_urls.append(url.rstrip("/"))
     if len(identifiers) != 1:
         raise ValueError("论文讲解需要明确一篇真实论文及原文；不能用其他研究演示或AI画面代替")
@@ -57,8 +66,8 @@ def collect_paper(sources, directory):
                 data = bytearray()
                 for chunk in response.iter_bytes():
                     data.extend(chunk)
-                    if len(data) > 25_000_000:
-                        raise ValueError("论文PDF超过25MB上限")
+                    if len(data) > 50_000_000:
+                        raise ValueError("论文PDF超过50MB上限")
         if not data.startswith(b"%PDF-"):
             raise ValueError("未取得真实论文PDF，停止制作")
         temporary = target.with_suffix(".tmp")
@@ -78,8 +87,25 @@ def collect_paper(sources, directory):
             pages.append({"page": index + 1, "text": text})
     if sum(len(p["text"]) for p in pages) < 1000:
         raise ValueError("论文无法可靠提取正文，不能仅凭摘要讲实验")
+    # Authors sometimes link a local PDF/OpenReview instead of arXiv on the
+    # project site. Verify the forward link on the actual paper/abstract too.
+    proof = {"pdf_first_pages": "".join(p["text"] for p in pages[:2])}
+    if set(project_candidates) - set(project_urls):
+        try:
+            proof["arxiv_abstract"], _ = _fetch_url("https://arxiv.org/abs/" + identifier)
+        except (ValueError, OSError, httpx.HTTPError):
+            pass  # Missing forward evidence never upgrades an unrelated project.
+    project_verification = []
+    for candidate in project_candidates:
+        for kind, original in proof.items():
+            if _has_project_link(original, candidate):
+                if candidate not in project_urls:
+                    project_urls.append(candidate)
+                project_verification.append({"project_url": candidate, "evidence_type": kind,
+                    "evidence_url": "https://arxiv.org/abs/" + identifier if kind == "arxiv_abstract" else url})
+                break
     result = {"id": identifier, "url": url, "path": str(target), "sha256": _sha256(target),
-              "pages": pages, "verified_project_urls": project_urls}
+              "pages": pages, "verified_project_urls": project_urls, "project_verification": project_verification}
     (directory / "document.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 

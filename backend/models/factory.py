@@ -26,6 +26,7 @@ class FactoryConfig(Base):
     publish_enabled = Column(Boolean, nullable=False, default=False)
     publish_times = Column(JSON, nullable=False, default=lambda: ["06:00", "07:00", "08:00", "09:10", "10:30", "17:00", "19:00", "20:00", "21:00", "22:00"])
     publish_start_at = Column(DateTime, nullable=True)
+    publish_jitter_seconds = Column(Integer, nullable=False, default=900)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -102,6 +103,8 @@ class FactoryRelease(Base):
     __tablename__ = "factory_releases"
     id = Column(String(36), primary_key=True, default=uid)
     due_at = Column(DateTime, nullable=False, unique=True, index=True)
+    nominal_at = Column(DateTime, nullable=True, unique=True, index=True)
+    jitter_seconds = Column(Integer, nullable=True)
     run_id = Column(String(36), ForeignKey("factory_runs.id"), nullable=True)
     position = Column(Integer, nullable=True)
     item_id = Column(String(36), ForeignKey("factory_items.id"), nullable=True, unique=True)

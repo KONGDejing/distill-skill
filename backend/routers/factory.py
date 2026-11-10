@@ -26,6 +26,7 @@ class RetryRun(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
+    publish_jitter_seconds: int | None = Field(default=None, ge=0, le=900)
     daily_target: int | None = Field(default=None, ge=1, le=10)
     target_duration_seconds: int | None = Field(default=None, ge=60, le=180)
     schedule_enabled: bool | None = None

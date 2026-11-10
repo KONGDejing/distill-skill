@@ -702,3 +702,13 @@ def test_observed_token_budget_stops_next_model_call_and_retains_progress(isolat
     network.assert_not_called()
     with isolated_factory() as db:
         assert db.get(FactoryRun,run_id).llm_calls==0
+
+
+def test_zero_token_limit_allows_authorized_work_above_one_million(isolated_factory):
+    run_id,_=_seed_item(isolated_factory)
+    with isolated_factory() as db:
+        r=db.get(FactoryRun,run_id);r.input_tokens=1_500_000;r.output_tokens=200_000
+        r.settings_snapshot={**r.settings_snapshot,'max_total_tokens':0};db.commit()
+    factory_llm._reserve_call(run_id)
+    with isolated_factory() as db:
+        assert db.get(FactoryRun,run_id).llm_calls==1

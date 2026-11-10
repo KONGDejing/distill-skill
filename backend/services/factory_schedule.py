@@ -1,6 +1,8 @@
 """Durable timed releases. Production and browser jobs run independently."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from secrets import randbelow
+from sqlalchemy import func
 
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
@@ -9,6 +11,11 @@ from services.factory_resources import MemoryPressure, ensure_memory_available
 PREPARE_LEAD = timedelta(minutes=20)
 LATE_WINDOW = timedelta(minutes=15)
 FINAL = {"submitted", "missed", "partial", "cancelled"}
+
+
+def nominal_time():
+    """Calendar identity stays stable even when jitter crosses midnight."""
+    return func.coalesce(FactoryRelease.nominal_at, FactoryRelease.due_at)
 
 
 def utc(value):
@@ -40,7 +47,7 @@ def authorize_catch_up(db, run, config, now=None):
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
     end = utc((now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
     slots = db.query(FactoryRelease).filter(FactoryRelease.run_id == run.id,
-        FactoryRelease.due_at >= start, FactoryRelease.due_at < end,
+        nominal_time() >= start, nominal_time() < end,
         FactoryRelease.status.notin_(["submitted", "cancelled"])).all()
     if not slots:
         raise ValueError("本轮没有今天待补齐的排期")
@@ -61,6 +68,8 @@ def release_dict(db, slot):
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
     until = catch_up_until(db, slot)
     return {"id": slot.id, "due_at": slot.due_at.replace(tzinfo=timezone.utc).isoformat(),
+            "nominal_at": (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).isoformat(),
+            "jitter_seconds": slot.jitter_seconds,
             "item_id": slot.item_id, "run_id": slot.run_id, "status": slot.status,
             "title": (item.content or {}).get("title") if item else None,
             "platforms": slot.platforms, "results": slot.results or {},
@@ -70,35 +79,70 @@ def release_dict(db, slot):
 def upcoming_releases(db, config):
     now = datetime.now(ZoneInfo(config.timezone))
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
-    slots = db.query(FactoryRelease).filter(FactoryRelease.due_at >= start).order_by(FactoryRelease.due_at).limit(20)
+    slots = db.query(FactoryRelease).filter(nominal_time() >= start).order_by(nominal_time()).limit(20)
     return [release_dict(db, slot) for slot in slots]
 
 
+def _set_jitter(db, slot, config, now):
+    """Draw once and persist. Never move an upload, receipt, or past release."""
+    if slot.jitter_seconds is not None:
+        return
+    slot.nominal_at = slot.nominal_at or slot.due_at
+    item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
+    if item is None and slot.run_id:
+        item = db.query(FactoryItem).filter_by(run_id=slot.run_id, position=slot.position).first()
+    has_job = item and db.query(FactoryPublication.id).filter_by(item_id=item.id).first()
+    if slot.status in FINAL or slot.due_at <= now or has_job:
+        slot.jitter_seconds = int((slot.due_at - slot.nominal_at).total_seconds())
+        return
+    span = config.publish_jitter_seconds
+    for _ in range(32):
+        delta = randbelow(2 * span + 1) - span if span else 0
+        due = slot.nominal_at + timedelta(seconds=delta)
+        collision = db.query(FactoryRelease.id).filter(FactoryRelease.due_at == due)
+        if slot.id:
+            collision = collision.filter(FactoryRelease.id != slot.id)
+        if not collision.first():
+            slot.due_at, slot.jitter_seconds = due, delta
+            # A late enable must not turn a sampled past instant into a catch-up.
+            if due < now or (config.publish_start_at and due < config.publish_start_at):
+                slot.status = "missed"
+                slot.results = {p: _result("missed", "随机发布时间早于启用时刻，保留排期记录，未追补") for p in slot.platforms}
+            return
+    raise ValueError("随机排期时间冲突，保留原记录等待下一次规划")
+
+
 def plan_slots(db, config, now):
-    """Only future slots are added. Enabling mid-day never backfills past times."""
+    """Persist one draw per date/time; restart and polling never redraw it."""
+    now_utc = utc(now)
     for offset in (0, 1):
         day = now.date() + timedelta(days=offset)
         start = utc(datetime.fromisoformat(day.isoformat()).replace(tzinfo=now.tzinfo))
-        existing = db.query(FactoryRelease).filter(FactoryRelease.due_at >= start,
-            FactoryRelease.due_at < start + timedelta(days=1)).all()
+        existing = db.query(FactoryRelease).filter(nominal_time() >= start,
+            nominal_time() < start + timedelta(days=1)).all()
+        for slot in existing:
+            _set_jitter(db, slot, config, now_utc)
+            db.flush()
         # Changes apply to subsequent batches. Keep a producing day's mapping
         # stable so edits cannot bind a second slot to an already planned clip.
         if any(slot.run_id for slot in existing):
             continue
         for slot in existing:
-            clock = slot.due_at.replace(tzinfo=timezone.utc).astimezone(now.tzinfo).strftime("%H:%M")
+            clock = (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).astimezone(now.tzinfo).strftime("%H:%M")
             if clock not in config.publish_times:
                 slot.status = "cancelled"
         for clock in sorted(config.publish_times):
-            due = utc(datetime.fromisoformat(f"{day.isoformat()}T{clock}").replace(tzinfo=now.tzinfo))
-            if due < utc(now) or (config.publish_start_at and due < config.publish_start_at):
+            nominal = utc(datetime.fromisoformat(f"{day.isoformat()}T{clock}").replace(tzinfo=now.tzinfo))
+            if nominal < now_utc or (config.publish_start_at and nominal < config.publish_start_at):
                 continue
-            slot = db.query(FactoryRelease).filter_by(due_at=due).first()
+            slot = db.query(FactoryRelease).filter(nominal_time() == nominal).first()
             if not slot:
-                db.add(FactoryRelease(due_at=due, platforms=list(config.platforms)))
-            elif not slot.run_id:
+                slot = FactoryRelease(due_at=nominal, nominal_at=nominal, platforms=list(config.platforms), status="scheduled")
+                _set_jitter(db, slot, config, now_utc)
+                db.add(slot)
+                db.flush()
+            elif not slot.run_id and slot.status not in FINAL:
                 slot.platforms = list(config.platforms)
-                slot.status = "scheduled"
     db.commit()
 
 
@@ -109,8 +153,8 @@ def plan_production(db, config, now):
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
     key = f"releases:{now.date().isoformat()}"
     run = db.query(FactoryRun).filter_by(schedule_key=key).first()
-    slots = db.query(FactoryRelease).filter(FactoryRelease.due_at >= start,
-        FactoryRelease.due_at < start + timedelta(days=1), FactoryRelease.status != "cancelled").order_by(FactoryRelease.due_at).all()
+    slots = db.query(FactoryRelease).filter(nominal_time() >= start,
+        nominal_time() < start + timedelta(days=1), FactoryRelease.status != "cancelled").order_by(nominal_time()).all()
     if run and (run.settings_snapshot or {}).get("release_slot_ids"):
         by_id = {slot.id: slot for slot in slots}
         slots = [by_id[identifier] for identifier in run.settings_snapshot["release_slot_ids"]]
@@ -144,7 +188,11 @@ def step_platform(db, slot, item, platform, now, enabled):
     submitted, prepared = jobs.get("publish"), jobs.get("prepare")
     if submitted:
         if submitted.status == "submitted":
-            return _result("submitted", "平台已确认接收，公开状态以审核为准", submitted)
+            observed = (submitted.result or {}).get("official_observation", {})
+            label = {"published": "已发布", "reviewing": "审核中", "rejected": "未通过"}.get(observed.get("status"))
+            if label and observed.get("checked_at"):
+                return {**_result("submitted", "官方最近核对：" + label, submitted), "official_observation": observed}
+            return _result("submitted", "平台已确认接收，最新公开状态尚待核对", submitted)
         if submitted.status in {"queued", "running"}:
             return _result("publishing", "正在核对平台提交回执", submitted)
         detail = (submitted.result or {}).get("message") or "提交未完成"

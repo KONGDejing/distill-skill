@@ -28,7 +28,7 @@ def env(tmp_path, monkeypatch):
         "authenticated": True, "prepared_item_id": "item", "capabilities": {"prepare": True, "publish": True}})
     with sessions() as db:
         config = FactoryConfig(id=1, daily_target=10, publish_enabled=True,
-            publish_start_at=datetime(2026, 11, 9, 0), schedule_time="00:30")
+            publish_start_at=datetime(2026, 11, 9, 0), schedule_time="00:30", publish_jitter_seconds=0)
         db.add(config)
         db.add(FactoryRun(id="run", active_slot=None, status="completed"))
         db.add(FactoryItem(id="item", run_id="run", position=0, status="completed",
@@ -245,4 +245,137 @@ def test_uncertain_old_submission_reports_hold_and_never_retries(env):
     env.db.commit()
     result=schedule.step_platform(env.db,env.slot,item,'kuaishou',env.slot.due_at,True)
     assert '此旧版已停发' in result['message'] and '小麦正在核对' in result['message']
+    env.begin.assert_not_called()
+
+
+@pytest.mark.parametrize('draw,delta', [(0,-900),(900,0),(1800,900)])
+def test_random_release_time_is_persisted_across_restart_and_config_change(env, monkeypatch, draw, delta):
+    db, config = env.db, env.config
+    db.delete(env.slot)
+    config.publish_jitter_seconds = 900
+    db.commit()
+    random = Mock(return_value=draw)
+    monkeypatch.setattr(schedule, 'randbelow', random)
+    now = datetime(2026,11,9,18,5,tzinfo=TZ)
+    schedule.plan_slots(db, config, now)
+    slots = db.query(FactoryRelease).order_by(FactoryRelease.nominal_at).all()
+    assert len(slots) == 14
+    assert all(s.due_at == s.nominal_at + timedelta(seconds=delta) and s.jitter_seconds == delta for s in slots)
+    saved = [(s.id,s.nominal_at,s.due_at) for s in slots]
+    random.assert_called_with(1801)
+    assert random.call_count == 14
+    db.expire_all()
+    config.publish_jitter_seconds = 100
+    schedule.plan_slots(db, config, now + timedelta(minutes=1))
+    assert [(s.id,s.nominal_at,s.due_at) for s in db.query(FactoryRelease).order_by(FactoryRelease.nominal_at)] == saved
+    assert random.call_count == 14
+
+
+def test_legacy_future_bound_slot_jitters_but_existing_upload_and_past_keep_time(env, monkeypatch):
+    db, config = env.db, env.config
+    config.publish_jitter_seconds = 900
+    slot = env.slot
+    slot.run_id, slot.position = 'run', 0
+    db.add(FactoryPublication(item_id='item', platform='xiaohongshu', action='prepare', status='prepared'))
+    future = FactoryRelease(run_id='run',position=1,due_at=slot.due_at+timedelta(hours=2),platforms=slot.platforms)
+    past = FactoryRelease(run_id='run',position=2,due_at=slot.due_at-timedelta(hours=3),status='missed')
+    db.add_all([future,past])
+    db.commit()
+    monkeypatch.setattr(schedule, 'randbelow', lambda n: 1)
+    schedule.plan_slots(db,config,datetime(2026,11,9,16,tzinfo=TZ))
+    assert slot.due_at == datetime(2026,11,9,9) and slot.jitter_seconds == 0
+    assert future.due_at == datetime(2026,11,9,11)-timedelta(seconds=899)
+    assert future.position == 1 and future.run_id == 'run'
+    assert past.due_at == datetime(2026,11,9,6) and past.jitter_seconds == 0
+
+
+def test_late_enable_persists_past_draw_without_catchup_or_reroll(env, monkeypatch):
+    db, config = env.db, env.config
+    db.delete(env.slot)
+    config.publish_jitter_seconds=900
+    config.publish_times=['19:00']
+    db.commit()
+    random=Mock(return_value=0)
+    monkeypatch.setattr(schedule,'randbelow',random)
+    now=datetime(2026,11,9,18,59,tzinfo=TZ)
+    schedule.plan_slots(db,config,now)
+    schedule.plan_slots(db,config,now)
+    slots=db.query(FactoryRelease).order_by(FactoryRelease.nominal_at).all()
+    assert len(slots)==2 and random.call_count==2
+    assert slots[0].status=='missed'
+    assert slots[0].due_at==datetime(2026,11,9,10,45)
+    assert slots[1].status=='scheduled'
+
+
+def test_midnight_jitter_keeps_calendar_identity_and_does_not_duplicate(env, monkeypatch):
+    db, config=env.db,env.config
+    db.delete(env.slot)
+    config.publish_jitter_seconds=900
+    config.publish_times=['00:05','23:55']
+    db.commit()
+    draws=iter([1800,0,1800])
+    monkeypatch.setattr(schedule,'randbelow',lambda n:next(draws))
+    schedule.plan_slots(db,config,datetime(2026,11,9,18,tzinfo=TZ))
+    schedule.plan_slots(db,config,datetime(2026,11,9,18,1,tzinfo=TZ))
+    slots=db.query(FactoryRelease).order_by(FactoryRelease.nominal_at).all()
+    assert len(slots)==3
+    assert slots[0].due_at==datetime(2026,11,9,16,10)  # next local day
+    assert slots[1].due_at==datetime(2026,11,9,15,50)  # previous local day
+    assert slots[0].nominal_at==datetime(2026,11,9,15,55)
+    assert slots[1].nominal_at==datetime(2026,11,9,16,5)
+    data=schedule.release_dict(db,slots[1])
+    assert data['jitter_seconds']==-900 and data['nominal_at'] != data['due_at']
+
+
+def test_release_jitter_rejects_outside_configured_bounds():
+    from pydantic import ValidationError
+    from routers.factory import SettingsUpdate
+    for value in (-1,901):
+        with pytest.raises(ValidationError):
+            SettingsUpdate(publish_jitter_seconds=value)
+
+
+def test_collision_resamples_only_new_slot_and_preserves_existing_release(env, monkeypatch):
+    db,config=env.db,env.config
+    db.delete(env.slot)
+    config.publish_times=['19:00','19:01']
+    config.publish_jitter_seconds=900
+    db.commit()
+    # First and second would otherwise both land at 19:00.
+    draws=iter([900,840,841,900,840,841])
+    random=Mock(side_effect=lambda n:next(draws))
+    monkeypatch.setattr(schedule,'randbelow',random)
+    schedule.plan_slots(db,config,datetime(2026,11,9,18,tzinfo=TZ))
+    slots=db.query(FactoryRelease).order_by(FactoryRelease.nominal_at).all()
+    assert len(slots)==4 and len({s.due_at for s in slots})==4
+    assert slots[0].jitter_seconds==0 and slots[1].jitter_seconds==-59
+    assert random.call_count==6
+
+
+def test_legacy_schema_upgrade_backfills_nominal_only_and_is_idempotent(tmp_path, monkeypatch):
+    import database
+    engine=create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    with engine.begin() as conn:
+        conn.exec_driver_sql('CREATE TABLE factory_config (id INTEGER PRIMARY KEY)')
+        conn.exec_driver_sql('INSERT INTO factory_config (id) VALUES (1)')
+        conn.exec_driver_sql('CREATE TABLE factory_releases (id TEXT PRIMARY KEY, due_at DATETIME NOT NULL UNIQUE)')
+        conn.exec_driver_sql("INSERT INTO factory_releases VALUES ('kept','2026-11-09 09:00:00.000000')")
+    monkeypatch.setattr(database,'engine',engine)
+    database._ensure_factory_columns()
+    database._ensure_factory_columns()
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql('SELECT due_at,nominal_at,jitter_seconds FROM factory_releases').one()==('2026-11-09 09:00:00.000000','2026-11-09 09:00:00.000000',None)
+        assert conn.exec_driver_sql('SELECT publish_jitter_seconds FROM factory_config').scalar()==900
+    engine.dispose()
+
+
+def test_official_observation_is_separate_from_submission_and_never_resubmits(env):
+    db=env.db
+    observed={'status':'published','label':'已发布','checked_at':'2026-11-09T10:00:00+00:00'}
+    db.add(FactoryPublication(item_id='item',platform='douyin',action='publish',status='submitted',result={'official_observation':observed}))
+    db.commit()
+    result=schedule.step_platform(db,env.slot,db.get(FactoryItem,'item'),'douyin',env.slot.due_at,True)
+    assert result['status']=='submitted'
+    assert result['official_observation']==observed
+    assert result['message']=='官方最近核对：已发布'
     env.begin.assert_not_called()
