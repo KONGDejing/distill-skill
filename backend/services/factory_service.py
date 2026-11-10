@@ -102,6 +102,7 @@ def run_detail(db, run):
             "tts_engine": media.get("tts_engine"), "packages": packages, "error": item.error,
             "preview": {"video_url": storage_url(preview.get("video_path")),
                         "title": preview.get("title"), "quality": preview.get("quality", {}),
+                        "hook": preview.get("hook"), "script_url": storage_url(preview.get("narration_text_path")),
                         "webm_url": storage_url(preview.get("webm_path")),
                         "cover_url": storage_url(preview.get("cover_path")),
                         "audio_url": storage_url(preview.get("audio_path")),
