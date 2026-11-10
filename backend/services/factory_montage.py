@@ -517,6 +517,21 @@ def _ambient_music(duration: float, shot_times: list[float], target: Path):
     sf.write(target, np.column_stack([left * envelope, right * envelope]).astype("float32"), rate)
 
 
+def _browser_preview(video: Path) -> Path:
+    """Keep the publication MP4 and provide playback in browsers without H.264."""
+    ensure_memory_available()
+    target = video.with_suffix(".webm")
+    temporary = video.with_name("preview-building.webm")
+    _run(["ffmpeg", "-y", "-v", "error", "-threads", "2", "-filter_threads", "2", "-i", str(video),
+          "-vf", "scale=720:1280", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8",
+          "-row-mt", "1", "-threads", "2", "-crf", "36", "-b:v", "0", "-c:a", "libopus", "-b:a", "96k",
+          str(temporary)], timeout=600)
+    if abs(_duration(temporary) - _duration(video)) > .2:
+        raise ValueError("网页预览版时长与成片不一致，停止交付")
+    temporary.replace(target)
+    return target
+
+
 def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_path: Path,
                         assets: list[dict], output_dir: Path) -> dict:
     """Produce a new preview; never alter the source media, database or publish."""
@@ -596,6 +611,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     from services.factory_cover import render_cover
     cover_design = render_cover(content, cover)
     quality.update(inspect_media(video))
+    webm = _browser_preview(video)
     quality.update({"cover_design": cover_design, "editorial_review": content.get("editorial_review", {}),
                     "source_motion_samples": motion, "official_footage_ratio": quality["dynamic_coverage"],
                     "self_made_animation_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "schematic_animation") / duration, 4),
@@ -606,7 +622,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
                     "scene_timing": "exact_text_anchor_with_subtitle_time_interpolation; not_word_or_semantic_alignment",
                     "music": "original_synthesized_quiet_ambient_with_voice_sidechain_ducking",
                     "review_required": "Motion sampling does not verify scene semantics; inspect the edit list and preview."})
-    result = {"video_path": str(video), "audio_path": str(audio), "cover_path": str(cover),
+    result = {"video_path": str(video), "webm_path": str(webm), "audio_path": str(audio), "cover_path": str(cover),
               "subtitle_path": str(subtitle), "mixed_audio_path": str(soundtrack), "duration": quality["duration"],
               "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 4,
               "tts_engine": "existing_verified_narration_reused", "quality": quality,
