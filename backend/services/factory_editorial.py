@@ -33,6 +33,33 @@ def validate_follow_prompt(content):
     return {"hook": hook, "follow_prompt": prompt, "follow_value": value}
 
 
+def validate_engagement_plan(plan, sources):
+    if not isinstance(plan, dict):
+        raise ValueError("老周尚未交付本条开场与关注方案")
+    hooks = plan.get("hooks")
+    if not isinstance(hooks, list) or len(hooks) != 2 or any(not isinstance(h, str) or not 8 <= len(h.strip()) <= 40 for h in hooks) or hooks[0] == hooks[1]:
+        raise ValueError("需要两个不同且具体的8–40字开场备选")
+    if type(plan.get("selected")) is not int or plan["selected"] not in (0, 1):
+        raise ValueError("老周必须明确选择一个开场")
+    for key in ("viewer_value", "payoff", "opening_visual", "follow_value", "experiment"):
+        if not isinstance(plan.get(key), str) or not 6 <= len(plan[key].strip()) <= 300:
+            raise ValueError("开场方案缺少具体的" + key)
+    known = {s["id"] for s in sources}
+    ids = plan.get("source_ids")
+    if not isinstance(ids, list) or not ids or any(not isinstance(s, str) or s not in known for s in ids):
+        raise ValueError("开场方案必须引用已取得的真实来源")
+    return plan
+
+
+def validate_engagement_delivery(content, plan):
+    validate_follow_prompt(content)
+    if content["hook"] != plan["hooks"][plan["selected"]]:
+        raise ValueError("口播未采用老周确定的开场，需要交回修改")
+    answer = content.get("payoff_excerpt")
+    if not isinstance(answer, str) or len(answer.strip()) < 12 or answer not in content["script"][len(content["hook"]):-len(content["follow_prompt"])]:
+        raise ValueError("必须标出正文如何兑现开场承诺，由小审核对，不能只写关注提醒")
+
+
 def validate_editorial_scenes(script, scenes, assets):
     """Require ordered, complete narration and explicit, justified asset choices.
 

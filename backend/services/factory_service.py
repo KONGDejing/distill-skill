@@ -93,6 +93,8 @@ def run_detail(db, run):
             "editor_id": editor_id(item), "editor_name": AGENT_MAP[editor_id(item)]["name"],
             "category": item.brief.get("category", "AI 科技"), "status": item.status,
             "script": content.get("script", ""), "hook": content.get("hook", ""),
+            "engagement_plan": item.brief.get("engagement_plan"),
+            "research_packet": item.brief.get("research_packet"),
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
             "review": item.review or {}, "media_quality": media.get("quality", {}),
             "video_url": storage_url(media.get("video_path")), "webm_url": storage_url(media.get("webm_path")),
@@ -158,6 +160,8 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
         raise ValueError("每轮产量应为 1–10 条")
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 12 + 12)
     config["engagement_required"] = True
+    config["director_hook_required"] = True
+    config["max_total_tokens"] = settings.FACTORY_MAX_TOTAL_TOKENS
     if release_slot_ids is not None:
         config["release_slot_ids"] = list(release_slot_ids)
     if not queue_available():
@@ -252,6 +256,11 @@ def _make_plan(run_id):
         from services.factory_research import collect_sources
         research = collect_sources(limit=min(24, max(10, target * 3)))
         sources = research["sources"]
+        from services.factory_newsroom import collect_newsroom_sources
+        emit(run_id, "researcher3", "newsroom_intake", "小探3正在采集展会原始公告与科技硬件新闻，给小影3建立选题来源")
+        newsroom = collect_newsroom_sources()
+        sources = list({s["url"]: s for s in [*sources, *newsroom["sources"]]}.values())
+        emit(run_id, "researcher3", "newsroom_intake", f"取得{len(newsroom['sources'])}份原始资料；视频素材仍需另行获取与核对", "completed" if newsroom["sources"] else "warning", newsroom)
         if not sources:
             raise RuntimeError("没有获取到可靠资料，已停止生产以免生成无依据内容")
         with SessionLocal() as db:
@@ -350,10 +359,32 @@ def _write_and_review(run_id, item_id):
                 "text": "\n".join(f"第{p['page']}页：{p['text']}" for p in document["pages"])[:65000]}]
         max_revisions, revisions = run.settings_snapshot.get("max_revisions", 1), item.revisions
         engagement_required = run.settings_snapshot.get("engagement_required", False)
+        director_hook_required = run.settings_snapshot.get("director_hook_required", False)
+        owner = editor_id(item)
         target_duration = run.settings_snapshot.get("target_duration_seconds")
         calibrated_characters = brief.get("target_script_characters")
         recent_prompts = [i.content.get("follow_prompt") for i in db.query(FactoryItem).filter(
             FactoryItem.status == "completed").order_by(FactoryItem.created_at.desc()).limit(10) if i.content.get("follow_prompt")]
+    if owner == "producer3" and not brief.get("research_packet"):
+        from services.factory_newsroom import validate_packet
+        emit(run_id, "researcher3", "material_research", "小探3正在核对热点原文、事件日期与所需画面，交接给小影3")
+        packet = call_agent(run_id, "researcher3", {"brief": brief, "sources": sources})
+        validate_packet(packet, sources)
+        brief = {**brief, "research_packet": packet, "researcher_id": "researcher3"}
+        _save_item(item_id, brief=brief)
+        emit(run_id, "researcher3", "material_handoff", "已交付可追溯资料与画面需求；等待脚本定稿后逐句匹配实际素材", "completed", {"item_id": item_id, "packet": packet})
+    if director_hook_required:
+        from services.factory_editorial import validate_engagement_plan
+        plan = brief.get("engagement_plan")
+        if not plan:
+            emit(run_id, "director", "hook_planning", "老周正在确定两版开场、正文兑现方式、首镜头证据与关注价值")
+            plan = call_agent(run_id, "director", {"task_mode": "hook_plan", "brief": brief, "sources": sources, "strategy": STRATEGY})
+            validate_engagement_plan(plan, sources)
+            brief = {**brief, "engagement_plan": plan}
+            _save_item(item_id, brief=brief)
+            emit(run_id, "director", "hook_plan", "已确定开场：" + plan["hooks"][plan["selected"]], "completed", {"item_id": item_id, "plan": plan})
+        else:
+            validate_engagement_plan(plan, sources)
     minimum, maximum = (round(target_duration * 3.3), round(target_duration * 5.7)) if target_duration else (80, 650)
     if type(calibrated_characters) is int and calibrated_characters > 0:
         # Character count is an estimate; the actual audio remains subject to
@@ -379,6 +410,9 @@ def _write_and_review(run_id, item_id):
             _sources_for(content.get("source_ids", []), sources)
             if engagement_required:
                 validate_follow_prompt(content)
+            if director_hook_required:
+                from services.factory_editorial import validate_engagement_delivery
+                validate_engagement_delivery(content, brief["engagement_plan"])
         except ValueError as exc:
             feedback = {"approved": False, "reason": str(exc)}
             prior = content
@@ -391,6 +425,10 @@ def _write_and_review(run_id, item_id):
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
         if brief.get("paper_document"):
             content["paper_document"] = brief["paper_document"]
+        if brief.get("engagement_plan"):
+            content["engagement_plan"] = brief["engagement_plan"]
+        if brief.get("research_packet"):
+            content["research_packet"] = brief["research_packet"]
         _save_item(item_id, content=content, status="reviewing")
         emit(run_id, "writer", "writing", f"脚本已提交：{content['title']}", "completed")
         emit(run_id, "reviewer", "reviewing", f"独立核对文案事实与出处：{content['title']}")
@@ -525,7 +563,8 @@ def _render(run_id, item_id):
         from services.factory_papers import is_paper_story
         if is_paper_story(brief, content.get("sources", [])):
             raise ValueError("论文讲解尚未取得真实原文，请先读取论文并重写口播，不能用背景演示填充")
-        emit(run_id, "researcher", "visual_research", "正在获取与本条来源对应的真实演示视频")
+        researcher = "researcher3" if owner == "producer3" else "researcher"
+        emit(run_id, researcher, "visual_research", "正在获取与本条来源对应的真实演示视频")
         from services.factory_visuals import collect_visuals
         visual_sources = list(content.get("sources", []))
         if brief.get("visual_source_ids"):
@@ -535,8 +574,8 @@ def _render(run_id, item_id):
         assets = visuals.get("assets", [])
         if visuals.get("status") != "ready" or len(assets) < 3:
             raise ValueError("匹配选题的动态演示素材不足3条，已暂停该条制作；请更换选题或补充素材")
-        emit(run_id, "researcher", "visual_research", f"已获取 {len(assets)} 条有出处的动态演示素材", "completed",
-             {"manifest_path": str(visuals.get("manifest_path", "")), "warnings": visuals.get("warnings", [])})
+        emit(run_id, researcher, "visual_research", f"已获取 {len(assets)} 条有出处的动态演示素材，交给{AGENT_MAP[owner]['name']}逐句匹配", "completed",
+             {"item_id": item_id, "manifest_path": str(visuals.get("manifest_path", "")), "warnings": visuals.get("warnings", [])})
     elif visual_style != "cards":
         raise ValueError("不支持的画面风格")
     if assets:

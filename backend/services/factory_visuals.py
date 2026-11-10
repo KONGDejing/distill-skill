@@ -25,6 +25,8 @@ import httpx
 
 STORAGE = Path(__file__).resolve().parents[1] / "storage"
 PAGE_RULES = {
+    "www.ces.tech": ("/press-releases/", "/videos/", "/topics/"),
+    "ces.tech": ("/press-releases/", "/videos/", "/topics/"),
     # Author project pages linked by the corresponding arXiv records.
     "sumo048.github.io": ("/CS-pi_site/",),
     "roboforpc.github.io": ("/",),
@@ -45,6 +47,8 @@ PAGE_RULES = {
 }
 MEDIA_RULES = {
     **PAGE_RULES,
+    "www.ces.tech": ("/media/",),
+    "ces.tech": ("/media/",),
     "gradium.ai": ("/assets/release-phonon-open-weight/demos/",),
     "raw.githubusercontent.com": ("/allenai/ToyBlocks/", "/nvidia/cosmos/"),
     "www.datocms-assets.com": ("/64837/",),

@@ -82,3 +82,30 @@ def test_persistent_edit_rejection_stops_after_bounded_revision(monkeypatch):
     with pytest.raises(ValueError):
         factory_service._plan_edit("run", {"script": SCRIPT}, ASSETS, "tech_montage")
     assert calls.call_count == 2
+
+
+def test_director_hook_contract_requires_evidence_and_in_script_payoff():
+    from services.factory_editorial import validate_engagement_plan, validate_engagement_delivery
+    plan={'hooks':['机器人会走路，就能直接推车吗？','推车这件事，为什么机器人还要学？'],'selected':0,
+          'viewer_value':'看懂机器人接触力与平衡', 'payoff':'解释推车同时控制平衡的原因', 'opening_visual':'展示对应论文原始标题与作者',
+          'follow_value':'持续看懂机器人研究的真实进展', 'experiment':'只比较开场，数据不足不判胜负', 'source_ids':['source']}
+    assert validate_engagement_plan(plan,[{'id':'source'}]) == plan
+    with pytest.raises(ValueError):validate_engagement_plan(plan,[{'id':'other'}])
+    prompt='想持续看懂机器人研究，可以关注这个系列。'
+    answer='因为推车会改变接触力，需要同时控制平衡。'
+    content={'hook':plan['hooks'][0], 'script':plan['hooks'][0]+answer+prompt, 'follow_prompt':prompt,
+             'follow_value':plan['follow_value'], 'payoff_excerpt':answer}
+    validate_engagement_delivery(content,plan)
+    with pytest.raises(ValueError):validate_engagement_delivery({**content,'payoff_excerpt':'正文没有这句话，不能冒充兑现承诺'},plan)
+
+
+def test_newsroom_handoff_rejects_invented_evidence_and_index_pages():
+    from services.factory_newsroom import validate_packet
+    source={'id':'s','url':'https://www.ces.tech/example','kind':'news','text':'This is the actual original statement, including its boundaries.'}
+    packet={'facts':[{'source_id':'s','claim':'一个有限的已确认事实','evidence_quote':'This is the actual original statement'}],
+            'event_date':'未确认', 'limitations':'缺少可下载视频，不称已取得现场素材',
+            'visual_requests':[{'source_id':'s','needed_picture':'对应本条事实的官方演示'}]}
+    assert validate_packet(packet,[source]) == packet
+    with pytest.raises(ValueError):validate_packet(packet,[{**source,'kind':'reference_index'}])
+    bad=deepcopy(packet);bad['facts'][0]['evidence_quote']='A fabricated statement not in the source.'
+    with pytest.raises(ValueError):validate_packet(bad,[source])

@@ -217,3 +217,32 @@ def test_release_settings_reject_invalid_or_duplicate_times_and_volume_mismatch(
         update_settings(SettingsUpdate(daily_target=3), env.db)
     assert exc.value.status_code == 422
     assert env.config.daily_target == 10
+
+
+def test_platform_review_does_not_hold_next_original_upload(env):
+    db=env.db
+    db.add(FactoryPublication(item_id='item',platform='kuaishou',action='publish',status='submitted',result={'message':'审核中'}))
+    db.add(FactoryItem(id='next',run_id='run',position=1,status='completed',media={'video_path':'next.mp4'}))
+    next_slot=FactoryRelease(due_at=env.slot.due_at + timedelta(hours=1),item_id='next',platforms=['kuaishou'])
+    db.add(next_slot);db.commit()
+    result=schedule.step_platform(db,next_slot,db.get(FactoryItem,'next'),'kuaishou',next_slot.due_at,True)
+    assert result['status']=='uploading'
+    assert env.begin.call_args.args[1:]==('next','prepare','kuaishou')
+
+
+def test_waiting_media_shows_actual_production_failure(env):
+    item=env.db.get(FactoryItem,'item');item.status='failed';item.error='模型服务额度不足'
+    env.db.commit()
+    schedule.advance_slot(env.db,env.slot,env.config,env.slot.due_at)
+    assert '额度不足' in env.slot.results['kuaishou']['message']
+    env.begin.assert_not_called()
+
+
+def test_uncertain_old_submission_reports_hold_and_never_retries(env):
+    item=env.db.get(FactoryItem,'item');item.media={**item.media,'publication_hold':'旧短片停发'}
+    env.db.add(FactoryPublication(item_id='item',platform='kuaishou',action='publish',status='failed',
+        result={'message':'没有成功回执','submission_uncertain':True,'submission_attempted':True}))
+    env.db.commit()
+    result=schedule.step_platform(env.db,env.slot,item,'kuaishou',env.slot.due_at,True)
+    assert '此旧版已停发' in result['message'] and '小麦正在核对' in result['message']
+    env.begin.assert_not_called()

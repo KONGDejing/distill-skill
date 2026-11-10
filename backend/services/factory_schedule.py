@@ -147,7 +147,12 @@ def step_platform(db, slot, item, platform, now, enabled):
             return _result("submitted", "平台已确认接收，公开状态以审核为准", submitted)
         if submitted.status in {"queued", "running"}:
             return _result("publishing", "正在核对平台提交回执", submitted)
-        return _result("blocked", "提交未完成，需检查任务结果后处理；未自动重复提交", submitted)
+        detail = (submitted.result or {}).get("message") or "提交未完成"
+        if (submitted.result or {}).get("submission_uncertain"):
+            detail = "小麦正在核对官方记录，暂不需用户操作；不会重复提交。" + detail
+        if item.media.get("publication_hold"):
+            detail += "；此旧版已停发，保留历史提交记录"
+        return _result("blocked", detail, submitted)
     if prepared and prepared.status in {"queued", "running"}:
         return _result("uploading", "正在上传视频", prepared)
     if not enabled:
@@ -196,7 +201,10 @@ def advance_slot(db, slot, config, now):
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
     if item is None or item.status != "completed":
         slot.status = "missed" if now >= deadline(db, slot) else "waiting_media"
-        slot.results = {p: _result(slot.status, "成片未就绪或未通过质检，未发布") for p in slot.platforms}
+        run = db.get(FactoryRun, slot.run_id or item.run_id) if slot.run_id or item else None
+        error = (item.error if item else None) or (run.error if run else None)
+        message = "制作未完成：" + error[:300] if error else "成片未就绪或未通过质检，未发布"
+        slot.results = {p: _result(slot.status, message) for p in slot.platforms}
     else:
         # An explicit memory pause stops new publishing even if other clips are ready.
         paused = db.query(FactoryRun).filter_by(status="paused_memory").first() is not None

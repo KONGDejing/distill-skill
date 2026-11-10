@@ -76,7 +76,7 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     manager.sync_work_orders(db, state, analytics, now)
     daily = db.query(FactoryWorkOrder).filter_by(kind="daily").all()
     long = db.query(FactoryWorkOrder).filter_by(kind="bilibili").all()
-    assert len(daily) == 9 and len(long) == 8
+    assert len(daily) == 10 and len(long) == 8
     assert all(r.status != "completed" for r in daily)
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
@@ -84,7 +84,7 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
 
 def test_scorecards_do_not_invent_full_scores_when_evidence_is_missing(db):
     cards = manager.scorecards(db, {"platforms": []})
-    assert len(cards) == 9
+    assert len(cards) == 10
     assert all(c["total_score"] is None for c in cards)
     reviewer = next(c for c in cards if c["agent_id"] == "reviewer")
     assert reviewer["measured_weight"] == 0

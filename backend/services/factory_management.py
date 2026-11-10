@@ -28,6 +28,7 @@ RHYTHM = [
 UPGRADES = {
     "director": "以回执、质量验收和增长差距调整任务；未解决问题明确负责人和下一步，不能只看完成数量。",
     "researcher": "每条选题附原始出处、事件日期、争议归属和可用画面；同一产品一天最多两个不同问题，论文先看方法与局限。",
+    "researcher3": "给小影3交付原始报道、事件日期、逐字证据和画面需求；下载后的素材另记来源与可用时间窗，不把线索当作已到手视频。",
     "writer": "每条先写一句观众问题，正文给案例和边界；用实测语速修订约150秒，关注提醒不承诺不存在的下期。",
     "producer": "先画叙事分镜再选片；记录素材时间窗与使用记录，保留完整动作，关键术语出现时同步展示对应画面。",
     "reviewer": "区分脚本事实审核、素材描述对齐和成片技术检查；未进行逐帧语义验收不得写成已通过。",
@@ -125,6 +126,7 @@ def sync_work_orders(db, state, analytics, now):
     connected = sum(p["status"] == "connected" for p in analytics["platforms"])
     specs = [
         ("researcher", "05:00", "选题与素材清单", "至少10份有正文与出处的资料，形成不少于今日目标的选题", min(sum(bool(s.get("url") and s.get("text")) for r in runs for s in r.sources), sum(len(r.plan.get("candidates", [])) for r in runs)), max(10, target)),
+        ("researcher3", "05:15", "给小影3交接热点与展会素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if editor_id(i) == "producer3"), sum(editor_id(i) == "producer3" for i in items if i.run_id in current_run_ids)),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
         ("publisher", "22:15", "逐时段发布并核对三平台回执", "今日各时段三平台均取得真实提交回执；公开审核另行核对", state["summary"]["fully_submitted_slots"], target),
@@ -150,11 +152,26 @@ def sync_work_orders(db, state, analytics, now):
         order.title, order.acceptance = title, acceptance
         order.status = "completed" if required and count >= required else "in_progress" if count else "pending"
         order.evidence = {"done": count, "required": required, "checked_at": now.isoformat()}
+    planned_hooks = [i for i in items if i.run_id in current_run_ids and (i.status != "completed" or i.brief.get("engagement_plan"))]
+    key = f"daily:{local.date()}:director-hooks"
+    order = db.get(FactoryWorkOrder, key)
+    if not order:
+        order = FactoryWorkOrder(key=key, kind="improvement", owner="director", title="逐条确定开场钩子并检查兑现", acceptance="每条两版开场选一版，明确首镜头、正文答案和持续关注价值；小审通过后交剪辑，平台数据不足不得宣布实验成功", due_at=start + timedelta(hours=21, minutes=30))
+        db.add(order)
+    done = sum(bool(i.brief.get("engagement_plan")) for i in planned_hooks)
+    order.status = "completed" if planned_hooks and done == len(planned_hooks) else "in_progress" if done else "pending"
+    order.evidence = {"done": done, "required": len(planned_hooks), "checked_at": now.isoformat(), "measurement": "方案完成不等于涨粉达标；按同平台、同系列、同发布后时长比较实际留存与关注，缺少单条数据标记待采集"}
     # Incidents retain their own acceptance and disposition, independently of
     # daily output totals. A completed incident is not a completed video.
     for alert in state.get("alerts", []):
         key = alert.get("key")
-        if not key or db.get(FactoryWorkOrder, key):
+        if not key:
+            continue
+        existing = db.get(FactoryWorkOrder, key)
+        if existing:
+            if existing.status != "completed":
+                existing.title, existing.acceptance = alert["message"][:190], alert["next_action"]
+                existing.evidence = {**existing.evidence, "blocker": alert["message"], "checked_at": now.isoformat()}
             continue
         db.add(FactoryWorkOrder(key=key, kind="issue", owner=alert.get("owner_id", "director"),
             title=alert["message"][:190], acceptance=alert["next_action"],
@@ -235,6 +252,7 @@ def scorecards(db, analytics):
                      pending("问题按期闭环", 30), pending("四平台周增长", 30), pending("日报准时交付", 20)],
         "researcher": [_score("来源可追溯", 30, ratio(sum(bool(s.get("fetched_at") and s.get("text")) for s in sources.values()), len(sources)), "来源地址、采集时间与实际正文齐全", len(sources)),
                        pending("热点相关性与原创角度", 25), pending("事实抽检", 30), pending("新增可用素材", 15)],
+        "researcher3": [pending("原始事实抽检", 35), pending("素材对应与事件日期", 35), pending("交接及时性", 15), pending("新增可用镜头", 15)],
         "writer": [_score("独立脚本审核", 35, ratio(sum(float(i.review["score"]) for i in written), 100 * len(written)), "小审模型评分，不等于观众满意度", len(written)),
                    _score("开场与关注提醒合同", 20, ratio(follow_pass, len(following)), "程序检查原样进入完整口播", len(following)), pending("观众留存与关注", 45)],
         "producer": [_score("实际时长验收", 25, ratio(sum(abs(float(i.media.get("duration", 0)) - runs[i.run_id].settings_snapshot["target_duration_seconds"]) <= 15 for i in timed), len(timed)), "按成片时长核验，不按脚本宣称", len(timed)),

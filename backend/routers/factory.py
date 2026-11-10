@@ -94,11 +94,12 @@ def overview(db: Session = Depends(get_db)):
     from services.factory_visuals import library_summary
     from services.factory_analytics import overview as analytics_overview
     from services.factory_operations import overview as operations_overview
+    from services.factory_llm import model_runtime
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
             "analytics": analytics_overview(db), "operations": operations_overview(db),
             "strategy": STRATEGY, "asset_library": library_summary(),
             "releases": upcoming_releases(db, get_config(db)),
-            "platforms": platforms, "runtime": {"model": settings.CLAUDE_MODEL, "queue_available": queue_available(), "memory": memory_state()}}
+            "platforms": platforms, "runtime": {**model_runtime(), "queue_available": queue_available(), "memory": memory_state()}}
 
 
 @router.patch("/settings")

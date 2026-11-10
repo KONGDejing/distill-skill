@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -17,6 +18,17 @@ class Settings(BaseSettings):
     HTTPS_PROXY: str = os.getenv("HTTPS_PROXY", "")
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
     FACTORY_FALLBACK_MODEL: str = "claude-sonnet-4-5-20250929"
+    # Factory employees can use either provider; credentials are never shared.
+    FACTORY_MODEL_PROVIDER: Literal["anthropic", "openai", "codex"] = "anthropic"
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    FACTORY_OPENAI_MODEL: str = "gpt-6-astra"
+    FACTORY_OPENAI_FALLBACK_MODEL: str = ""
+    FACTORY_OPENAI_REASONING: Literal["low", "medium", "high"] = "low"
+    FACTORY_CODEX_MODEL: str = "gpt-6-astra"
+    FACTORY_CODEX_BIN: str = "codex"
+    FACTORY_CODEX_TIMEOUT_SECONDS: int = Field(default=180, ge=30, le=600)
+    FACTORY_MAX_TOTAL_TOKENS: int = Field(default=1_000_000, ge=10_000)
 
     # Stop admitting work under memory pressure; resume requires user action.
     FACTORY_MAX_MEMORY_GIB: float = Field(default=16, gt=0)

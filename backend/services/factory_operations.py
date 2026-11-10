@@ -17,6 +17,7 @@ PRIVATE = Path(__file__).resolve().parents[2] / ".runtime/operations"
 ASSIGNMENTS = {
     "director": "检查产量、质量、平台回执与阻塞；安排返工并在22:30汇报",
     "researcher": "收集科技热点、争议、贸易、展会、论文与具身智能的一手来源和画面",
+    "researcher3": "专门为小影3核对科技热点、公开争议、硬件与展会原文；交接日期、证据、画面需求与实际素材",
     "writer": "围绕一个问题写约150秒讲解；兑现开场承诺，结尾自然提醒关注",
     "producer": "按口播制作分镜，整理可复用素材，检查镜头、字幕与音频对齐",
     "producer2": "独立完成分配的视频，重点讲清论文原理与技术演示，记录自己的素材和返工",
@@ -63,7 +64,7 @@ def overview(db, now=None):
             name = next(a["name"] for a in AGENTS if a["id"] == owner)
             alerts.append({"key": "issue:production:" + item.id, "owner_id": owner, "owner": f"老周 / 小探 / {name}", "item_id": item.id,
                            "message": f"{'正在重制' if recovering else '制作未完成'}：{item.brief.get('title', '待定选题')}；{item.error or '等待实际成片验收'}",
-                           "next_action": "制作任务已恢复，成片通过实际时长与质量验收后才关闭问题" if recovering else "先补齐来源与画面；无合适素材则更换有依据的选题，保留失败记录，不用旧短片补量"})
+                           "next_action": ("先恢复已配置的模型服务或接入可用模型，再继续原批次；平台审核不阻塞制作" if "额度不足" in (item.error or "") or "授权未通过" in (item.error or "") else "制作任务已恢复，成片通过实际时长与质量验收后才关闭问题" if recovering else "先补齐来源与画面；无合适素材则更换有依据的选题，保留失败记录，不用旧短片补量")})
     # Closing an incident does not change its original failed production/job or
     # turn an abandoned version into a published video. Keep the disposition visible.
     resolved_issues, pending = [], []

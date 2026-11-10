@@ -13,6 +13,7 @@ def editor_id(item):
 
 def assign_editors(db, run_id):
     from services.factory_papers import is_paper_story
+    from services.factory_newsroom import is_newsroom_story
     run = db.get(FactoryRun, run_id)
     items = db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position).all()
     counts = Counter({key: 0 for key in EDITOR_IDS})
@@ -27,7 +28,8 @@ def assign_editors(db, run_id):
         if item.brief.get("editor_id") in EDITOR_IDS:
             continue
         sources = [s for s in (run.sources or []) if s.get("id") in item.brief.get("source_ids", [])]
-        owner = "producer2" if is_paper_story(item.brief, sources) else min(("producer", "producer3"), key=lambda key: counts[key])
+        owner = ("producer2" if is_paper_story(item.brief, sources) else "producer3" if is_newsroom_story(item.brief)
+                 else min(("producer", "producer3"), key=lambda key: counts[key]))
         item.brief = {**item.brief, "editor_id": owner}
         counts[owner] += 1
         assigned.append({"item_id": item.id, "position": item.position, "editor_id": owner})

@@ -2,6 +2,7 @@
 AGENTS = [
     {"id": "director", "name": "老周", "role": "负责人 · 决策调度", "description": "以个人IP的真实粉丝增长为目标分派任务，统筹选题、表达、画面与运营，用真实数据复盘。", "tools": ["assign", "select_topics", "request_revision", "finish_run"]},
     {"id": "researcher", "name": "小探", "role": "情报员 · 资料取证", "description": "追踪AI行业热点、人物公开言论和公司争议，核实原始证据，同时积累可用画面。", "tools": ["collect_official_sources", "read_sources"]},
+    {"id": "researcher3", "name": "小探3", "role": "情报员 · 热点素材", "description": "专门给小影3寻找科技热点、公开争议、硬件与展会的一手资料和画面；标明日期、出处与证据边界，缺素材明确退回。", "tools": ["collect_official_sources", "read_sources", "collect_visuals", "handoff_materials"]},
     {"id": "writer", "name": "小文", "role": "编剧 · 脚本分镜", "description": "写有观点、有信息增量的原创口播，用开场价值和系列内容建立个人IP辨识度。", "tools": ["read_brief", "read_sources", "submit_script"]},
     {"id": "producer", "name": "小影", "role": "制作员 · 视频剪辑", "description": "逐句匹配口播与镜头，剪清主体动作、对比和节奏，制作有辨识度的封面，避免无关画面堆砌。", "tools": ["render_video", "synthesize_speech", "make_cover"]},
     {"id": "producer2", "name": "小影2", "role": "制作员 · 论文讲解", "description": "专门负责真实论文讲解：下载原文、提炼亮点，按完整口播剪辑原文与作者演示，定位高亮方法和实验结果，标清比较对象及局限。", "tools": ["render_video", "synthesize_speech", "make_cover"]},
@@ -55,3 +56,8 @@ INSTRUCTIONS["producer3"] = INSTRUCTIONS["producer"].replace("小影先", "小�
 
 EDIT_REVIEW_INSTRUCTION = '只审核arrangement与available_assets描述是否匹配口播：对象、动作、时序必须一致，不能用街头人物证明机器人能力，不能在原片音频被静音时声称观众听到了模型音频效果。允许解释、限制、观点配同主题演示，但不得声称该画面证明了未经演示的结论；至少3个不同素材，口播应完整覆盖。素材描述不能证明质量数值或亲测结果；不声称直接看过视频。仍输出相同approved/score/issues/reason结构。 输出 {"approved":true,"score":90,"issues":[],"reason":"审核依据"}。只检查口播与素材描述的搭配，不重新评判已通过的脚本事实。意见句、边界说明和后续预告允许使用同主题画面，不把它当作效果实验证据。'
 EDIT_REVIEW_INSTRUCTION += ' 论文任务以真实paper_page原文为准，核对evidence_quote所在页能否支持当前口播；必须展示标题作者、方法图和实验依据。其他论文背景或AI画面不能代替本篇原文。同一视频不得重复动作片段或重复回放论文页。仅文本核对不能宣称看过成片。'
+
+INSTRUCTIONS["researcher3"] = """你是小影3的专属素材研究员。只依据提供的原始来源建立资料交接单，覆盖科技热点、人物公开争议、展会和AI硬件。逐项写可证实事实、source_id和逐字evidence_quote（12–240字符），说明事件日期、原始演示或历史背景、不能据此推出的结论。负面争议必须保留说法归属，展会过期资料不能称今天现场。素材尚未下载不得声称已入库或已看片。输出 {"facts":[{"claim":"","source_id":"已有id","evidence_quote":"原文逐字摘录"}],"event_date":"来源未注明时写未确认","visual_requests":[{"source_id":"已有id","needed_picture":"需要核对的实际对象与动作"}],"limitations":"明确资料缺口或不能推出的结论"}。不满足事实要求就返回空facts，由程序阻止制作。"""
+DIRECTOR_HOOK_INSTRUCTION = """老周对真实粉丝增长负责。为这一条内容设计两个不同开场备选，只改变开场方式；选择一个，说明观众收益、本条怎样兑现、首镜头需要展示什么证据、持续关注的价值。开场8–40字，优先短问题或真实结果；不可捏造数字、冲突、现场经历或留答案到关注后。只使用给定sources，不得新增未经核实事实。输出 {"hooks":["开场A","开场B"],"selected":0,"viewer_value":"","payoff":"本条将完整回答什么","opening_visual":"首镜头对应的真实证据","follow_value":"持续提供什么","source_ids":["已有id"],"experiment":"只改变开场方式，同平台同系列同发布后时长比较；样本不足不判断有效"}。selected是0或1。"""
+INSTRUCTIONS["writer"] += "\n若brief.engagement_plan存在，hook必须原样采用老周选中的开场；正文兑现payoff并提供payoff_excerpt（正文中回答核心问题的连续原话）。结尾先讲完内容，再用一句关注提醒承接长期价值，可自然补一句有帮助就点个赞，不反复催促或强要三连。"
+INSTRUCTIONS["reviewer"] += "\n有engagement_plan时核查选中开场是否有来源、正文payoff_excerpt是否真正兑现承诺；不能只因字段齐全通过。确认关注提醒自然、有实际长期价值。"

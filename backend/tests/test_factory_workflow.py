@@ -26,6 +26,7 @@ SOURCE = {
 
 @pytest.fixture
 def isolated_factory(tmp_path, monkeypatch):
+    monkeypatch.setattr(factory_llm.settings, "FACTORY_MODEL_PROVIDER", "anthropic")
     monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'workflow-test.db'}",
                            connect_args={"check_same_thread": False})
@@ -664,3 +665,40 @@ def test_memory_pressure_does_not_spend_model_budget(isolated_factory, monkeypat
     client.assert_not_called()
     with isolated_factory() as db:
         assert db.get(FactoryRun, run_id).llm_calls == 0
+
+
+def test_newsroom_and_director_handoff_precedes_writer_and_is_persisted(isolated_factory, monkeypatch):
+    from services import factory_newsroom
+    run_id,item_id=_seed_item(isolated_factory)
+    plan={'hooks':['为什么好看的演示不能代表可靠？','看懂这个边界，才不会被演示误导。'],'selected':0,
+          'viewer_value':'分清演示能力与实际使用限制','payoff':'讲清为何演示不能等同实测','opening_visual':'展示本条来源的实际操作说明',
+          'follow_value':'持续核对AI能力与使用边界','experiment':'同平台同系列只比较开场变化','source_ids':[SOURCE['id']]}
+    packet={'facts':[{'source_id':SOURCE['id'],'claim':'这是一份指南资料','evidence_quote':SOURCE['text'][:50]}],
+            'event_date':'未确认','limitations':'不代表已经实测','visual_requests':[{'source_id':SOURCE['id'],'needed_picture':'对应指南的实际界面'}]}
+    answer='这是使用指南而不是现场测试，仍需检查实际效果。'
+    prompt='想持续看懂AI的能力与边界，可以关注这个系列。'
+    content={'title':'看懂演示边界','hook':plan['hooks'][0], 'script':plan['hooks'][0]+answer*5+prompt,
+             'follow_prompt':prompt,'follow_value':plan['follow_value'],'payoff_excerpt':answer,'source_ids':[SOURCE['id']]}
+    with isolated_factory() as db:
+        run=db.get(FactoryRun,run_id);run.settings_snapshot={**run.settings_snapshot,'director_hook_required':True,'engagement_required':True}
+        item=db.get(FactoryItem,item_id);item.brief={**item.brief,'editor_id':'producer3'};db.commit()
+    calls=Mock(side_effect=[packet,plan,content,{'approved':True,'score':90}]);monkeypatch.setattr(factory_service,'call_agent',calls)
+    factory_service._write_and_review(run_id,item_id)
+    assert [c.args[1] for c in calls.call_args_list]==['researcher3','director','writer','reviewer']
+    with isolated_factory() as db:
+        item=db.get(FactoryItem,item_id)
+        assert item.brief['research_packet']==packet and item.content['engagement_plan']==plan
+    factory_service._write_and_review(run_id,item_id)
+    assert calls.call_count==4  # resume never spends again on an accepted script
+
+
+def test_observed_token_budget_stops_next_model_call_and_retains_progress(isolated_factory, monkeypatch):
+    run_id,_=_seed_item(isolated_factory)
+    with isolated_factory() as db:
+        r=db.get(FactoryRun,run_id);r.input_tokens=90;r.output_tokens=20;r.settings_snapshot={**r.settings_snapshot,'max_total_tokens':100};db.commit()
+    network=Mock();monkeypatch.setattr(factory_llm.anthropic,'Anthropic',network)
+    with pytest.raises(factory_llm.ModelServiceUnavailable,match='token预算'):
+        factory_llm.call_agent(run_id,'writer',{})
+    network.assert_not_called()
+    with isolated_factory() as db:
+        assert db.get(FactoryRun,run_id).llm_calls==0
