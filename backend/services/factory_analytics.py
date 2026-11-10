@@ -13,11 +13,13 @@ PORTALS = {
     "xiaohongshu": ("https://creator.xiaohongshu.com/new/home", ".runtime/xiaohongshu-session/DevToolsActivePort"),
     "douyin": ("https://creator.douyin.com/creator-micro/home", ".runtime/creator-connectors/douyin/profile/DevToolsActivePort"),
     "kuaishou": ("https://cp.kuaishou.com/profile", ".runtime/creator-connectors/kuaishou/profile/DevToolsActivePort"),
+    "bilibili": ("https://member.bilibili.com/platform/fans/manage", ".runtime/creator-connectors/bilibili/profile/DevToolsActivePort"),
 }
 PATHS = {
     "xiaohongshu": {"/api/galaxy/v2/creator/datacenter/account/base": "overview", "/api/galaxy/creator/home/personal_info": "profile"},
     "douyin": {"/aweme/janus/creator/data/overview/all/": "overview", "/aweme/v1/creator/user/info/": "profile"},
     "kuaishou": {"/rest/cp/creator/analysis/pc/home/author/overview": "overview", "/rest/cp/creator/pc/home/userInfo": "profile"},
+    "bilibili": {"/x/relation/followers": "overview", "/x/web-interface/nav": "profile"},
 }
 METRICS = {"followers": "当前粉丝", "new_followers": "新增关注", "lost_followers": "取消关注", "net_followers": "净增粉丝",
            "views": "播放 / 观看", "impressions": "曝光", "profile_views": "主页访问", "likes": "点赞", "comments": "评论",
@@ -95,9 +97,17 @@ def normalize(platform, responses, body=""):
         match = re.search(r"统计周期[：:]\s*(\d{4}\.\d{2}\.\d{2})\s*[-至]\s*(\d{4}\.\d{2}\.\d{2})", body)
         if match:
             period = {"start": match[1].replace(".", "-"), "end": match[2].replace(".", "-")}
+    elif platform == "bilibili":
+        if (type(raw.get("code")) is not int or raw["code"] != 0
+                or type(profile.get("code")) is not int or profile["code"] != 0
+                or (profile.get("data") or {}).get("isLogin") is not True
+                or number((raw.get("data") or {}).get("total")) is None):
+            raise ValueError("未取得B站已登录账号的官方粉丝数")
+        metrics["followers"] = number(raw["data"]["total"])
+        period = {"label": "采集时点粉丝数；创作者近7日统计尚无数据"}
     else:
         raise ValueError("平台数据尚未接入")
-    return {"metrics": metrics, "period": {**period, "label": "官方后台近7日（非今日实时）"}, "daily": daily,
+    return {"metrics": metrics, "period": {"label": "官方后台近7日（非今日实时）", **period}, "daily": daily,
             "sources": [PORTALS[platform][0]], "attribution_note": "账号整体数据，包含历史作品；不能归因于今天的新视频。未取得的转化指标显示未接入，不用净增粉丝/播放量冒充关注转化率。"}
 
 
@@ -118,7 +128,8 @@ def capture(platform):
         def observe(response):
             address = urlsplit(response.url)
             label = PATHS[platform].get(address.path)
-            if label and address.hostname == urlsplit(url).hostname and response.status == 200:
+            expected_host = "api.bilibili.com" if platform == "bilibili" else urlsplit(url).hostname
+            if label and address.hostname == expected_host and response.status == 200:
                 try:
                     value = response.json()
                     if isinstance(value, dict):

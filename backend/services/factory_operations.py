@@ -35,7 +35,8 @@ def overview(db, now=None):
     today_events = db.query(FactoryEvent).filter(FactoryEvent.created_at >= start).order_by(FactoryEvent.id.desc()).limit(150).all()
     assignments = []
     for agent in AGENTS:
-        last = next((e for e in today_events if e.agent_id == agent["id"] and e.stage not in {"model_call", "model_retry"}), None)
+        last = db.query(FactoryEvent).filter(FactoryEvent.created_at >= start, FactoryEvent.agent_id == agent["id"],
+            FactoryEvent.stage.notin_(["model_call", "model_retry"])).order_by(FactoryEvent.id.desc()).first()
         assignments.append({"agent_id": agent["id"], "name": agent["name"], "role": agent["role"],
                             "assignment": ASSIGNMENTS[agent["id"]], "last_progress": last.message if last else "今日尚无执行记录",
                             "last_status": last.status if last else "pending", "updated_at": stamp(last.created_at) if last else None})
@@ -78,12 +79,16 @@ def overview(db, now=None):
         pass
     reports = db.query(FactoryDailyReport).order_by(FactoryDailyReport.day.desc()).limit(7).all()
     result["reports"] = [{"day": r.day, "created_at": stamp(r.created_at), **r.data} for r in reports]
+    from services.factory_management import overview as management_overview
+    result["management"] = management_overview(db, metrics)
     return result
 
 
 def patrol(db, now=None):
     now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     state = overview(db, now)
+    from services.factory_management import sync_work_orders
+    sync_work_orders(db, state, factory_analytics.overview(db), now)
     PRIVATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     data = {"last_patrol_at": now.isoformat(), "open_alerts": len(state["alerts"]), "status": "running"}
     temp = PRIVATE / "heartbeat.tmp"
@@ -94,6 +99,7 @@ def patrol(db, now=None):
             "basis": "系统按实际任务、官方回执和平台数据生成的事实日报",
             "summary": state["summary"], "assignments": state["assignments"], "alerts": state["alerts"],
             "improvements": state["improvements"], "analytics": factory_analytics.overview(db),
+            "management": state.get("management"),
             "tomorrow": ["小探补充有出处的热点与可用素材，避免同一事实换标题重复生产", "小文与小影按150秒标准制作，小审核验实际成片", "小麦处理未确认回执，小数对照同周期平台数据再提出优化"]}))
         db.commit()
     return state

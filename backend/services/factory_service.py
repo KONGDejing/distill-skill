@@ -286,13 +286,35 @@ def _make_plan(run_id):
     emit(run_id, "director", "planning", decision.get("reason", "生产计划已下达"), "completed")
 
 
+def _ensure_visual_support(run_id, item_id):
+    with SessionLocal() as db:
+        item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
+        if run.settings_snapshot.get("visual_style") != "tech_montage" or item.brief.get("visual_source_ids"):
+            return
+        facts = _sources_for(item.brief.get("source_ids", []), run.sources)
+        if any(s.get("visual_ready") for s in facts):
+            return
+        ready = [s for s in run.sources if s.get("visual_ready")]
+        brief = dict(item.brief)
+    match = call_agent(run_id, "producer", {"task_mode": "visual_match", "brief": brief,
+        "fact_sources": [{"id": s["id"], "title": s["title"], "text": s["text"][:2000]} for s in facts],
+        "visual_sources": [{"id": s["id"], "title": s["title"], "visual_assets": s.get("visual_assets", [])} for s in ready]}, max_tokens=1200)
+    ids = match.get("visual_source_ids")
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 2 or any(not isinstance(i, str) or i not in {s["id"] for s in ready} for i in ids):
+        raise ReviewRejected("该选题没有相符的可用画面，先补素材或更换选题，未进入配音")
+    if not isinstance(match.get("reason"), str) or not match["reason"].strip():
+        raise ReviewRejected("未说明背景演示与事实的关系，未进入配音")
+    _save_item(item_id, brief={**brief, "visual_source_ids": ids, "visual_support_reason": match["reason"], "background_visuals": True})
+    emit(run_id, "producer", "visual_handoff", "先确认画面支持，再交给小文：" + match["reason"], "completed", {"item_id": item_id, "visual_source_ids": ids})
+
+
 def _write_and_review(run_id, item_id):
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
         if item.content and item.review.get("approved") is True:
             return
         brief, prior, feedback = item.brief, item.content or {}, item.review or {}
-        sources = _sources_for(brief.get("source_ids", []), run.sources)
+        sources = _sources_for([*brief.get("source_ids", []), *brief.get("visual_source_ids", [])], run.sources)
         max_revisions, revisions = run.settings_snapshot.get("max_revisions", 1), item.revisions
         engagement_required = run.settings_snapshot.get("engagement_required", False)
         target_duration = run.settings_snapshot.get("target_duration_seconds")
@@ -411,6 +433,8 @@ def _render(run_id, item_id):
     with SessionLocal() as db:
         item = db.get(FactoryItem, item_id)
         content, media = item.content, item.media or {}
+        brief = item.brief
+        run_sources = db.get(FactoryRun, run_id).sources
         visual_style = db.get(FactoryRun, run_id).settings_snapshot.get("visual_style", "cards")
         target_duration = db.get(FactoryRun, run_id).settings_snapshot.get("target_duration_seconds")
         if media.get("video_path") and Path(media["video_path"]).is_file():
@@ -423,7 +447,11 @@ def _render(run_id, item_id):
     if visual_style == "tech_montage":
         emit(run_id, "researcher", "visual_research", "正在获取与本条来源对应的真实演示视频")
         from services.factory_visuals import collect_visuals
-        visuals = collect_visuals(content.get("sources", []), directory / "visual-assets")
+        visual_sources = list(content.get("sources", []))
+        if brief.get("visual_source_ids"):
+            visual_sources.extend(_sources_for(brief["visual_source_ids"], run_sources))
+            content = {**content, "background_visuals": True, "visual_support_reason": brief.get("visual_support_reason")}
+        visuals = collect_visuals(visual_sources, directory / "visual-assets")
         assets = visuals.get("assets", [])
         if visuals.get("status") != "ready" or len(assets) < 3:
             raise ValueError("匹配选题的动态演示素材不足3条，已暂停该条制作；请更换选题或补充素材")
@@ -434,6 +462,8 @@ def _render(run_id, item_id):
     emit(run_id, "producer", "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
     arrangement = _plan_edit(run_id, content, assets, visual_style)
     scenes = arrangement.get("scenes", [])
+    if content.get("background_visuals"):
+        scenes = [{**scene, "evidence_role": "background"} for scene in scenes]
     if not isinstance(scenes, list) or not 2 <= len(scenes) <= 18 or not all(isinstance(s, dict) and s.get("heading") and isinstance(s.get("body", ""), str) for s in scenes):
         raise ValueError("制作员未提供有效的画面安排")
     if assets:
@@ -627,10 +657,12 @@ def execute_run(run_id):
             try:
                 if not already_complete:
                     try:
+                        _ensure_visual_support(run_id, item_id)
                         _write_and_review(run_id, item_id)
                     except ReviewRejected:
                         if not _replace_rejected_topic(run_id, item_id):
                             raise
+                        _ensure_visual_support(run_id, item_id)
                         _write_and_review(run_id, item_id)
                     _render(run_id, item_id)
                     _package(run_id, item_id)

@@ -53,6 +53,20 @@ CONFIG = [
 ]
 
 
+@pytest.mark.parametrize("logged_in,code,expected", [(True, 0, True), (False, 0, False), (True, -101, False)])
+def test_bilibili_identity_requires_official_authenticated_api(logged_in, code, expected):
+    from unittest.mock import Mock
+    page = Page("https://member.bilibili.com/platform/home", "首页 内容管理 粉丝管理")
+    request = Mock()
+    request.get.return_value.status = 200
+    request.get.return_value.json.return_value = {"code": code, "data": {"isLogin": logged_in, "uname": "Example"}}
+    adapter = Bilibili(SimpleNamespace(pages=[page], request=request))
+    with patch.object(adapter, "_save_pending_dom"):
+        result = adapter.inspect()
+    assert result["authenticated"] is expected
+    assert request.get.call_args.args[0] == "https://api.bilibili.com/x/web-interface/nav"
+
+
 @pytest.mark.parametrize("adapter_type,login_url,creator_url,qr_selectors", CONFIG)
 def test_public_creator_words_do_not_prove_authentication(adapter_type, login_url, creator_url, qr_selectors):
     adapter = adapter_type(SimpleNamespace(pages=[Page(creator_url, "创作中心 投稿 视频上传 数据统计")]))

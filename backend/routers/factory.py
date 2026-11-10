@@ -70,7 +70,7 @@ def overview(db: Session = Depends(get_db)):
     from services.creator_connector import connection_state as creator_state
     for platform in platforms:
         platform["enabled"] = platform["id"] in config["platforms"]
-        if not platform["enabled"]:
+        if not platform["enabled"] and platform["id"] != "bilibili":
             platform.update(status="paused", description="小麦负责后续 B站长视频运营；当前不参与短视频生产与发布。" if platform["id"] == "bilibili" else "已退出当前短视频发行计划。")
             continue
         if platform["id"] not in {"douyin", "kuaishou", "bilibili"}:
@@ -83,6 +83,8 @@ def overview(db: Session = Depends(get_db)):
         platform["status"] = "connected" if state.get("authenticated") and verified else "not_connected"
         platform["description"] = ((f"{state.get('display_name') or '账号'} 已登录；" + ("已核验提交回执，公开状态以平台审核为准。" if verified else "上传与提交待实际验证。"))
                                    if state.get("authenticated") else f"{state.get('status', '未连接')}；完成官方扫码后继续验证发布。")
+        if platform["id"] == "bilibili":
+            platform["description"] += " 每周2条6–10分钟专题，周三/周六20:00；长视频流程待联调，不参与短视频队列。"
     from services.factory_schedule import upcoming_releases
     from services.factory_editorial import STRATEGY
     from services.factory_visuals import library_summary

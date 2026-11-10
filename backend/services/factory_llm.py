@@ -9,7 +9,7 @@ from sqlalchemy import update
 from config import settings
 from database import SessionLocal
 from models.factory import FactoryRun, FactoryEvent
-from agents.registry import AGENT_MAP, COMMON, INSTRUCTIONS, EDIT_REVIEW_INSTRUCTION
+from agents.registry import AGENT_MAP, COMMON, INSTRUCTIONS, EDIT_REVIEW_INSTRUCTION, VISUAL_MATCH_INSTRUCTION
 from services.factory_resources import ensure_memory_available
 
 
@@ -43,6 +43,8 @@ def _reserve_call(run_id):
         db.commit()
 def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=False):
     instruction = EDIT_REVIEW_INSTRUCTION if agent_id == "reviewer" and payload.get("task_mode") == "edit_review" else INSTRUCTIONS[agent_id]
+    if agent_id == "producer" and payload.get("task_mode") == "visual_match":
+        instruction = VISUAL_MATCH_INSTRUCTION
     client = None
     response = None
     for attempt in range(3):

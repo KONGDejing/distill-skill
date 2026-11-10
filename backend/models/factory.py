@@ -126,3 +126,25 @@ class FactoryDailyReport(Base):
     day = Column(String(10), primary_key=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     data = Column(JSON, nullable=False, default=dict)
+
+
+class FactoryGrowthPlan(Base):
+    __tablename__ = "factory_growth_plans"
+    id = Column(Integer, primary_key=True, default=1)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    baselines = Column(JSON, nullable=False, default=dict)
+    policy = Column(JSON, nullable=False, default=dict)
+
+
+class FactoryWorkOrder(Base):
+    __tablename__ = "factory_work_orders"
+    key = Column(String(100), primary_key=True)
+    kind = Column(String(30), nullable=False)
+    owner = Column(String(30), nullable=False)
+    title = Column(String(200), nullable=False)
+    acceptance = Column(Text, nullable=False)
+    due_at = Column(DateTime, nullable=False, index=True)
+    status = Column(String(30), nullable=False, default="pending")
+    evidence = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

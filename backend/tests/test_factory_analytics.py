@@ -35,3 +35,15 @@ def test_xhs_preserves_official_conversion_instead_of_dividing_aggregate_counts(
 def test_missing_or_rejected_official_data_is_not_reported_as_zero(platform):
     with pytest.raises(ValueError):
         normalize(platform, {})
+def test_bilibili_real_zero_fans_does_not_fabricate_creator_statistics():
+    from services.factory_analytics import normalize
+    result = normalize("bilibili", {
+        "overview": {"code": 0, "data": {"total": 0, "list": []}},
+        "profile": {"code": 0, "data": {"isLogin": True}},
+    })
+    assert result["metrics"]["followers"] == 0
+    assert result["metrics"]["views"] is None
+    assert result["metrics"]["net_followers"] is None
+    assert result["period"].get("start") is None
+
+

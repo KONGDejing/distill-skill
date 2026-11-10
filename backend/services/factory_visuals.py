@@ -407,8 +407,35 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
     deadline, budget = time.monotonic() + MAX_SECONDS, [MAX_TOTAL_BYTES]
     visited, media_seen = set(), set()
     assets, fingerprints = [], set()
+    # A retained, attributed source clip remains usable when its original page
+    # is temporarily unreachable. Match the exact cited page, never a keyword.
+    referenced = {s.get("url") for s in sources}
+    cache_bytes = 0
+    for metadata_path in sorted((STORAGE / "factory/asset-library").glob("*.json")):
+        if len(assets) >= limit:
+            break
+        try:
+            entry = json.loads(metadata_path.read_text())
+            if not any(r.get("url") in referenced for r in entry.get("references", [])):
+                continue
+            cached = Path(entry["path"]).resolve()
+            if not cached.is_relative_to((STORAGE / "factory/asset-library").resolve()) or not cached.is_file():
+                continue
+            size = cached.stat().st_size
+            if size > MAX_FILE_BYTES or cache_bytes + size > MAX_TOTAL_BYTES:
+                continue
+            digest = hashlib.sha256(cached.read_bytes()).hexdigest()
+            if digest != entry.get("sha256") or digest in fingerprints or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", entry.get("id", "")):
+                continue
+            path = directory / (entry["id"] + cached.suffix)
+            if path.resolve() != cached:
+                shutil.copyfile(cached, path)
+            assets.append({**entry, "path": str(path), "reuse_basis": "exact_cited_source_and_verified_hash"})
+            fingerprints.add(digest); cache_bytes += size
+        except (OSError, ValueError, KeyError):
+            continue
     with httpx.Client(follow_redirects=False, headers={"User-Agent": "ShortVideoAIContentFactory/0.3 (official-video-reference)"}) as client:
-        while queue and len(visited) < MAX_PAGES and time.monotonic() < deadline:
+        while queue and len(assets) < limit and len(visited) < MAX_PAGES and time.monotonic() < deadline:
             address, source, chain, depth = queue.pop(0)
             if address in visited:
                 continue
