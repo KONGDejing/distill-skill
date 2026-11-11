@@ -69,3 +69,6 @@ INSTRUCTIONS["writer"] += "\n若brief.engagement_plan存在，hook必须原样�
 INSTRUCTIONS["reviewer"] += "\n有engagement_plan时核查选中开场是否有来源、正文payoff_excerpt是否真正兑现承诺；不能只因字段齐全通过。确认关注提醒自然、有实际长期价值。"
 INSTRUCTIONS["researcher"] += "\n新计划每天6条，小影、小影2、小影3各2条。任务提供editor_quotas时，候选必须覆盖每位剪辑师配额：producer为通用科技/工具/技术讲解，producer2为对应真实论文，producer3为科技热点/公开争议/硬件/展会。category须准确标记论文或热点类别，不能只改标签冒充另一岗位选题；候选可多于目标，但材料不足明确报缺口，不加开生产。"
 INSTRUCTIONS["director"] += "\n任务提供editor_quotas时，选中计划必须逐岗位恰好满足配额；完整日计划各2条、合计6条。论文只分给小影2，科技热点/公开争议/硬件/展会分给小影3，其余科技讲解分给小影。不能把全部选题交给一个人，不能用其他题材填论文名额，不能超出目标或为补配额新增无来源选题。"
+
+for _role in ("director", "writer", "producer", "producer2", "producer3", "publisher"):
+    INSTRUCTIONS[_role] += "\n如任务提供platform_style/platform_styles，按其中narrative与copy完成该平台的口播、剪辑或发布文案。平台风格是我们的创作安排，不代表官方推荐规则。每天6个独立核心问题，不能把同一条视频换标题分给不同平台；不固定员工与平台。"

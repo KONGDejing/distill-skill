@@ -415,6 +415,11 @@ def _write_and_review(run_id, item_id):
         calibrated_characters = brief.get("target_script_characters")
         recent_prompts = [i.content.get("follow_prompt") for i in db.query(FactoryItem).filter(
             FactoryItem.status == "completed").order_by(FactoryItem.created_at.desc()).limit(10) if i.content.get("follow_prompt")]
+    from services.factory_platform_style import platform_style
+    style = platform_style((brief.get("distribution") or {}).get("platform"))
+    if style:
+        brief = {**brief, "platform_style": style}
+        _save_item(item_id, brief=brief)
     if owner == "producer3" and not brief.get("research_packet"):
         from services.factory_newsroom import validate_packet
         emit(run_id, "researcher3", "material_research", "小探3正在核对热点原文、事件日期与所需画面，交接给小影3")
@@ -472,6 +477,8 @@ def _write_and_review(run_id, item_id):
             if attempt < max_revisions:
                 continue
             raise ReviewRejected(str(exc)) from None
+        if style:
+            content["platform_style"] = style
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
         if brief.get("paper_document"):
             content["paper_document"] = brief["paper_document"]
@@ -714,6 +721,7 @@ def _render(run_id, item_id):
 @item_usage("platform_adaptation")
 def _package(run_id, item_id):
     from services.factory_filenames import safe_filename
+    from services.factory_platform_style import platform_style
     from services.factory_handoff import HANDOFF_VERSION, build_handoff, handoff_files
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
@@ -721,13 +729,20 @@ def _package(run_id, item_id):
         video_filename = safe_filename(content["title"], ".mp4")
         platforms = run.settings_snapshot["platforms"]
         route = item.brief.get("distribution") or {}
+        if route.get("day"):
+            signature = "".join(c.casefold() for c in content.get("script", "") if c.isalnum())
+            for other in db.query(FactoryItem).filter(FactoryItem.id != item.id, FactoryItem.status != "deferred"):
+                if (signature and (other.brief.get("distribution") or {}).get("day") == route["day"]
+                        and signature == "".join(c.casefold() for c in other.content.get("script", "") if c.isalnum())):
+                    raise ValueError("同日作品出现相同口播，需重写独立内容，不能换标题或跨平台重复交付")
         if run.settings_snapshot.get("distribution_policy") == "single-platform-v1" or route:
             if route.get("platform") not in platforms:
                 raise ValueError("尚未确定唯一分发平台，保留成片等待排期")
             platforms = [route["platform"]]
             existing = [p for p in existing if p["platform"] in platforms]
         reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
-        if reuse_variants and all(p.get("handoff_version") == HANDOFF_VERSION
+        if reuse_variants and all(p.get("delivery_layout") == "platform-zip-v1"
+                                  and p.get("handoff_version") == HANDOFF_VERSION
                                   and p.get("cover_path") and Path(p["cover_path"]).is_file()
                                   and p.get("video_path") and Path(p["video_path"]).is_file()
                                   and p.get("video_filename") == video_filename for p in existing):
@@ -747,8 +762,9 @@ def _package(run_id, item_id):
         # the video. Preserve its old archive and publication evidence.
         variants = [dict(p) for p in existing]
     else:
-        publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan") if k in content}
+        publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan", "platform_style") if k in content}
         adapted = call_agent(run_id, "publisher", {"content": publication_content, "platforms": platforms,
+            "platform_styles": {p: platform_style(p) for p in platforms},
             "delivery_mode": "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=3000,
                              work_kind="rework" if existing else "initial")
         variants = adapted.get("platforms", [])
@@ -766,15 +782,16 @@ def _package(run_id, item_id):
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
             raise ValueError("平台版本缺少标题")
         handoff = build_handoff(content, variant, route, warnings.get(platform))
+        style = platform_style(platform)
         from services.factory_cover import render_cover
         cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}.png"
-        cover_design = render_cover({**content, "cover_text": handoff["cover_text"]}, cover_path)
+        cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
         from services.factory_delivery_video import render_delivery_video
         delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}.mp4"
         delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video)
         manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
-                    "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename,
-                    "delivery_quality": delivery_quality,
+                    "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
+                    "delivery_quality": delivery_quality, "platform_style": style,
                     "cover_design": {k: v for k, v in cover_design.items() if k != "design_path"},
                     "source_item_id": item_id, "sources": content.get("sources", []),
                     "visual_sources": media.get("visual_sources", []),
@@ -788,6 +805,9 @@ def _package(run_id, item_id):
             for key, name in (("video_path", video_filename), ("audio_path", "audio.mp3"), ("subtitle_path", "subtitles.ass")):
                 archive.write(delivery_video if key == "video_path" else media[key], name)
             archive.writestr("metadata.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            archive.writestr("发布标题.txt", handoff["title"] + "\n")
+            archive.writestr("正文描述.txt", handoff["description"] + "\n")
+            archive.writestr("发布平台.txt", (style.get("name") or platform) + "\n本包只上传到这个平台。\n")
             archive.writestr("script.txt", content["script"])
             archive.writestr("发布说明.txt", manifest["note"] + "\n\n" + variant.get("caption", ""))
             for name, text in texts.items():
@@ -810,9 +830,9 @@ def _package(run_id, item_id):
         packages.append({"platform": platform, "title": variant["title"], "caption": variant.get("caption", ""),
                          "tags": variant.get("tags", []), "published": False,
                          "status": previous.get(platform, {}).get("status", "package_ready"), "path": str(path),
-                         "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename,
+                         "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
                          "copy_path": str(copy_path), "cover_path": str(cover_path), "cover_design": cover_design,
-                         "video_path": str(delivery_video), "delivery_quality": delivery_quality})
+                         "video_path": str(delivery_video), "delivery_quality": delivery_quality, "platform_style": style})
     _save_item(item_id, packages=packages, status="completed", error=None)
     emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份完整人工发布包，等待用户在官方客户端发布", "completed")
 

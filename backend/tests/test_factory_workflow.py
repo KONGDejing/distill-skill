@@ -384,11 +384,13 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
             assert Path(package["path"]).is_file()
             with zipfile.ZipFile(package["path"]) as archive:
                 assert {"AI 工具使用指南：怎样核对边界？.mp4", "audio.mp3", "cover.png", "subtitles.ass", "发布文案.txt",
-                        "互动回复模板.txt", "资料来源.txt", "手动发布说明.txt"}.issubset(archive.namelist())
+                        "互动回复模板.txt", "资料来源.txt", "手动发布说明.txt", "发布标题.txt", "正文描述.txt", "发布平台.txt"}.issubset(archive.namelist())
                 assert "video.mp4" not in archive.namelist()
                 assert archive.read(package["video_filename"]) == b"fixture-only:video.mp4"
                 assert archive.getinfo(package["video_filename"]).flag_bits & 0x800
                 metadata = json.loads(archive.read("metadata.json"))
+                assert archive.read("发布标题.txt").decode().strip() == package["title"]
+                assert archive.read("正文描述.txt").decode().strip() == package["manual_handoff"]["description"]
                 assert metadata["platform"] == package["platform"]
                 assert metadata["video_filename"] == package["video_filename"]
                 assert metadata["published"] is False
@@ -881,3 +883,15 @@ def test_zero_token_limit_allows_authorized_work_above_one_million(isolated_fact
     factory_llm._reserve_call(run_id)
     with isolated_factory() as db:
         assert db.get(FactoryRun,run_id).llm_calls==1
+
+
+def test_same_day_duplicate_narration_is_not_packaged_for_another_platform(isolated_factory):
+    run_id, item_id = _seed_item(isolated_factory, content={"title": "第一条", "script": "同一段内容。"})
+    with isolated_factory() as db:
+        item = db.get(FactoryItem, item_id)
+        item.brief = {**item.brief, 'distribution': {'platform': 'douyin', 'day': '2026-11-12'}}
+        db.add(FactoryItem(run_id=run_id, position=1, brief={'distribution': {'platform': 'xiaohongshu', 'day': '2026-11-12'}},
+                           content={'title': '改一个标题', 'script': '同一段内容！'}))
+        db.commit()
+    with pytest.raises(ValueError, match='相同口播'):
+        factory_service._package(run_id, item_id)

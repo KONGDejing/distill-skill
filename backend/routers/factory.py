@@ -221,7 +221,7 @@ def download_package(item_id: str, platform: str, db: Session = Depends(get_db))
     from services.factory_filenames import safe_filename
     name = next((p["name"] for p in PLATFORMS if p["id"] == platform), platform)
     title = item.content.get("title") or package.get("title")
-    return FileResponse(path, media_type="application/zip", filename=safe_filename(f"{title}—{name}发布包", ".zip"))
+    return FileResponse(path, media_type="application/zip", filename=safe_filename(f"{name}—{title}", ".zip"))
 
 
 @router.get("/items/{item_id}/video")

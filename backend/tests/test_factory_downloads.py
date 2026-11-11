@@ -24,7 +24,7 @@ def test_video_and_archive_download_with_chinese_titles(tmp_path, monkeypatch):
     video = factory.download_video('opaque-id', db)
     archive = factory.download_package('opaque-id', 'douyin', db)
     assert unquote(video.headers['content-disposition']) == "attachment; filename*=utf-8''DLSS 5拿奖，画面谁说了算？.mp4"
-    assert unquote(archive.headers['content-disposition']) == "attachment; filename*=utf-8''DLSS 5拿奖，画面谁说了算？—抖音发布包.zip"
+    assert unquote(archive.headers['content-disposition']) == "attachment; filename*=utf-8''抖音—DLSS 5拿奖，画面谁说了算？.zip"
     assert video.path.name == 'internal-video.mp4'
     assert 'opaque-id' not in video.headers['content-disposition']
 
