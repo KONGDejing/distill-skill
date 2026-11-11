@@ -320,6 +320,66 @@ def collect_sources(limit: int = 12) -> dict:
     if paper_warning:
         warnings.append(paper_warning)
 
+    model_pattern = re.compile(r"large language model|大语言模型|大模型|GPT[\s‐‑–-]*\d|Claude\s+(?!Code\b)(?:[A-Za-z]+\s+){0,2}\d|Gemini\s*(?:\d|Pro\b|Flash\b|Ultra\b)|Llama[\s-]*\d|DeepSeek|Qwen", re.I)
+    # A bounded, first-party addition to dated OpenAI/Google/Meta RSS discovery.
+    # Models/versions are discovered from links, never hard-coded as news.
+    preloaded = {}
+    model_index = "https://www.anthropic.com/news"
+    class ModelLinks(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.href, self.parts, self.rows = None, [], []
+            self.dates = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "a":
+                self.href, self.parts = attrs.get("href"), []
+            if tag == "time" and attrs.get("datetime"):
+                self.dates.append(attrs["datetime"])
+            if tag == "meta" and attrs.get("property", attrs.get("name")) in {"article:published_time", "datePublished"}:
+                self.dates.append(attrs.get("content", ""))
+
+        def handle_data(self, data):
+            if self.href is not None:
+                self.parts.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "a" and self.href is not None:
+                self.rows.append((urljoin(model_index, self.href), _clean_text(" ".join(self.parts))))
+                self.href = None
+
+    try:
+        document, _ = _fetch_url(model_index)
+        parser = ModelLinks(); parser.feed(document)
+        links = list({url: title for url, title in parser.rows if model_pattern.search(title)
+            and urlsplit(url).hostname == "www.anthropic.com"
+            and (urlsplit(url).path.startswith("/news/") or urlsplit(url).path.startswith("/claude-"))}.items())
+        for url, title in links[:2]:
+            try:
+                document, final = _fetch_url(url)
+                text, page_title = _extract_text(document)
+                metadata = ModelLinks(); metadata.feed(document)
+                date_values = re.findall(r'"datePublished"\s*:\s*"([^"\\]+)"', document) + metadata.dates
+                published = next((value for raw in date_values if (value := _parse_date(raw))), None)
+                if published is None:
+                    match = re.search(r"(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4}", text[:1600])
+                    if match:
+                        published = datetime.strptime(match[0], "%B %d, %Y").replace(tzinfo=timezone.utc)
+                if not published or not now - timedelta(days=NEWS_MAX_AGE_DAYS) <= published <= now + timedelta(hours=2) or len(text) < 200:
+                    warnings.append(f"{url}：未取得近期明确日期和足够正文，不当作新模型公告")
+                    continue
+                record = {"id": hashlib.sha256(final.encode()).hexdigest()[:20], "url": final,
+                    "title": page_title or title, "published_at": _iso(published), "fetched_at": _iso(now),
+                    "text": text[:MAX_TEXT_CHARS], "excerpt": text[:MAX_TEXT_CHARS], "kind": "news",
+                    "evidence_scope": "模型发布方原始公告；能力、评测与限制仅按正文，不视为独立实测"}
+                preloaded[final] = record
+                candidates.append(record)
+            except Exception as exc:
+                warnings.append(f"{url}：模型原文发现未完成（{type(exc).__name__}）")
+    except Exception as exc:
+        warnings.append(f"{model_index}：大模型官方索引发现未完成（{type(exc).__name__}）")
+
     seen: set[str] = set()
     recent: list[dict] = []
     for record in sorted(candidates, key=lambda row: row["published_at"], reverse=True):
@@ -327,26 +387,46 @@ def collect_sources(limit: int = 12) -> dict:
             seen.add(record["url"])
             recent.append(record)
 
-    # Reserve a small documentation pool for tutorials even on busy news days.
-    evergreen_slots = min(len(EVERGREEN_URLS), max(1, limit // 3))
-    news_slots = max(0, limit - evergreen_slots)
-    visual_count = min(len(VISUAL_SOURCE_URLS), max(1, limit // 2))
-    watch_count = min(len(WATCH_PAGES), max(0, limit // 8))
-    paper_count = min(len(papers), max(1, limit // 5), max(0, news_slots - visual_count - watch_count))
+    # Reserve most intake for dated news/papers rather than robot directories.
+    # Interleave products, hardware and rotated paper projects, starting with
+    # tail entries so Phonon/ToyBlocks are no longer silently starved.
+    evergreen_slots = min(len(EVERGREEN_URLS), limit // 8)
+    watch_count = min(len(WATCH_PAGES), limit // 12)
+    content_slots = limit - evergreen_slots - watch_count
+    visual_count = min(len(VISUAL_SOURCE_URLS), content_slots, max(1, limit // 3))
+    project_rows = [row for row in VISUAL_SOURCE_URLS if "论文作者" in row[0]]
+    hardware_rows = [row for row in VISUAL_SOURCE_URLS if row not in project_rows and "机器人" in row[0]]
+    product_rows = [row for row in VISUAL_SOURCE_URLS if row not in project_rows + hardware_rows]
+    if project_rows:
+        offset = now.date().toordinal() % len(project_rows)
+        project_rows = project_rows[offset:] + project_rows[:offset]
+    pools = [list(reversed(product_rows)), list(reversed(hardware_rows)), project_rows]
+    visual_rows = []
+    while any(pools):
+        for index in (0, 1, 2, 0):
+            if pools[index]:
+                visual_rows.append(pools[index].pop(0))
+    discovery_slots = content_slots - visual_count
+    paper_count = min(len(papers), max(0, discovery_slots // 2))
+    # Search model evolution actively each day, even when robot news is newer.
+    recent.sort(key=lambda row: not bool(model_pattern.search(row.get("title", ""))))
     selected = papers[:paper_count]
     selected.extend(r for r in recent if r["url"] not in {p["url"] for p in selected})
-    selected = selected[:max(paper_count, news_slots - visual_count - watch_count)]
+    selected = selected[:discovery_slots]
+    selected.extend(p for p in papers[paper_count:] if len(selected) < discovery_slots
+                    and p["url"] not in {r["url"] for r in selected})
     selected.extend({"title": title, "url": url, "kind": "reference_index", "published_at": None,
                      "evidence_scope": "监测索引，仅用作线索；缺少原始公告或活动原文时不得据此写具体新规或当天现场"}
                     for title, url in WATCH_PAGES[:watch_count])
     selected.extend({"title": title, "url": url, "kind": "evergreen", "published_at": None}
-                    for title, url in VISUAL_SOURCE_URLS[:visual_count])
+                    for title, url in visual_rows[:visual_count])
     docs_count = min(len(EVERGREEN_URLS), limit - len(selected))
     selected.extend({"title": title, "url": url, "kind": "evergreen", "published_at": None}
                     for title, url in EVERGREEN_URLS[:docs_count])
+    selected = list({record["url"]: record for record in selected}.values())
     sources: list[dict] = []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for source, warning in pool.map(_load_source, selected):
+        for source, warning in pool.map(lambda row: (preloaded[row["url"]], None) if row["url"] in preloaded else _load_source(row), selected):
             if source:
                 sources.append(source)
             if warning:
@@ -371,4 +451,10 @@ def collect_sources(limit: int = 12) -> dict:
         warnings.append(f"请求 {limit} 条来源，实际获取 {len(result)} 条；不补造缺失资料")
     if result and not any(source["kind"] == "news" for source in result):
         warnings.append("本次只有常青教程资料，不能据此宣称今日新闻或新品发布")
-    return {"sources": result, "warnings": warnings}
+    model_sources = [s["id"] for s in result if s.get("kind") == "news" and s.get("published_at")
+                     and model_pattern.search(s.get("title", ""))]
+    if not model_sources:
+        warnings.append("大模型每日主动检索未取得可用近期原始公告；记录缺口，不用机器人或应用题材冒充大模型进展")
+    return {"sources": result, "warnings": warnings, "large_model_search": {
+        "attempted": True, "official_feeds": list(FEED_URLS), "additional_index": model_index,
+        "max_additional_articles": 2, "source_ids": model_sources, "status": "found" if model_sources else "gap"}}

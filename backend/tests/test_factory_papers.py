@@ -40,6 +40,110 @@ def test_paper_demos_need_a_page_reference_and_crops_cannot_leave_original():
         validate_paper_scenes(scenes, assets)
 
 
+def announcement_evidence():
+    scenes, assets = evidence()
+    for asset in assets:
+        asset["document_kind"] = "technical_report"
+    url = "https://deepmind.google/blog/official-model-announcement/"
+    quote = "The demonstration uses an explicitly documented task."
+    sources = [{"id": "official-release", "url": url,
+                "text": "Original announcement.\nThe demonstration uses an explicitly\n documented task.\nMore context."}]
+    assets.extend([{"id": "demo-direct", "kind": "official_video", "reference_source_url": url},
+                   {"id": "demo-chain", "kind": "official_video",
+                    "source_chain": ["https://deepmind.google/models/gemini-robotics/", url,
+                                     "https://storage.googleapis.com/gdm-deepmind-com-prod-public/media/demo.webm"]}])
+    scenes.append({"asset_ids": ["demo-direct", "demo-chain"], "evidence_kind": "official_announcement",
+                   "evidence_source_id": "official-release", "evidence_url": url, "evidence_quote": quote})
+    return scenes, assets, sources
+
+
+def test_report_demo_accepts_original_announcement_quote_and_records_only_evidence_hashes():
+    scenes, assets, sources = announcement_evidence()
+    original = deepcopy((scenes, assets, sources))
+    result = validate_paper_scenes(scenes, assets, evidence_sources=sources)
+    assert result["pages"] == [1, 4, 9]
+    proof = result["official_announcement_evidence"][0]
+    assert proof["asset_ids"] == ["demo-direct", "demo-chain"]
+    assert proof["source_id"] == "official-release" and proof["url"] == sources[0]["url"]
+    assert len(proof["source_text_sha256"]) == len(proof["quote_sha256"]) == 64
+    assert "not_semantic_review" in result["announcement_evidence_scope"]
+    assert "不等于口播语义" in result["announcement_evidence_note"]
+    assert "text" not in proof and "quote" not in proof
+    assert (scenes, assets, sources) == original
+
+
+@pytest.mark.parametrize("bad", ["ordinary-paper", "mixed-document", "page-scene", "missing-page-highlights"])
+def test_announcement_branch_cannot_relax_paper_or_report_page_contracts(bad):
+    scenes, assets, sources = announcement_evidence()
+    if bad == "ordinary-paper":
+        for asset in assets[:3]:
+            asset.pop("document_kind")
+    elif bad == "mixed-document":
+        assets[1]["document_kind"] = "paper"
+    elif bad == "page-scene":
+        scenes[-1]["asset_ids"] = ["paper-9"]
+    else:
+        scenes[1].pop("paper_highlights")
+    with pytest.raises(ValueError):
+        validate_paper_scenes(scenes, assets, evidence_sources=sources)
+
+
+@pytest.mark.parametrize("bad", ["none", "scene-self-proof", "missing-text", "unknown-id", "duplicate-id"])
+def test_model_authored_proof_cannot_substitute_for_caller_supplied_original_text(bad):
+    scenes, assets, sources = announcement_evidence()
+    if bad == "none":
+        sources = None
+    elif bad == "scene-self-proof":
+        scenes[-1].update(proof=True, evidence_sources=sources)
+        sources = None
+    elif bad == "missing-text":
+        sources[0].pop("text")
+    elif bad == "unknown-id":
+        scenes[-1]["evidence_source_id"] = "invented-id"
+    else:
+        sources.append(deepcopy(sources[0]))
+    with pytest.raises(ValueError, match="原文"):
+        validate_paper_scenes(scenes, assets, evidence_sources=sources)
+
+
+@pytest.mark.parametrize("bad", ["url-mismatch", "untrusted-host", "invented-quote", "changed-case", "short-quote", "long-quote"])
+def test_announcement_requires_exact_url_and_bounded_verbatim_quote(bad):
+    scenes, assets, sources = announcement_evidence()
+    if bad == "url-mismatch":
+        scenes[-1]["evidence_url"] += "?different=1"
+    elif bad == "untrusted-host":
+        scenes[-1]["evidence_url"] = sources[0]["url"] = "https://example.org/announcement/"
+    elif bad == "invented-quote":
+        scenes[-1]["evidence_quote"] = "The demonstration proves every robot is perfectly reliable."
+    elif bad == "changed-case":
+        scenes[-1]["evidence_quote"] = scenes[-1]["evidence_quote"].upper()
+    elif bad == "short-quote":
+        scenes[-1]["evidence_quote"] = "uses"
+    else:
+        scenes[-1]["evidence_quote"] = sources[0]["text"] = "x" * 241
+    with pytest.raises(ValueError):
+        validate_paper_scenes(scenes, assets, evidence_sources=sources)
+
+
+@pytest.mark.parametrize("bad", ["unrelated-direct", "unrelated-chain", "only-last-chain-url", "unknown-video", "non-video", "empty-selection"])
+def test_every_selected_video_must_be_bound_to_the_same_announcement(bad):
+    scenes, assets, sources = announcement_evidence()
+    if bad == "unrelated-direct":
+        assets[3]["reference_source_url"] = "https://deepmind.google/blog/unrelated-announcement/"
+    elif bad == "unrelated-chain":
+        assets[4]["source_chain"][1] = "https://deepmind.google/blog/unrelated-announcement/"
+    elif bad == "only-last-chain-url":
+        assets[4]["source_chain"] = ["https://deepmind.google/models/gemini-robotics/", sources[0]["url"]]
+    elif bad == "unknown-video":
+        scenes[-1]["asset_ids"].append("invented-video")
+    elif bad == "non-video":
+        assets[4]["kind"] = "schematic_animation"
+    else:
+        scenes[-1]["asset_ids"] = []
+    with pytest.raises(ValueError):
+        validate_paper_scenes(scenes, assets, evidence_sources=sources)
+
+
 def test_project_only_paper_story_also_cannot_publish_background_as_evidence():
     sources = [{"url": "https://roboforpc.github.io/", "kind": "evergreen"}]
     assert is_paper_story({}, sources)

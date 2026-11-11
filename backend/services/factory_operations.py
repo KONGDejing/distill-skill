@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
+from sqlalchemy import or_
 
 from database import SessionLocal, init_db
 from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
@@ -17,15 +18,15 @@ from services.factory_platform_policy import automation_enabled
 PRIVATE = Path(__file__).resolve().parents[2] / ".runtime/operations"
 ASSIGNMENTS = {
     "director": "检查产量、质量、平台回执与阻塞；安排返工并在22:30汇报",
-    "researcher": "收集科技热点、争议、贸易、展会、论文与具身智能的一手来源和画面",
+    "researcher": "每日主动追踪通用大模型，覆盖机器人、算力、端侧芯片、应用、论文与产业动态的一手证据，明确题材和素材缺口",
     "researcher3": "专门为小影3核对科技热点、公开争议、硬件与展会原文；交接日期、证据、画面需求与实际素材",
     "writer": "围绕一个问题写约150秒讲解；兑现开场承诺，结尾自然提醒关注",
     "producer": "按口播制作分镜，整理可复用素材，检查镜头、字幕与音频对齐",
     "producer2": "独立完成分配的视频，重点讲清论文原理与技术演示，记录自己的素材和返工",
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
-    "publisher": "按排期发布到启用平台，核验回执；跟进评论接入与异常账号",
-    "analyst": "每30分钟采集可用平台真实数据，保留统计周期，汇总每日变化与缺项",
+    "publisher": "按内容分配三平台各2条，交付6个完整ZIP和标题正文；由用户本人上传和回复评论",
+    "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
 }
 
 
@@ -54,8 +55,10 @@ def overview(db, now=None):
     for job in uncertain:
         if job.result.get("submission_uncertain"):
             alerts.append({"key": "issue:publication:" + job.id, "owner_id": "publisher", "owner": "小麦", "platform": job.platform, "item_id": job.item_id,
-                           "message": job.result.get("message", "提交结果待核对"), "next_action": "小麦核对官方作品记录；用户暂不重复提交，仅官方要求本人验证时需操作"})
-    items = db.query(FactoryItem).filter(FactoryItem.created_at >= start).all()
+                           "message": job.result.get("message", "提交结果待核对"), "next_action": "请本人在官方作品列表人工核对，已上传或审核中不要重复提交；工厂不自动访问账号"})
+    items = db.query(FactoryItem).filter(FactoryItem.status != "deferred", or_(
+        (FactoryItem.created_at >= start) & (FactoryItem.created_at < start + timedelta(days=1)),
+        FactoryItem.brief["distribution"]["day"].as_string() == now.date().isoformat())).all()
     for item in items:
         incident = db.get(FactoryWorkOrder, "issue:production:" + item.id)
         recovering = bool(incident and incident.status != "completed" and item.status not in {"completed", "failed"})
@@ -77,7 +80,7 @@ def overview(db, now=None):
             pending.append(alert)
     alerts = pending
     from services.factory_schedule import nominal_time
-    slots = db.query(FactoryRelease).filter(nominal_time() >= start, nominal_time() < start + timedelta(days=1)).all()
+    slots = db.query(FactoryRelease).filter(nominal_time() >= start, nominal_time() < start + timedelta(days=1), FactoryRelease.status != "cancelled").all()
     metrics = factory_analytics.overview(db)
     connected = [p["platform"] for p in metrics["platforms"] if p["status"] == "connected"]
     long_ready = sum(i.status == "completed" and 135 <= float(i.media.get("duration", 0)) <= 165 for i in items)

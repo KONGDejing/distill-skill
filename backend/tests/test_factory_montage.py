@@ -1,4 +1,5 @@
 from pathlib import Path
+from copy import deepcopy
 import subprocess
 import sys
 from unittest.mock import patch
@@ -8,7 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.factory_montage import (
-    _anchor_time, _source_label, build_shot_plan, measure_motion,
+    _anchor_time, _compact, _montage_subtitles, _retimed_subtitle_cues,
+    _source_label, build_shot_plan, measure_motion,
     read_subtitle_cues, render_tech_montage, validate_shot_plan,
 )
 
@@ -67,6 +69,95 @@ def test_original_subtitle_words_and_only_narration_events_are_kept(tmp_path):
     path.write_text("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,progress\n"
                     "Dialogue: 1,0:00:03.62,0:00:10.44,Default,,0,0,0,,AllenAI 推出\\NToyBlocks 框架\n")
     assert read_subtitle_cues(path) == [{"text": "AllenAI 推出 ToyBlocks 框架", "start": 3.62, "end": 10.44}]
+
+
+def _subtitle_scene(index, start, end, text):
+    return {"scene_index": index, "timeline_start": start, "timeline_end": end,
+            "narration_anchor": text, "kind": "paper_page", "asset_id": f"paper-{index}",
+            "display_label": f"论文原文 · 第{index + 1}页", "heading": "核对原文"}
+
+
+@pytest.mark.parametrize("previous,next_text,cut,inspection", [
+    ("不能一律当作必须照抄的答案。", "第二，奖励为什么会串账？", 35.7333333333, 35),
+    ("训练修正动作的残差策略。", "第九页图九中，Q-OIL对比BC+RL。", 96.3333333333, 95),
+])
+def test_long_original_cue_never_exposes_next_scene_text_early(previous, next_text, cut, inspection):
+    script = previous + next_text
+    begin, end = cut - len(_compact(previous)) * .2, cut + len(_compact(next_text)) * .2
+    cues = [{"start": begin, "end": end, "text": _compact(script)}]
+    plan = [_subtitle_scene(0, begin, cut, previous), _subtitle_scene(1, cut, end, next_text)]
+    content = {"script": script, "scenes": [{"narration_exact": previous}, {"narration_exact": next_text}]}
+    result = _retimed_subtitle_cues(cues, plan, content)
+    assert all(c["end"] <= cut for c in result if c["scene_index"] == 0)
+    assert all(c["start"] >= cut for c in result if c["scene_index"] == 1)
+    assert not any(c["scene_index"] == 1 and c["start"] <= inspection < c["end"] for c in result)
+    assert "".join(_compact(c["text"]) for c in result) == _compact(script)
+
+
+def test_actual_qoil_negative_qualification_and_follow_prompt_stay_complete(tmp_path):
+    # The three original voice cues that produced the misleading 135-second screen.
+    cues = [{"start": 129.89, "end": 135.39, "text": "不证明通用能力两本账限制的是奖励 回传路径也不意味着"},
+            {"start": 135.42, "end": 141.54, "text": "相似状态完全不受影响关注我用原文 和实验条件一起判断"},
+            {"start": 141.56, "end": 143.49, "text": "机器人究竟进步在哪"}]
+    qualification = "不证明通用能力；两本账限制的是奖励回传路径，也不意味着相似状态完全不受影响。"
+    follow = "关注我，用原文和实验条件，一起判断机器人究竟进步在哪。"
+    content = {"script": qualification + "\n" + follow, "follow_prompt": follow,
+               "scenes": [{"narration_exact": qualification}, {"narration_exact": follow}]}
+    plan = [_subtitle_scene(0, 129.89, 137.8666666667, qualification),
+            _subtitle_scene(1, 137.8666666667, 144.1333333333, follow)]
+    originals = deepcopy((cues, content, plan))
+    result = _retimed_subtitle_cues(cues, plan, content)
+    negative = [c for c in result if "相似状态" in c["text"]]
+    assert len(negative) == 1
+    assert "也不意味着相似状态完全不受影响" in negative[0]["text"]
+    assert negative[0]["start"] < 135.42 and negative[0]["end"] <= plan[0]["timeline_end"]
+    assert all("关注我" not in c["text"] for c in result if c["scene_index"] == 0)
+    assert "".join(c["text"] for c in result if c["scene_index"] == 1) == follow
+    assert (cues, content, plan) == originals
+
+    destination = tmp_path / "subtitles.ass"
+    sources = {s["asset_id"]: {"id": s["asset_id"], "credit": "论文作者"} for s in plan}
+    annotations = _montage_subtitles(cues, plan, sources, content, destination)
+    quality = annotations["subtitle_quality"]
+    assert quality["subtitle_algorithm_version"] == 2
+    assert "not_word_level_ASR" in quality["subtitle_timing"]
+    assert "不是逐字ASR" in quality["subtitle_timing_limit"]
+    assert annotations["annotation_intervals"] == [(s["timeline_start"], s["timeline_end"]) for s in plan]
+    assert "; SubtitleAlgorithmVersion: 2" in destination.read_text()
+    displayed = read_subtitle_cues(destination)
+    assert "".join(_compact(c["text"]) for c in displayed) == _compact(content["script"])
+    at_135 = "".join(c["text"] for c in displayed if c["start"] <= 135.5 < c["end"])
+    assert "也不意味着" in _compact(at_135) and "关注我" not in at_135
+
+
+def test_long_negative_clause_is_not_cut_at_a_character_budget():
+    text = "这些实验结果也不能证明，相似状态以及其他未参与测试的复杂环境中的机器人完全不受影响。"
+    cues = [{"start": 0, "end": 10, "text": _compact(text)}]
+    result = _retimed_subtitle_cues(cues, [_subtitle_scene(0, 0, 10, text)],
+                                   {"script": text, "scenes": [{"narration_exact": text}]})
+    assert len(result) == 1 and result[0]["text"] == text
+
+
+def test_follow_prompt_is_separate_even_without_an_intervening_full_stop():
+    before, follow = "结果只对这些实验成立", "关注我，一起核对来源。"
+    text = before + follow
+    cues = [{"start": 0, "end": 8, "text": _compact(text)}]
+    result = _retimed_subtitle_cues(cues, [_subtitle_scene(0, 0, 8, text)],
+                                   {"script": text, "follow_prompt": follow,
+                                    "scenes": [{"narration_exact": text}]})
+    assert [c["text"] for c in result] == [before, follow]
+
+
+def test_subtitle_retiming_does_not_rewrite_mismatched_words_or_split_a_negative_scene():
+    first, second = "这些结果也不意味着", "相似状态完全不受影响。"
+    script = first + second
+    cues = [{"start": 0, "end": 8, "text": script}]
+    plan = [_subtitle_scene(0, 0, 4, first), _subtitle_scene(1, 4, 8, second)]
+    with pytest.raises(ValueError, match="否定前缀"):
+        _retimed_subtitle_cues(cues, plan, {"script": script,
+            "scenes": [{"narration_exact": first}, {"narration_exact": second}]})
+    with pytest.raises(ValueError, match="口播不一致"):
+        _retimed_subtitle_cues(cues, plan, {"script": "相似状态完全不受影响。"})
 
 
 def test_real_and_simulated_footage_have_distinct_truthful_labels():
@@ -133,3 +224,21 @@ def test_decoded_video_check_rejects_duplicate_footage_in_different_files(tmp_pa
             for i in range(2)]
     with pytest.raises(ValueError, match="重复画面序列"):
         factory_montage.check_visual_repeats(plan, {"0": {"path": str(first)}, "1": {"path": str(second)}})
+
+
+def test_render_boundary_wait_retains_memory_admission(monkeypatch):
+    from services import factory_montage as montage
+    from services.factory_resources import MemoryPressure
+    answers = iter([True, False])
+    sleeps = []
+    def admission():
+        if next(answers):
+            raise MemoryPressure({'reason': '机器资源繁忙'})
+        return {'blocked': False}
+    monkeypatch.setattr(montage, 'ensure_memory_available', admission)
+    monkeypatch.setattr(montage.time, 'sleep', sleeps.append)
+    assert montage._wait_for_render_memory()['blocked'] is False
+    assert sleeps == [2]
+    monkeypatch.setattr(montage, 'ensure_memory_available', lambda: (_ for _ in ()).throw(MemoryPressure({'reason': '仍然高'})))
+    with pytest.raises(MemoryPressure):
+        montage._wait_for_render_memory(timeout=0)

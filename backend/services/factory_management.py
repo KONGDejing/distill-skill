@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from sqlalchemy import or_
 
 from models.factory import FactoryAnalyticsSnapshot, FactoryGrowthPlan, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
 from services.factory_editorial import validate_follow_prompt
@@ -121,8 +122,11 @@ def sync_work_orders(db, state, analytics, now):
     plan = initialize(db)
     local = now.astimezone(ZoneInfo("Asia/Shanghai"))
     start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
-    runs = db.query(FactoryRun).filter(FactoryRun.created_at >= start).all()
-    items = db.query(FactoryItem).filter(FactoryItem.created_at >= start, FactoryItem.status != "deferred").all()
+    items = db.query(FactoryItem).filter(FactoryItem.status != "deferred", or_(
+        (FactoryItem.created_at >= start) & (FactoryItem.created_at < start + timedelta(days=1)),
+        FactoryItem.brief["distribution"]["day"].as_string() == local.date().isoformat())).all()
+    runs = db.query(FactoryRun).filter(or_(FactoryRun.created_at >= start,
+                                         FactoryRun.id.in_({i.run_id for i in items}))).all()
     target = min(state["summary"]["target"] or plan.policy["shorts_per_day"], DAILY_TARGET)
     quotas = editor_quotas(target)
     current_run_ids = {r.id for r in runs if r.settings_snapshot.get("target_duration_seconds") == 150}

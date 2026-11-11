@@ -157,3 +157,25 @@ def test_incident_order_closes_only_after_real_150_second_completion(db):
     db.commit()
     manager.sync_work_orders(db, state, metrics, now)
     assert order.status == 'completed' and '150秒' in order.evidence['resolution']
+
+
+def test_today_assignments_include_carried_delivery_and_exclude_cancelled_slots(db, monkeypatch):
+    from models.factory import FactoryRun, FactoryItem, FactoryRelease
+    from services import factory_operations as operations
+    now = datetime(2026, 11, 11, 4, tzinfo=timezone.utc)
+    run = FactoryRun(created_at=datetime(2026, 11, 10), status='completed', active_slot=None,
+                     settings_snapshot={'target_duration_seconds': 150})
+    db.add(run);db.flush()
+    item = FactoryItem(run_id=run.id, position=0, created_at=datetime(2026, 11, 10), status='completed',
+                       brief={'editor_id':'producer3','distribution':{'platform':'douyin','day':'2026-11-11'}},
+                       media={'duration':140})
+    db.add(item);db.flush()
+    db.add_all([FactoryRelease(item_id=item.id, due_at=datetime(2026,11,11,2), status='manual_ready'),
+                FactoryRelease(due_at=datetime(2026,11,11,3), status='cancelled')])
+    db.commit()
+    analytics={'platforms':[]}
+    monkeypatch.setattr(operations.factory_analytics,'overview',lambda _:analytics)
+    state=operations.overview(db,now=now)
+    assert state['summary']['completed']==1 and state['summary']['target']==1
+    manager.sync_work_orders(db,{'summary':{'target':6,'fully_submitted_slots':0}},analytics,now)
+    assert db.get(FactoryWorkOrder,'daily:2026-11-11:producer3').evidence['done']==1

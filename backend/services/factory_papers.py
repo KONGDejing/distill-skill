@@ -120,6 +120,8 @@ def paper_assets(document, directory):
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     assets = []
+    report = document.get("kind") == "technical_report"
+    label = ("官方技术报告 " + document.get("title", document["id"])) if report else f"论文原文 arXiv:{document['id']}"
     with PDF_LOCK, pdfium.PdfDocument(document["path"]) as pdf:
         for entry in document["pages"]:
             ensure_memory_available()
@@ -133,21 +135,68 @@ def paper_assets(document, directory):
             assets.append({"id": f"paper-{index}", "kind": "paper_page", "path": str(path),
                 "paper_id": document["id"], "paper_page": index, "paper_path": document["path"],
                 "paper_sha256": document["sha256"], "page_sha256": _sha256(path),
-                "source_url": document["url"], "source_title": f"arXiv:{document['id']} · 第{index}页",
-                "credit": f"论文原文 arXiv:{document['id']} · 第{index}页",
+                "source_url": document["url"], "source_title": f"{label} · 第{index}页",
+                "credit": f"{label} · 第{index}页", "document_kind": document.get("kind", "paper"),
                 "description": entry["text"][:7000], "page_text": entry["text"],
                 "clips": [{"start": 0, "end": 35}], "topic_tags": ["paper_original"]})
     return assets
 
 
-def validate_paper_scenes(scenes, assets):
+def validate_paper_scenes(scenes, assets, evidence_sources=None):
+    """Check page evidence, plus tightly attributed report announcement demos.
+
+    The caller must supply the server's original source records separately from
+    model-authored scenes. Quote/source matching is not a semantic review of the
+    narration or proof that the depicted demonstration achieved its claims.
+    """
     pages = {a["id"]: a for a in assets if a.get("kind") == "paper_page"}
     if not pages:
         raise ValueError("论文视频缺少真实论文页面，不能用背景演示替代")
-    seen = set()
+    by_id = {a["id"]: a for a in assets}
+    reports_only = all(a.get("document_kind") == "technical_report" for a in pages.values())
+    seen, announcements = set(), []
     compact = lambda s: re.sub(r"\s+", "", s).lower()
-    for scene in scenes:
+    for scene_index, scene in enumerate(scenes):
         selected = [pages[i] for i in scene.get("asset_ids", []) if i in pages]
+        if scene.get("evidence_kind") == "official_announcement":
+            from services.factory_research import _validated_url
+
+            if not reports_only:
+                raise ValueError("官方公告演示依据仅适用于全部原文页均为官方技术报告的内容")
+            identifiers = scene.get("asset_ids")
+            if (selected or not isinstance(identifiers, list) or not identifiers
+                    or any(not isinstance(i, str) or i not in by_id
+                           or by_id[i].get("kind") != "official_video" for i in identifiers)):
+                raise ValueError("官方公告依据只能用于已存在的官方视频，不能替代原文页与高亮验证")
+            source_id = scene.get("evidence_source_id")
+            if not isinstance(source_id, str) or not source_id.strip() or not isinstance(evidence_sources, list):
+                raise ValueError("官方公告演示需要调用方提供对应 source ID 的真实来源原文")
+            matches = [s for s in evidence_sources if isinstance(s, dict) and s.get("id") == source_id]
+            if len(matches) != 1 or not isinstance(matches[0].get("text"), str) or not matches[0]["text"].strip():
+                raise ValueError("官方公告 source ID 必须唯一对应调用方提供的真实原文")
+            source = matches[0]
+            url = scene.get("evidence_url")
+            if not isinstance(url, str) or not url or url != source.get("url"):
+                raise ValueError("官方公告 evidence_url 必须与指定来源 URL 精确一致")
+            if _validated_url(url) != url:
+                raise ValueError("官方公告必须使用经域名校验的确切原文 URL")
+            quote = scene.get("evidence_quote")
+            normalize = lambda text: re.sub(r"\s+", " ", text).strip()
+            if (not isinstance(quote, str) or not 12 <= len(quote.strip()) <= 240
+                    or len(normalize(quote)) < 12 or normalize(quote) not in normalize(source["text"])):
+                raise ValueError("官方公告 evidence_quote 必须为12–240字符并逐字存在于调用方原文")
+            for identifier in identifiers:
+                video = by_id[identifier]
+                chain = video.get("source_chain")
+                bound = (isinstance(chain, list) and all(isinstance(part, str) for part in chain)
+                         and url in chain[:-1])
+                if video.get("reference_source_url") != url and not bound:
+                    raise ValueError("每个演示视频的引用或来源前链都必须对应同一官方公告，不能用不相关公告背书")
+            announcements.append({"scene_index": scene_index, "source_id": source_id,
+                "url": url, "asset_ids": list(identifiers),
+                "source_text_sha256": hashlib.sha256(source["text"].encode("utf-8")).hexdigest(),
+                "quote_sha256": hashlib.sha256(normalize(quote).encode("utf-8")).hexdigest()})
+            continue
         if not selected:
             asset = next((a for a in pages.values() if a["paper_page"] == scene.get("paper_evidence_page")), None)
             if not asset:
@@ -174,8 +223,13 @@ def validate_paper_scenes(scenes, assets):
             raise ValueError("论文裁切区域无效")
     if len(seen) < 3 or scenes[0]["asset_ids"] != [next(k for k, a in pages.items() if a["paper_page"] == 1)]:
         raise ValueError("论文视频应先展示标题作者页，并至少展示三页不同的原文证据")
-    return {"paper_id": next(iter(pages.values()))["paper_id"], "pages": sorted(seen),
-            "scope": "original_pdf_and_page_quotes; semantic_alignment_requires_editorial_review"}
+    result = {"paper_id": next(iter(pages.values()))["paper_id"], "pages": sorted(seen),
+              "scope": "original_pdf_and_page_quotes; semantic_alignment_requires_editorial_review"}
+    if announcements:
+        result.update(official_announcement_evidence=announcements,
+            announcement_evidence_scope="caller_supplied_original_source_exact_quote_and_video_provenance; not_semantic_review",
+            announcement_evidence_note="公告原文逐字及视频来源关联校验，不等于口播语义或演示效果审核。")
+    return result
 
 
 def require_paper_publication(content, brief, media):

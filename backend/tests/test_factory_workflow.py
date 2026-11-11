@@ -40,7 +40,7 @@ def isolated_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(factory_service, "queue_available", lambda: True)
     def fake_cover(content, target):
         Path(target).write_bytes(content["cover_text"].encode())
-        return {"text_rendered": content["cover_text"]}
+        return {"text_rendered": content["cover_text"], "version": 2}
     monkeypatch.setattr("services.factory_cover.render_cover", fake_cover)
     def fake_complete(source, cover, target):
         Path(target).write_bytes(Path(source).read_bytes())

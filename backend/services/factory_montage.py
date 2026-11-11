@@ -1,6 +1,7 @@
 """Edit attributed, moving demonstration footage around an approved narration.
 
-The original voice and subtitle text remain unchanged. An inspectable edit list
+The original voice and approved narration words remain unchanged; captions are
+regrouped at scene and semantic boundaries. An inspectable edit list
 records every source time window and the narration anchor that selected it.
 """
 from __future__ import annotations
@@ -13,8 +14,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any
-from services.factory_resources import ensure_memory_available
+from services.factory_resources import ensure_memory_available, MemoryPressure
 
 from services.factory_media import (
     FPS, HEIGHT, WIDTH, _ass_escape, _ass_time, _duration, _font, _probe, _run,
@@ -66,8 +68,14 @@ def _anchor_time(anchor: str, cues: list[dict]) -> float | None:
 
 
 def _source_label(asset: dict) -> str:
+    if "背景" in str(asset.get("date_label", "")):
+        date = re.search(r"\d{4}-\d{2}-\d{2}", asset["date_label"])
+        return "历史背景 · " + ("发布于" + date.group() if date else "非本次试点")
     if asset.get("kind") == "paper_page":
-        return f"论文原文 · 第{asset['paper_page']}页"
+        label = "官方技术报告" if asset.get("document_kind") == "technical_report" else "论文原文"
+        return f"{label} · 第{asset['paper_page']}页"
+    if asset.get("asset_role") == "short_animated_preview_not_full_demo":
+        return "官方预览片段 · 非完整演示"
     if asset.get("kind") == "schematic_animation":
         return "示意动画"
     tags = set(asset.get("topic_tags", []))
@@ -455,8 +463,139 @@ def _render_paper_shot(asset, shot, target):
           "-an", "-t", str(shot["duration"]), "-c:v", "libx264", "-threads", "2", "-preset", "veryfast", "-crf", "20", str(target)], timeout=240)
 
 
+SUBTITLE_ALGORITHM_VERSION = 2
+SUBTITLE_TIMING_METHOD = "approved_script_punctuation_with_original_cue_character_interpolation_and_scene_clipping; not_word_level_ASR"
+
+
+def _dangling_negation(text: str) -> bool:
+    """Do not leave an incomplete negative predicate on its own screen."""
+    return bool(re.search(r"(?:不意味着|不代表|不能证明|不能说明|不证明|不等于|并非|不是|不应该|不能|没有)$", _compact(text)))
+
+
+def _subtitle_text_spans(text: str) -> list[tuple[int, int]]:
+    """Group complete punctuation clauses; never cut an unpunctuated predicate.
+
+    Long indivisible clauses may wrap across more lines. Arbitrarily truncating
+    them to a character budget could remove a qualification or negative prefix.
+    This deterministic rule is not a semantic parser.
+    """
+    pairs = {"“": "”", "‘": "’", "（": "）", "(": ")", "[": "]", "【": "】"}
+    stack, pieces, begin = [], [], 0
+    strong = "。！？!?；;"
+    for index, char in enumerate(text):
+        if char in pairs:
+            stack.append(pairs[char])
+        elif stack and char == stack[-1]:
+            stack.pop()
+        elif char == '"':
+            if stack and stack[-1] == '"':
+                stack.pop()
+            else:
+                stack.append('"')
+        sentence_period = char == "." and (index + 1 == len(text) or text[index + 1].isspace())
+        if not stack and (char in strong + "，,：:" or sentence_period):
+            pieces.append((begin, index + 1, char in strong or sentence_period))
+            begin = index + 1
+    if begin < len(text):
+        pieces.append((begin, len(text), True))
+    spans, begin, end = [], None, None
+    for left, right, sentence_end in pieces:
+        if begin is not None:
+            previous = text[begin:end]
+            if (len(_compact(text[begin:right])) > 28 and len(_compact(previous)) >= 6
+                    and not _dangling_negation(previous)):
+                spans.append((begin, end))
+                begin = None
+        if begin is None:
+            begin = left
+        end = right
+        if sentence_end and not _dangling_negation(text[begin:end]):
+            spans.append((begin, end))
+            begin = end = None
+    if begin is not None:
+        if _dangling_negation(text[begin:end]):
+            raise ValueError("分镜在否定前缀后截断，请保留完整受否定短语")
+        spans.append((begin, end))
+    return [(left, right) for left, right in spans if _compact(text[left:right])]
+
+
+def _retimed_subtitle_cues(cues: list[dict], plan: list[dict], content: dict) -> list[dict]:
+    """Restore approved punctuation and estimate unit times inside original cues.
+
+    No speech is generated or recognized. Character-proportional interpolation
+    inherits the original cue timing errors and does not claim word-level ASR.
+    Actual frame-quantized scene boundaries take precedence for display timing.
+    """
+    scenes = content.get("scenes") or []
+    script = content.get("script") or "".join(str(s.get("narration_exact", "")) for s in scenes)
+    if not script:
+        raise ValueError("字幕重组需要已审核口播原稿，不能猜测标点或补造文案")
+    spoken = _compact(script)
+    if not spoken or spoken != "".join(_compact(c["text"]) for c in cues):
+        raise ValueError("原字幕文字与已审核口播不一致，不能自动重组")
+    times, previous_end = [], 0.0
+    for cue in cues:
+        start, end = float(cue["start"]), float(cue["end"])
+        if not (math.isfinite(start) and math.isfinite(end) and 0 <= start < end) or start < previous_end - 1e-6:
+            raise ValueError("原字幕时间必须有限、有序且不重叠")
+        previous_end = end
+        length = len(_compact(cue["text"]))
+        times.extend((start + n * (end - start) / length, start + (n + 1) * (end - start) / length)
+                     for n in range(length))
+    locations = [index for index, char in enumerate(script) if _compact(char)]
+    if len(locations) != len(spoken):
+        raise ValueError("口播字符无法按原字幕位置可靠映射")
+    scene_ranges = []
+    for shot in plan:
+        index = shot["scene_index"]
+        if scene_ranges and scene_ranges[-1]["index"] == index:
+            scene_ranges[-1]["end"] = shot["timeline_end"]
+        else:
+            anchor = (scenes[index].get("narration_exact") if 0 <= index < len(scenes) else None) or shot.get("narration_anchor", "")
+            scene_ranges.append({"index": index, "start": shot["timeline_start"], "end": shot["timeline_end"], "anchor": anchor})
+    if not scene_ranges:
+        raise ValueError("字幕重组需要已审核分镜时序")
+    scene_ranges[0]["position"] = 0
+    for before, scene in zip(scene_ranges, scene_ranges[1:]):
+        needle = _compact(scene["anchor"])
+        position = spoken.find(needle, before["position"] + 1) if needle else -1
+        if position < 0:
+            raise ValueError("分镜口播锚点未按顺序出现在已审核原稿中")
+        scene["position"] = position
+    follow = _compact(str(content.get("follow_prompt") or ""))
+    follow_position = spoken.rfind(follow) if follow else -1
+    result = []
+    for number, scene in enumerate(scene_ranges):
+        left = locations[scene["position"]] if number else 0
+        next_position = scene_ranges[number + 1]["position"] if number + 1 < len(scene_ranges) else len(spoken)
+        right = locations[next_position] if next_position < len(locations) else len(script)
+        cuts = [left]
+        if scene["position"] < follow_position < next_position:
+            cuts.append(locations[follow_position])
+        cuts.append(right)
+        for first, last in zip(cuts, cuts[1:]):
+            text = script[first:last]
+            for local_start, local_end in _subtitle_text_spans(text):
+                start_offset, end_offset = first + local_start, first + local_end
+                token_start = len(_compact(script[:start_offset]))
+                token_end = len(_compact(script[:end_offset]))
+                # Round inward to ASS centiseconds so no future scene text can
+                # leak before the video frame where that scene actually starts.
+                start = math.ceil(max(times[token_start][0], scene["start"]) * 100 - 1e-7) / 100
+                end = math.floor(min(times[token_end - 1][1], scene["end"]) * 100 + 1e-7) / 100
+                if end <= start:
+                    raise ValueError("字幕语义单位无法放入对应分镜时间，请复核原时标和分镜")
+                result.append({"start": start, "end": end, "text": script[start_offset:end_offset].strip(),
+                               "scene_index": scene["index"]})
+    if "".join(_compact(c["text"]) for c in result) != spoken:
+        raise ValueError("字幕重组未完整保留已审核口播")
+    return result
+
+
 def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content: dict, target: Path):
-    lines = ["[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 2", "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
+    display_cues = _retimed_subtitle_cues(cues, plan, content)
+    lines = ["[Script Info]", f"; SubtitleAlgorithmVersion: {SUBTITLE_ALGORITHM_VERSION}",
+             f"; SubtitleTiming: {SUBTITLE_TIMING_METHOD}", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 2", "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
              "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
              "Style: Narration,Noto Sans CJK SC,48,&H00FFFFFF,&H000000FF,&H00100B06,&H80000000,1,0,0,0,100,100,0,0,1,2,0,2,90,90,225,1",
              "Style: Credit,Noto Sans CJK SC,27,&H00F5F5F5,&H000000FF,&H00100B06,&H80000000,0,0,0,0,100,100,0,0,1,1,0,7,0,0,0,1",
@@ -466,8 +605,8 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
     def add(layer, start, end, style, text):
         lines.append(f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,{text}")
 
-    for cue in cues:
-        clean = cue["text"].strip().rstrip("，,。！？!?；;：:、")
+    for cue in display_cues:
+        clean = cue["text"].strip()
         wrapped = _wrap(clean, _font(48, True), 880)
         add(1, cue["start"], cue["end"], "Narration", r"\N".join(_ass_escape(s) for s in wrapped))
     seen_scenes, annotation_intervals = set(), []
@@ -491,7 +630,13 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
     add(2, 0, plan[-1]["timeline_end"], "Credit", r"{\pos(54,1824)\fs24\alpha&H45&}" + _ass_escape(channel))
     add(2, 0, plan[-1]["timeline_end"], "Credit", r"{\pos(872,1824)\fs24\alpha&H45&}AI 配音")
     target.write_text("\n".join(lines), encoding="utf-8")
-    return annotation_intervals
+    return {"annotation_intervals": annotation_intervals, "subtitle_quality": {
+        "subtitle_algorithm_version": SUBTITLE_ALGORITHM_VERSION,
+        "subtitle_timing": SUBTITLE_TIMING_METHOD,
+        "subtitle_original_cue_count": len(cues), "subtitle_display_cue_count": len(display_cues),
+        "subtitle_text_preserved": True, "subtitle_scene_boundaries_enforced": True,
+        "subtitle_segmentation": "approved_sentence_and_clause_punctuation; incomplete_negation_prefix_join; separate_follow_prompt",
+        "subtitle_timing_limit": "按原cue字符位置插值，继承原时标误差；不是逐字ASR或自动语义审核。"}}
 
 
 def _ambient_music(duration: float, shot_times: list[float], target: Path):
@@ -519,7 +664,7 @@ def _ambient_music(duration: float, shot_times: list[float], target: Path):
 
 def _browser_preview(video: Path) -> Path:
     """Keep the publication MP4 and provide playback in browsers without H.264."""
-    ensure_memory_available()
+    _wait_for_render_memory()
     target = video.with_suffix(".webm")
     temporary = video.with_name("preview-building.webm")
     _run(["ffmpeg", "-y", "-v", "error", "-threads", "2", "-filter_threads", "2", "-i", str(video),
@@ -532,12 +677,25 @@ def _browser_preview(video: Path) -> Path:
     return target
 
 
+def _wait_for_render_memory(timeout=60):
+    """Pause at a render boundary during short pressure spikes; keep all gates."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return ensure_memory_available()
+        except MemoryPressure:
+            if time.monotonic() >= deadline:
+                raise
+            print("机器资源繁忙，渲染等待内存恢复（未放宽内存阈值）", flush=True)
+            time.sleep(2)
+
+
 def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_path: Path,
                         assets: list[dict], output_dir: Path) -> dict:
     """Produce a new preview; never alter the source media, database or publish."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item_id):
         raise ValueError("无效内容编号")
-    ensure_memory_available()
+    _wait_for_render_memory()
     audio_path, subtitle_path = Path(audio_path).resolve(), Path(subtitle_path).resolve()
     duration = _duration(audio_path)
     if not 10 <= duration <= 240:
@@ -546,7 +704,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     paper_evidence = None
     if any(a["kind"] == "paper_page" for a in prepared):
         from services.factory_papers import validate_paper_scenes
-        paper_evidence = validate_paper_scenes(content.get("scenes", []), prepared)
+        paper_evidence = validate_paper_scenes(content.get("scenes", []), prepared, content.get("document_evidence_sources"))
     cues = read_subtitle_cues(subtitle_path)
     plan = build_shot_plan(content, cues, prepared, duration)
     quality = validate_shot_plan(plan, duration)
@@ -555,13 +713,16 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
-        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v4"},
+        "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "renderer": "tech_montage_v5_scene_subtitles"},
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     if (target / "media.json").exists():
         old = json.loads((target / "media.json").read_text())
         if old.get("fingerprint") == fingerprint:
             validate_publication_media(old)
             old["quality"] = {**old["quality"], **inspect_media(Path(old["video_path"]))}
+            if not old.get("webm_path") or not Path(old["webm_path"]).is_file():
+                old["webm_path"] = str(_browser_preview(Path(old["video_path"])))
+                (target / "media.json").write_text(json.dumps(old, ensure_ascii=False, indent=2))
             return old
         raise ValueError("输出目录已包含另一版混剪，请为新版本选择新目录")
     sources = {a["id"]: a for a in prepared}
@@ -580,9 +741,11 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     video, audio, subtitle = target / "video.mp4", target / "narration.mp3", target / "subtitles.ass"
     if audio_path != audio:
         shutil.copy2(audio_path, audio)
-    annotations = _montage_subtitles(cues, plan, sources, content, subtitle)
+    subtitle_result = _montage_subtitles(cues, plan, sources, content, subtitle)
+    annotations = subtitle_result["annotation_intervals"]
+    quality.update(subtitle_result["subtitle_quality"])
     music = target / "original-ambient.wav"
-    ensure_memory_available()
+    _wait_for_render_memory()
     _ambient_music(duration, [s["timeline_start"] for s in plan], music)
     soundtrack = target / "soundtrack.m4a"
     _run(["ffmpeg", "-y", "-v", "error", "-i", str(audio), "-i", str(music), "-filter_complex",
@@ -592,14 +755,14 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         work = Path(temp)
         entries = []
         for shot in plan:
-            ensure_memory_available()
+            _wait_for_render_memory()
             part = work / f"shot_{shot['shot_index']:03d}.mp4"
             _render_shot(sources[shot["asset_id"]], shot, part)
             entries.append(f"file '{part.name}'")
             print(f"Montage shot {shot['shot_index'] + 1}/{len(plan)}: {shot['asset_id']}", flush=True)
         (work / "shots.txt").write_text("\n".join(entries))
         shutil.copy2(subtitle, work / "subtitles.ass")
-        ensure_memory_available()
+        _wait_for_render_memory()
         result = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "2", "-filter_threads", "2",
             "-f", "concat", "-safe", "0", "-i", str(work / "shots.txt"), "-i", str(soundtrack),
             "-vf", "subtitles=subtitles.ass", "-map", "0:v:0", "-map", "1:a:0", "-t", str(duration),
@@ -611,18 +774,16 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     from services.factory_cover import render_cover
     cover_design = render_cover(content, cover)
     quality.update(inspect_media(video))
-    webm = _browser_preview(video)
     quality.update({"cover_design": cover_design, "editorial_review": content.get("editorial_review", {}),
                     "source_motion_samples": motion, "official_footage_ratio": quality["dynamic_coverage"],
                     "self_made_animation_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "schematic_animation") / duration, 4),
                     "original_paper_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "paper_page") / duration, 4),
                     "emphasis_annotation_ratio": round(sum(end - start for start, end in annotations) / duration, 4),
                     "complete_source_frames_preserved": True, "source_audio_unchanged_sha256": _sha256(audio),
-                    "subtitle_timing": "original_approved_narration_cues_preserved",
                     "scene_timing": "exact_text_anchor_with_subtitle_time_interpolation; not_word_or_semantic_alignment",
                     "music": "original_synthesized_quiet_ambient_with_voice_sidechain_ducking",
                     "review_required": "Motion sampling does not verify scene semantics; inspect the edit list and preview."})
-    result = {"video_path": str(video), "webm_path": str(webm), "audio_path": str(audio), "cover_path": str(cover),
+    result = {"video_path": str(video), "webm_path": None, "audio_path": str(audio), "cover_path": str(cover),
               "subtitle_path": str(subtitle), "mixed_audio_path": str(soundtrack), "duration": quality["duration"],
               "width": WIDTH, "height": HEIGHT, "renderer_kind": "tech_montage", "renderer_version": 4,
               "tts_engine": "existing_verified_narration_reused", "quality": quality,
@@ -632,5 +793,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
               "fingerprint": fingerprint, "published": False}
     quality["uniqueness_evidence"] = {"version": 1, "video_sha256": _sha256(video),
         "edl_sha256": _sha256(target / "edit-decision-list.json")}
+    (target / "media.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    result["webm_path"] = str(_browser_preview(video))
     (target / "media.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result

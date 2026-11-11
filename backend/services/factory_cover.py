@@ -4,6 +4,19 @@ from pathlib import Path
 
 from services.factory_media import WIDTH, HEIGHT, _font, _wrap
 
+COVER_DESIGN_VERSION = 2
+
+
+def cover_layout(title):
+    paragraphs = [p.strip() for p in title.splitlines() if p.strip()]
+    for size in range(112, 63, -2):
+        lines = [line for paragraph in paragraphs for line in _wrap(paragraph, _font(size, bold=True), 880)]
+        if len(paragraphs) > 1 and len(lines) != len(paragraphs):
+            continue
+        if len(lines) <= 4 and not any(len(line.strip()) == 1 for line in lines if len(lines) > 1):
+            return size, lines
+    raise ValueError("封面标题过长或断句不合适，请缩短标题并调整分行")
+
 
 def render_cover(content, target):
     from playwright.sync_api import sync_playwright
@@ -12,16 +25,13 @@ def render_cover(content, target):
     accent = style.get("accent", "#5ef0c5")
     label = escape(style.get("label", "AI · 看懂科技变化"))
     title = str(content.get("cover_text") or content.get("title") or "AI热点讲明白").strip()
-    lines = [line for paragraph in title.splitlines() if paragraph.strip()
-             for line in _wrap(paragraph.strip(), _font(112, bold=True), 880)]
-    if len(lines) > 4:
-        raise ValueError("封面标题过长，请缩短标题")
-    text = "".join(f'<text x="100" y="{430 + i * 152}" class="title" style="fill:{accent if i == len(lines)-1 else "#f3f8ff"}">{escape(line)}</text>'
+    size, lines = cover_layout(title)
+    text = "".join(f'<text x="100" y="{430 + i * (size + 40)}" class="title" style="fill:{accent if i == len(lines)-1 else "#f3f8ff"}">{escape(line)}</text>'
                    for i, line in enumerate(lines))
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">
     <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101d35"/><stop offset="1" stop-color="#060b14"/></linearGradient>
     <radialGradient id="glow"><stop stop-color="#3ee6bb" stop-opacity=".18"/><stop offset="1" stop-color="#3ee6bb" stop-opacity="0"/></radialGradient></defs>
-    <style>text{{font-family:"Noto Sans CJK SC",sans-serif;fill:#f3f8ff}}.title{{font-size:112px;font-weight:700}}</style>
+    <style>text{{font-family:"Noto Sans CJK SC",sans-serif;fill:#f3f8ff}}.title{{font-size:{size}px;font-weight:700}}</style>
     <rect width="1080" height="1920" fill="url(#bg)"/><circle cx="820" cy="1200" r="600" fill="url(#glow)"/>
     <rect x="100" y="165" width="10" height="48" rx="5" fill="{accent}"/>
     <text x="134" y="203" font-size="36" letter-spacing="5">{label}</text>
@@ -45,5 +55,5 @@ def render_cover(content, target):
             page.screenshot(path=str(target))
         finally:
             browser.close()
-    return {"kind": "original_svg_title_design", "design_path": str(svg_path),
-            "text_rendered": title, "lines": lines}
+    return {"kind": "original_svg_title_design", "design_path": str(svg_path), "version": COVER_DESIGN_VERSION,
+            "font_size": size, "text_rendered": title, "lines": lines}

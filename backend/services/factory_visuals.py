@@ -51,6 +51,8 @@ PAGE_RULES = {
     "blog.google": ("/technology/ai/",),
 }
 MEDIA_RULES = {
+    # Exact public launch-page previews, verified against Anthropic source pages.
+    "assets.claude.com": ('/36cbf7ed8431034d95a61bc6757fa975b26f0daf.webm', '/e35c7ec272d23ba30b360fa1130e5fc03d0f26cc.webm', '/f079d087caf0316cf32a0e3e1864311c16887395.webm', '/55746b9b0dd3e76d36a38998162cc852d5f92edc.webm'),
     **PAGE_RULES,
     "www.ces.tech": ("/media/",),
     "ces.tech": ("/media/",),

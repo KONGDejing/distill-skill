@@ -247,28 +247,65 @@ def _save_item(item_id, **updates):
         db.commit()
 
 
-def _eligible_candidates(candidates, sources, visual_style):
+def _eligible_candidates(candidates, sources, visual_style, *, with_diagnostics=False):
+    """Return eligible briefs; optionally also return per-candidate rejection data.
+
+    Source IDs identify evidence pages. Asset IDs identify already verified
+    videos and are never silently rewritten into evidence references.
+    """
     from services.factory_papers import is_paper_story
+    import re
     if not isinstance(candidates, list):
-        return []
+        diagnostics = [{"index": None, "accepted": False, "reasons": [
+            {"code": "candidates_not_list", "message": "candidates必须是数组"}]}]
+        return ([], diagnostics) if with_diagnostics else []
     ids = {s["id"] for s in sources}
     ready = {s["id"] for s in sources if s.get("visual_ready")}
-    eligible = []
-    for candidate in candidates:
-        if not isinstance(candidate, dict) or not candidate.get("title"):
+    asset_sources, fingerprints = {}, {}
+    for source in sources:
+        fingerprints[source["id"]] = set()
+        for asset in source.get("visual_assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            if isinstance(asset.get("id"), str):
+                asset_sources.setdefault(asset["id"], []).append(source["id"])
+            digest = asset.get("sha256")
+            if isinstance(digest, str) and re.fullmatch(r"[a-f0-9]{64}", digest):
+                fingerprints[source["id"]].add(digest)
+    eligible, diagnostics = [], []
+    for index, candidate in enumerate(candidates):
+        reasons = []
+        row = {"index": index, "title": candidate.get("title") if isinstance(candidate, dict) else None}
+        if not isinstance(candidate, dict) or not isinstance(candidate.get("title"), str) or not candidate["title"].strip():
+            diagnostics.append({**row, "accepted": False, "reasons": [{"code": "invalid_title", "message": "候选须为对象并有非空标题"}]})
             continue
         refs, visuals = candidate.get("source_ids"), candidate.get("visual_source_ids", [])
-        if (not isinstance(refs, list) or not refs or not all(isinstance(i, str) for i in refs)
-                or not set(refs).issubset(ids) or not isinstance(visuals, list)
-                or not all(isinstance(i, str) for i in visuals) or not set(visuals).issubset(ready)):
-            continue
-        paper = is_paper_story(candidate, [s for s in sources if s["id"] in refs])
-        if visual_style == "tech_montage" and not (set(refs) & ready or visuals or paper):
-            continue
+        for field, values, required in (("source_ids", refs, True), ("visual_source_ids", visuals, False)):
+            if not isinstance(values, list) or (required and not values) or not all(isinstance(i, str) for i in values):
+                reasons.append({"code": "invalid_reference_format", "field": field, "message": "必须填写来源source.id数组，事实引用不能为空"})
+                continue
+            unknown = sorted(set(values) - ids)
+            if unknown:
+                reasons.append({"code": "asset_ids_used_as_source_ids" if any(i in asset_sources for i in unknown) else "unknown_source_ids",
+                    "field": field, "ids": unknown, "source_id_hints": {i: asset_sources[i] for i in unknown if i in asset_sources},
+                    "message": "只能引用已提供的source.id；视频asset.id留到剪辑分镜阶段"})
+        if not reasons:
+            referenced = set(refs) | set(visuals)
+            verified = set().union(*(fingerprints[i] for i in referenced))
+            paper = is_paper_story(candidate, [s for s in sources if s["id"] in refs])
+            unsupported = [i for i in visuals if i not in ready and not fingerprints[i]]
+            if unsupported:
+                reasons.append({"code": "visual_sources_unavailable", "ids": unsupported, "message": "所列画面来源尚无通过核验的视频"})
+            if visual_style == "tech_montage" and not (referenced & ready or len(verified) >= 3 or paper):
+                reasons.append({"code": "insufficient_verified_visuals", "verified_unique_assets": len(verified),
+                    "required": 3, "message": "本候选引用来源合计不足3条按原片SHA去重的核验视频，且不是可核验论文选题"})
+            row["verified_unique_assets"] = len(verified)
         if visuals and not (isinstance(candidate.get("visual_support_reason"), str) and candidate["visual_support_reason"].strip()):
-            continue
-        eligible.append(candidate)
-    return eligible
+            reasons.append({"code": "missing_visual_support_reason", "message": "辅助画面须说明与本题的具体关系和证据边界"})
+        diagnostics.append({**row, "accepted": not reasons, "reasons": reasons})
+        if not reasons:
+            eligible.append(candidate)
+    return (eligible, diagnostics) if with_diagnostics else eligible
 
 
 @batch_usage("planning")
@@ -295,48 +332,187 @@ def _make_plan(run_id):
         with SessionLocal() as db:
             db.get(FactoryRun, run_id).sources = sources
             db.commit()
-        emit(run_id, "researcher", "researching", f"已采集 {len(sources)} 份官方资料", "completed", {"warnings": research.get("warnings", [])})
+        emit(run_id, "researcher", "researching", f"已采集 {len(sources)} 份官方资料", "completed", {
+            "warnings": research.get("warnings", []), "large_model_search": research.get("large_model_search", {})})
     if not plan.get("candidates"):
         if visual_style == "tech_montage":
             from services.factory_visuals import collect_visuals
             from services.factory_research import VISUAL_SOURCE_URLS
+            from services.factory_papers import is_paper_story
+            import time
             catalog_urls = {url.rstrip("/") for _, url in VISUAL_SOURCE_URLS}
-            visual_sources = sorted(sources, key=lambda s: s["url"].rstrip("/") not in catalog_urls)[:len(catalog_urls)]
-            emit(run_id, "researcher", "visual_preflight", "选题前核查动态素材；无匹配画面的题材保留在资料库，暂不进入混剪")
+            owners = ("producer", "producer2", "producer3")
+            buckets = {owner: [] for owner in owners}
+            for source in sources:
+                # Explicit research handoffs precede catalogue/discovery pages.
+                hint = source.get("editor_id")
+                if hint not in owners:
+                    hint = {"researcher2": "producer2", "researcher3": "producer3"}.get(source.get("researcher_id"))
+                owner = hint or ("producer2" if is_paper_story({}, [source]) else
+                    "producer3" if source.get("kind") in {"news", "official_reference"} else "producer")
+                source["visual_ready"], source["visual_assets"] = False, []
+                source["visual_preflight"] = {"status": "not_checked", "editor_id": owner}
+                if source.get("kind") == "reference_index":
+                    source["visual_preflight"]["reason"] = "reference_index_is_not_event_evidence"
+                elif quotas and not quotas.get(owner, 0):
+                    source["visual_preflight"]["reason"] = "editor_has_no_quota"
+                else:
+                    buckets[owner].append((0 if hint else 1, source["url"].rstrip("/") not in catalog_urls, source))
+            for owner in owners:
+                buckets[owner].sort(key=lambda row: row[:2])
+            visual_sources = []
+            # A late newsroom handoff gets its turn before any role exhausts the
+            # bounded preflight. No broad crawl or enlarged video budget.
+            while any(buckets.values()):
+                for owner in owners:
+                    if buckets[owner]:
+                        visual_sources.append(buckets[owner].pop(0)[2])
+            max_preflight = min(18, max(6, target * 3))
+            visual_sources = visual_sources[:max_preflight]
+            deadline = time.monotonic() + 360
+            emit(run_id, "researcher", "visual_preflight", "按岗位资料核查动态素材；每页最多取3条核验视频，完整成片仍需后续逐镜头质检", detail={
+                "source_ids": [s["id"] for s in visual_sources], "max_sources": max_preflight, "start_budget_seconds": 360})
             for source in visual_sources:
                 check_cancel(run_id)
                 ensure_memory_available()
-                visuals = collect_visuals([source], FACTORY_DIR / run_id / "source-intake" / source["id"])
+                if time.monotonic() >= deadline:
+                    source["visual_preflight"]["reason"] = "preflight_time_budget_exhausted"
+                    continue
+                try:
+                    visuals = collect_visuals([source], FACTORY_DIR / run_id / "source-intake" / source["id"], limit=3)
+                except (OSError, ValueError) as exc:
+                    source["visual_preflight"].update(status="error", error_type=type(exc).__name__, reason=str(exc)[:300])
+                    continue
                 source["visual_ready"] = visuals.get("status") == "ready"
-                source["visual_assets"] = [{k: a.get(k) for k in ("id", "description", "topic_tags")} for a in visuals.get("assets", [])]
+                source["visual_assets"] = [{k: a.get(k) for k in ("id", "sha256", "description", "topic_tags")}
+                                            for a in visuals.get("assets", [])]
+                source["visual_preflight"].update(status=visuals.get("status", "unknown"),
+                    verified_assets=len(source["visual_assets"]), warnings=visuals.get("warnings", []))
+            for source in sources:
+                if source["visual_preflight"]["status"] == "not_checked":
+                    source["visual_preflight"].setdefault("reason", "preflight_source_budget_exhausted")
             with SessionLocal() as db:
                 db.get(FactoryRun, run_id).sources = sources
                 db.commit()
+            emit(run_id, "researcher", "visual_preflight", "已保存逐来源素材预检结果；未核查与素材不足分别记录", "completed", {
+                "sources": [{"source_id": s["id"], "url": s["url"], **s["visual_preflight"]} for s in sources]})
             visual_ready = [s for s in sources if s.get("visual_ready")]
-            from services.factory_papers import is_paper_story
-            if not visual_ready and not is_paper_story({}, sources):
+            # Several related official pages may contribute one/two originals
+            # each. Their union is checked again against each candidate's refs.
+            fingerprints = {a.get("sha256") for s in sources for a in s.get("visual_assets", []) if a.get("sha256")}
+            if not visual_ready and len(fingerprints) < 3 and not is_paper_story({}, sources):
                 raise ValueError("选题预检未找到足够动态素材，保留资料但不进入配音与渲染")
             usable = [s for s in sources if s.get("kind") != "reference_index"]
         else:
             usable = sources
+        import re
+        from services.factory_papers import is_paper_story
+        topic_patterns = {
+            "大模型": r"large language model|大语言模型|大模型|GPT[\s‐‑–-]*\d|Claude\s+(?!Code\b)(?:[A-Za-z]+\s+){0,2}\d|Gemini\s*(?:\d|Pro\b|Flash\b|Ultra\b)|Llama[\s-]*\d|DeepSeek|Qwen",
+            "机器人": r"robot(?:ic|ics)?\b|humanoid|机器人|人形|机械臂|具身智能",
+            "算力基础设施": r"data[ -]?cent(?:er|re)|infrastructure|GPU cluster|training cluster|TPU|Blackwell|Rubin|数据中心|算力基础设施|训练集群|推理集群",
+            "端侧芯片": r"\bNPU\b|\bSoC\b|Snapdragon|Dimensity|端侧芯片|移动芯片|神经网络处理器|骁龙|天玑|Apple M\d|on-device chip|edge chip",
+            "AI工具应用": r"AI tool|AI assistant|AI application|Claude Code|ChatGPT|text.to.speech|speech synthesis|AI工具|AI应用|语音合成|视频生成|工作流",
+            "论文": r"paper|preprint|论文|预印本",
+            "展会争议": r"\bCES\b|trade show|exhibition|lawsuit|controversy|export control|展会|峰会|争议|诉讼|出口管制",
+        }
+        topic_sources = {topic: [] for topic in topic_patterns}
+        named_model = re.compile(r"GPT[\s‐‑–-]*\d[\w.-]*|Claude\s+(?!Code\b)(?:[A-Za-z]+\s+){0,2}\d[\w.-]*|Gemini\s*\d[\w.-]*|Llama[\s-]*\d|DeepSeek[\s-]*(?:V|R)\d|Qwen[\s-]*\d|Kimi\s*K\d|GLM[\s-]*\d", re.I)
+        model_change = re.compile(r"introduc|launch|upgrad|releas|capabilit|benchmark|reasoning|open[ -](?:weight|source)|available|发布|推出|升级|能力|评测|推理|开源|开放|可用", re.I)
+        named_chip = re.compile(r"Snapdragon\s+\d[\w -]*|Dimensity\s+\d\w*|Apple\s+M\d\w*|Arm\s+Ethos[- ]U\d+|骁龙\s*\d|天玑\s*\d|昇腾\s*\d|Ascend\s*\d", re.I)
+        hardware_subject = re.compile(r"chip|processor|silicon|SoC|芯片|处理器|架构|制程", re.I)
+        hardware_specs = re.compile(r"\d+(?:\.\d+)?\s*(?:TOPS|TFLOPS|nm|GHz|watts?|W\b)|architecture|transistor|memory bandwidth|制程|晶体管|功耗|能效|核数|内存带宽", re.I)
+        for source in usable:
+            if source.get("kind") == "reference_index":
+                continue
+            original = source.get("title", "") + "\n" + source.get("text", "")
+            for topic, pattern in topic_patterns.items():
+                match = re.search(pattern, original, re.I)
+                if topic == "大模型":
+                    # A brand mention/world model is not a new general model.
+                    # Require a dated original and a named/versioned model with
+                    # nearby release, capability or availability information.
+                    match = named_model.search(original)
+                    model_subject = named_model.search(source.get("title", "")) or re.search(r"large language model|大语言模型|大模型", source.get("title", ""), re.I)
+                    if not source.get("published_at") or not match or not model_subject:
+                        continue
+                    evidence = original[max(0, match.start() - 100):match.end() + 240]
+                    if not model_change.search(evidence):
+                        continue
+                elif topic == "端侧芯片":
+                    # An app running on an NPU/Mac is still an app story. The
+                    # title must establish a hardware subject and the original
+                    # must identify a chip and hardware specification/performance.
+                    match = named_chip.search(original)
+                    title = source.get("title", "")
+                    announced_chip = re.search(r"(?:introducing|announcing|发布|推出)\s+(?:" + named_chip.pattern + ")", title, re.I)
+                    if not match or not named_chip.search(title) or not (hardware_subject.search(title) or announced_chip):
+                        continue
+                    evidence = original[max(0, match.start() - 100):match.end() + 300]
+                    if not hardware_specs.search(evidence):
+                        continue
+                elif topic == "论文":
+                    if not is_paper_story({}, [source]):
+                        continue
+                    evidence = source.get("url", "")
+                elif match:
+                    evidence = original[max(0, match.start() - 50):match.end() + 100]
+                else:
+                    continue
+                topic_sources[topic].append({"source_id": source["id"], "evidence": evidence})
+
+        def coverage_for(briefs):
+            covered = {topic: [] for topic in topic_patterns}
+            for index, brief in enumerate(briefs):
+                refs = set(brief.get("source_ids", []))
+                words = "\n".join(str(brief.get(key, "")) for key in ("title", "category", "angle", "facts"))
+                for topic, pattern in topic_patterns.items():
+                    cited = [row for row in topic_sources[topic] if row["source_id"] in refs]
+                    if cited and (topic == "论文" or re.search(pattern, words, re.I)):
+                        covered[topic].append({"candidate_index": index, "source_evidence": cited})
+            return {"source_topics": topic_sources, "source_gaps": [key for key, rows in topic_sources.items() if not rows],
+                    "candidate_topics": covered, "candidate_gaps": [key for key, rows in covered.items() if not rows],
+                    "note": "标签仅表示本题与所引原文存在对应内容，不证明每日更新、独立实测或已有足量视频；单题可含多标签，不按模型自报标签补齐缺口。"}
+
+        source_coverage = coverage_for([])
+        emit(run_id, "researcher", "topic_coverage", "已检查七类题材的来源覆盖；缺口如实记录，大模型须主动检索", "completed", source_coverage)
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
         assignment = {"target": target + 2, "sources": usable,
             "editor_quotas": quotas,
             "editor_specialties": "小影：AI产品与实操；小影2：真实论文；小影3：科技热点、展会与公开争议。候选需满足每岗配额，不能全为论文。",
             "recent_titles": recent, "strategy": STRATEGY,
+            "topic_coverage": source_coverage,
+            "coverage_instruction": "每日必须主动检查通用大模型的新能力、推理、开源或成本进展，优先真实带日期的发布方原文。同时检查机器人、算力基础设施、端侧芯片、AI工具应用、论文、展会争议。单题可多标签；端侧应用不等于端侧芯片，不把机器人模型冒充通用大模型。不是每天强制凑齐七类：缺原文或对应视频就在coverage_gaps说明，并保留已核验候选，不编造参数或素材。",
+            "source_id_contract": "source_ids和visual_source_ids都只能填写下面source_catalog的source_id（正文页面ID）；绝不能填asset_id（视频ID）。多页共同支持同一题时可联合引用，至少3条原片SHA去重的核验视频；辅助画面须写visual_support_reason说明具体关联及边界。不得拿无关视频补数。",
+            "source_catalog": [{"source_id": s["id"], "title": s.get("title"), "kind": s.get("kind"),
+                "editor_hint": s.get("visual_preflight", {}).get("editor_id"),
+                "visual_status": s.get("visual_preflight", {}).get("status", "not_checked"),
+                "visual_ready": bool(s.get("visual_ready")),
+                "asset_ids_for_editing_only": [a["id"] for a in s.get("visual_assets", []) if a.get("id")]}
+                for s in usable],
             "visual_constraint": "先写完整口播再匹配画面。论文选题必须有对应论文原文，制作会提取真实PDF页面及图表，不能用其他研究的背景演示代替。其他选题需有本题可核验画面线索。素材不足不凑数。"}
         for attempt in range(2):
             research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
-            candidates = _eligible_candidates(research.get("candidates"), usable, visual_style)
+            raw_candidates = research.get("candidates") if isinstance(research, dict) else None
+            candidates, diagnostics = _eligible_candidates(raw_candidates, usable, visual_style, with_diagnostics=True)
             counts = {owner: sum(candidate_editor(c, usable) == owner for c in candidates) for owner in (quotas or {})}
             enough = len(candidates) >= target and all(counts[owner] >= count for owner, count in (quotas or {}).items())
+            candidate_coverage = coverage_for(candidates)
+            emit(run_id, "researcher", "candidate_validation", f"第{attempt + 1}次候选校验：有效{len(candidates)}条，逐条拒绝原因已保存", "completed" if enough else "warning", {
+                "attempt": attempt + 1, "raw_candidates": raw_candidates, "diagnostics": diagnostics,
+                "accepted_candidates": candidates, "editor_counts": counts, "editor_quotas": quotas,
+                "target": target, "source_catalog": assignment["source_catalog"], "topic_coverage": candidate_coverage,
+                "model_reported_gaps": research.get("coverage_gaps") if isinstance(research, dict) else None})
             if enough:
                 break
-            if attempt:
+            rejection_codes = {reason["code"] for row in diagnostics for reason in row["reasons"]}
+            material_only = bool(rejection_codes) and rejection_codes <= {"visual_sources_unavailable", "insufficient_verified_visuals"}
+            if attempt or material_only:
                 raise ValueError(f"有效选题{len(candidates)}个，各岗位候选{counts}未满足配额{quotas}，保留资料等待补齐，不凑数生产")
-            emit(run_id, "researcher", "candidate_revision", "候选选题缺少有效来源或已就绪画面，先修正选题清单", "warning")
-            assignment = {**assignment, "format_feedback": "上次只有" + str(len(candidates)) + "个有效选题，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。必须引用已提供的visual_ready来源，或为有对应背景演示的选题明确列出visual_source_ids；保留不同核心问题，不虚构素材。"}
-        plan = {"candidates": candidates}
+            emit(run_id, "researcher", "candidate_revision", "仅再修正一次候选格式、来源ID或岗位配额；不会重试下载素材", "warning")
+            assignment = {**assignment, "previous_candidates": raw_candidates, "candidate_feedback": diagnostics,
+                "format_feedback": "上次有效" + str(len(candidates)) + "条，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。按逐条拒因修正，source_ids填正文source_id而非视频asset_id。只用当前已核验且对应本题的来源；素材不足则明确交回，禁止编造或拿无关画面补数。"}
+        plan = {"candidates": candidates, "topic_coverage": candidate_coverage}
         with SessionLocal() as db:
             db.get(FactoryRun, run_id).plan = plan
             db.commit()
@@ -346,6 +522,7 @@ def _make_plan(run_id):
             return
     emit(run_id, "director", "planning", f"负责人正在选择 {target} 个选题并安排制作")
     decision = call_agent(run_id, "director", {"target": target, "candidates": plan["candidates"], "recent_titles": recent,
+        "topic_coverage": plan.get("topic_coverage", {}),
         "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、科技热点展会归小影3、其余AI产品实操归小影。"})
     selected = decision.get("selected", [])
     indices = [entry.get("candidate_index") for entry in selected if isinstance(entry, dict)]
@@ -404,8 +581,8 @@ def _write_and_review(run_id, item_id):
         sources = _sources_for([*brief.get("source_ids", []), *brief.get("visual_source_ids", [])], run.sources)
         if brief.get("paper_document"):
             document = brief["paper_document"]
-            sources = [*sources, {"id": "paper-fulltext", "title": "论文原文按页提取",
-                "url": document["url"], "kind": "paper", "pages": document["pages"],
+            sources = [*sources, {"id": "paper-fulltext", "title": "官方技术报告原文按页提取" if document.get("kind") == "technical_report" else "论文原文按页提取",
+                "url": document["url"], "kind": document.get("kind", "paper"), "pages": document["pages"],
                 "text": "\n".join(f"第{p['page']}页：{p['text']}" for p in document["pages"])[:65000]}]
         max_revisions, revisions = run.settings_snapshot.get("max_revisions", 1), item.revisions
         engagement_required = run.settings_snapshot.get("engagement_required", False)
@@ -482,6 +659,10 @@ def _write_and_review(run_id, item_id):
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
         if brief.get("paper_document"):
             content["paper_document"] = brief["paper_document"]
+            if brief["paper_document"].get("kind") == "technical_report":
+                allowed = set(brief["paper_document"].get("verified_project_urls", []))
+                content["document_evidence_sources"] = [{k: s.get(k) for k in ("id", "url", "text")}
+                                                        for s in sources if s.get("url") in allowed]
         if brief.get("engagement_plan"):
             content["engagement_plan"] = brief["engagement_plan"]
         if brief.get("research_packet"):
@@ -552,7 +733,7 @@ def _replace_rejected_topic(run_id, item_id):
 
 
 def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
-    available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page")} for a in assets]
+    available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page", "document_kind", "reference_source_url", "source_chain")} for a in assets]
     feedback = {}
     prior_edit = bool(content.get("editorial_review"))
     for attempt in range(2):
@@ -562,13 +743,18 @@ def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
             work_kind="rework" if feedback or prior_edit else "initial")
         scenes = arrangement.get("scenes", [])
         try:
+            if isinstance(scenes, list):
+                scenes = [{**s, "body": "" if s.get("body") is None else s.get("body", "")} if isinstance(s, dict) else s for s in scenes]
             if not isinstance(scenes, list) or not 2 <= len(scenes) <= 18 or not all(isinstance(s, dict) and s.get("heading") and isinstance(s.get("body", ""), str) for s in scenes):
-                raise ValueError("制作员未提供有效的画面安排")
+                count = len(scenes) if isinstance(scenes, list) else None
+                emit(run_id, owner, "edit_format_invalid", "分镜输出格式不合格，保留原始输出供定位", "warning",
+                     {"scene_count": count, "arrangement": arrangement})
+                raise ValueError(f"分镜须为顶层scenes数组、2–18个叙事段（不是逐镜头列表）；当前段数{count}。每段heading非空、body为字符串（可为空）。请按8–14段交付。")
             if assets:
                 validate_editorial_scenes(content["script"], scenes, assets)
                 if content.get("paper_document"):
                     from services.factory_papers import validate_paper_scenes, highlight_rectangles
-                    validate_paper_scenes(scenes, assets)
+                    validate_paper_scenes(scenes, assets, content.get("document_evidence_sources"))
                     by_id = {a["id"]: a for a in assets}
                     for scene in scenes:
                         asset = by_id[scene["asset_ids"][0]]
@@ -628,7 +814,11 @@ def _render(run_id, item_id):
         content = {**content, "paper_document": document, "background_visuals": False}
         assets = paper_assets(document, directory / "paper-pages")
         direct_sources = [s for s in run_sources if s["url"].rstrip("/") in document["verified_project_urls"]]
-        if direct_sources:
+        if brief.get("verified_visual_manifest"):
+            from services.factory_verified_materials import load_verified_assets
+            assets += load_verified_assets(brief["verified_visual_manifest"], direct_sources,
+                                           minimum_assets=1 if document.get("kind") == "technical_report" else 3)
+        elif direct_sources:
             visuals = collect_visuals(direct_sources, directory / "visual-assets")
             assets += [a for a in visuals.get("assets", []) if a.get("source_url", "").rstrip("/") in document["verified_project_urls"]]
         emit(run_id, owner, "paper_picture_matching", "口播已定稿，匹配真实论文页、图表及同论文作者演示", "completed")
@@ -643,7 +833,12 @@ def _render(run_id, item_id):
         if brief.get("visual_source_ids"):
             visual_sources.extend(_sources_for(brief["visual_source_ids"], run_sources))
             content = {**content, "background_visuals": True, "visual_support_reason": brief.get("visual_support_reason")}
-        visuals = collect_visuals(visual_sources, directory / "visual-assets")
+        if brief.get("verified_visual_manifest"):
+            from services.factory_verified_materials import load_verified_assets
+            visuals = {"status": "ready", "assets": load_verified_assets(brief["verified_visual_manifest"], visual_sources),
+                       "manifest_path": brief["verified_visual_manifest"], "warnings": []}
+        else:
+            visuals = collect_visuals(visual_sources, directory / "visual-assets")
         assets = visuals.get("assets", [])
         if visuals.get("status") != "ready" or len(assets) < 3:
             raise ValueError("匹配选题的动态演示素材不足3条，已暂停该条制作；请更换选题或补充素材")
@@ -722,6 +917,7 @@ def _render(run_id, item_id):
 def _package(run_id, item_id):
     from services.factory_filenames import safe_filename
     from services.factory_platform_style import platform_style
+    from services.factory_cover import COVER_DESIGN_VERSION
     from services.factory_handoff import HANDOFF_VERSION, build_handoff, handoff_files
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
@@ -741,7 +937,9 @@ def _package(run_id, item_id):
             platforms = [route["platform"]]
             existing = [p for p in existing if p["platform"] in platforms]
         reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
-        if reuse_variants and all(p.get("delivery_layout") == "platform-zip-v1"
+        if reuse_variants and all((p.get("cover_design") or {}).get("version") == COVER_DESIGN_VERSION
+                                  and p.get("source_media_fingerprint") == media.get("fingerprint")
+                                  and p.get("delivery_layout") == "platform-zip-v1"
                                   and p.get("handoff_version") == HANDOFF_VERSION
                                   and p.get("cover_path") and Path(p["cover_path"]).is_file()
                                   and p.get("video_path") and Path(p["video_path"]).is_file()
@@ -784,10 +982,10 @@ def _package(run_id, item_id):
         handoff = build_handoff(content, variant, route, warnings.get(platform))
         style = platform_style(platform)
         from services.factory_cover import render_cover
-        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}.png"
+        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-design{COVER_DESIGN_VERSION}.png"
         cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
         from services.factory_delivery_video import render_delivery_video
-        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}.mp4"
+        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-design{COVER_DESIGN_VERSION}.mp4"
         delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video)
         manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
                     "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
@@ -797,7 +995,7 @@ def _package(run_id, item_id):
                     "visual_sources": media.get("visual_sources", []),
                     "note": "本包仅代表素材交付，不代表平台发布状态。请在官方客户端人工核对、上传并发布到分配的平台。"}
         # Versioned output keeps previously delivered archives intact on upgrade.
-        path = directory / f"{platform}-manual-v{HANDOFF_VERSION}.zip"
+        path = directory / f"{platform}-manual-v{HANDOFF_VERSION}-design{COVER_DESIGN_VERSION}.zip"
         temp = path.with_suffix(".zip.tmp")
         texts = handoff_files(handoff)
         with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
@@ -832,7 +1030,8 @@ def _package(run_id, item_id):
                          "status": previous.get(platform, {}).get("status", "package_ready"), "path": str(path),
                          "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
                          "copy_path": str(copy_path), "cover_path": str(cover_path), "cover_design": cover_design,
-                         "video_path": str(delivery_video), "delivery_quality": delivery_quality, "platform_style": style})
+                         "video_path": str(delivery_video), "delivery_quality": delivery_quality, "platform_style": style,
+                         "source_media_fingerprint": media.get("fingerprint")})
     _save_item(item_id, packages=packages, status="completed", error=None)
     emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份完整人工发布包，等待用户在官方客户端发布", "completed")
 
