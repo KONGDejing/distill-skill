@@ -42,9 +42,15 @@ def isolated_factory(tmp_path, monkeypatch):
         Path(target).write_bytes(content["cover_text"].encode())
         return {"text_rendered": content["cover_text"], "version": 2}
     monkeypatch.setattr("services.factory_cover.render_cover", fake_cover)
-    def fake_complete(source, cover, target):
+    def fake_frame_cover(source, title, target, platform):
+        Path(target).write_bytes(title.encode())
+        return {"text_rendered": title, "version": 2, "frame_title_version": 1,
+                "kind": "source_first_frame_with_title", "overlay_path": str(target)}
+    monkeypatch.setattr("services.factory_cover.render_frame_cover", fake_frame_cover)
+    def fake_complete(source, cover, target, **kwargs):
         Path(target).write_bytes(Path(source).read_bytes())
-        return {"cover_integrated": True, "audio_preserved": True}
+        return {"cover_integrated": True, "audio_preserved": True,
+                "opening_mode": kwargs.get("opening_mode", "brand_card")}
     monkeypatch.setattr("services.factory_delivery_video.render_delivery_video", fake_complete)
     yield sessions
     engine.dispose()
@@ -400,7 +406,12 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 assert handoff == package["manual_handoff"]
                 assert handoff["platform"] == package["platform"]
                 assert handoff["title"] == package["title"] and handoff["caption"] == "平台简介"
-                assert handoff["cover_text"] == f"{package['platform']} 封面文字"
+                if package["platform"] in {"xiaohongshu", "kuaishou"}:
+                    assert handoff["cover_text"] == content["title"]
+                    assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
+                    assert package["cover_design"]["frame_title_version"] == 1
+                else:
+                    assert handoff["cover_text"] == f"{package['platform']} 封面文字"
                 assert archive.read("cover.png").decode() == handoff["cover_text"]
                 assert handoff["hooks"][:2] == ["先看原文里的条件。", "这条内容能说明什么？"]
                 assert handoff["pinned_comment"] == "一起对照所列原文。"
@@ -413,6 +424,57 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 if single_platform:
                     assert handoff["distribution"]["platform"] == "xiaohongshu"
                     assert "2026-11-11" in archive.read("手动发布说明.txt").decode("utf-8")
+
+
+@pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou"])
+def test_first_frame_upgrade_reuses_approved_copy_and_leaves_douyin_cached(isolated_factory, monkeypatch, platform):
+    content = {"title": "真实画面里的机器人", "script": "审核完成的完整口播。", "sources": [SOURCE]}
+    run_id, item_id = _seed_item(isolated_factory, content=content)
+    directory = factory_service.FACTORY_DIR / run_id / item_id
+    media = _package_media(directory)
+    media["fingerprint"] = "approved-source-montage"
+    factory_service._save_item(item_id, media=media)
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        run.settings_snapshot = {**run.settings_snapshot, "platforms": [platform]}
+        db.commit()
+    model = Mock(return_value={"platforms": [{"platform": platform, "title": "已定稿发布标题", "caption": "已定稿正文", "tags": ["机器人"]}]})
+    monkeypatch.setattr(factory_service, "call_agent", model)
+    factory_service._package(run_id, item_id)
+    # Simulate the old shared-card package with the current handoff/design
+    # version, exactly the case a global version-only cache would miss.
+    with isolated_factory() as db:
+        item = db.get(FactoryItem, item_id)
+        package = dict(item.packages[0])
+        old_path = directory / "old-shared-card.zip"
+        old_bytes = Path(package["path"]).read_bytes()
+        old_path.write_bytes(old_bytes)
+        package.update(path=str(old_path), cover_design={"version": 2, "kind": "original_svg_title_design"},
+                       delivery_quality={"cover_integrated": True, "audio_preserved": True})
+        item.packages = [package]
+        db.commit()
+    model.side_effect = AssertionError("A finishing repair must not call a model")
+    from services.factory_delivery_video import render_delivery_video
+    finisher = Mock(wraps=render_delivery_video)
+    monkeypatch.setattr("services.factory_delivery_video.render_delivery_video", finisher)
+    factory_service._package(run_id, item_id)
+    factory_service._package(run_id, item_id)
+    assert model.call_count == 1
+    assert old_path.read_bytes() == old_bytes
+    with isolated_factory() as db:
+        item = db.get(FactoryItem, item_id)
+        assert item.content == content and item.media == media
+        package = item.packages[0]
+        assert package["title"] == "已定稿发布标题" and package["caption"] == "已定稿正文"
+        if platform == "douyin":
+            finisher.assert_not_called()
+            assert package["path"] == str(old_path)
+        else:
+            assert finisher.call_count == 1
+            assert finisher.call_args.args[0] == media["video_path"]
+            assert package["path"] != str(old_path)
+            assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
+            assert package["manual_handoff"]["cover_text"] == content["title"]
 
 
 @pytest.mark.parametrize("old_version", [None, 1], ids=["legacy", "manual-v1"])

@@ -1,10 +1,76 @@
-"""A native SVG title design, separate from the subtitled video frames."""
+"""Platform openings: a branded card or titles over the actual source frame."""
 from html import escape
 from pathlib import Path
+import re
 
 from services.factory_media import WIDTH, HEIGHT, _font, _wrap
 
 COVER_DESIGN_VERSION = 2
+FRAME_TITLE_VERSION = 1
+
+
+def render_frame_cover(source, title, target, platform):
+    """Letter the actual first frame; export the same transparent title for motion.
+
+    The compact lower band leaves the original document/demo and its attribution
+    visible. It is an overlay, never a substitute illustration or a frozen clip.
+    """
+    from PIL import Image, ImageDraw
+    import hashlib
+    from services.factory_media import _run
+
+    if platform not in {"xiaohongshu", "kuaishou"}:
+        raise ValueError("首帧标题仅用于小红书和快手")
+    target = Path(target)
+    frame_path = target.with_name(target.stem + "-source.png")
+    overlay_path = target.with_name(target.stem + "-title.png")
+    _run(["ffmpeg", "-y", "-v", "error", "-i", str(source),
+          "-frames:v", "1", str(frame_path)])
+    with Image.open(frame_path) as frame:
+        background = frame.convert("RGBA")
+    # Draw in a common coordinate system and scale only the transparent layer.
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT))
+    draw = ImageDraw.Draw(overlay)
+    title = str(title).strip()
+    if not title:
+        raise ValueError("首帧缺少视频标题")
+    for size in range(78 if platform == "kuaishou" else 70, 47, -2):
+        font = _font(size, bold=True)
+        lines = _wrap(title, font, 884)
+        if len(lines) > 1:
+            # Prefer a real clause boundary to splitting words such as 离线边界.
+            candidates = [(title[:m.end()], title[m.end():]) for m in re.finditer(r"[？?，,：:]", title)
+                          if m.end() < len(title)]
+            candidates = [parts for parts in candidates if all(font.getlength(s) <= 884 for s in parts)]
+            if candidates:
+                lines = list(min(candidates, key=lambda parts: abs(font.getlength(parts[0]) - font.getlength(parts[1]))))
+        if len(lines) <= 2 and not any(len(s.strip()) == 1 for s in lines):
+            break
+    else:
+        raise ValueError("首帧标题过长，请压缩标题")
+    top, bottom = 1630, 1840
+    if platform == "xiaohongshu":
+        draw.rounded_rectangle((56, top, 1024, bottom), radius=24, fill=(255, 252, 249, 244))
+        draw.rounded_rectangle((78, top + 30, 86, bottom - 30), radius=4, fill="#d94d76")
+        x, fill, stroke = 114, "#202736", 0
+    else:
+        # Plain, outlined headline: the original footage remains the background.
+        x, fill, stroke = 72, "#ffffff", 4
+    line_height = size + 18
+    y = top + (bottom - top - len(lines) * line_height) // 2
+    for n, line in enumerate(lines):
+        color = "#ffc45e" if platform == "kuaishou" and n == len(lines) - 1 else fill
+        draw.text((x, y + n * line_height), line, font=font, fill=color,
+                  stroke_width=stroke, stroke_fill="#111111", anchor="lt")
+    if background.size != overlay.size:
+        overlay = overlay.resize(background.size, Image.Resampling.LANCZOS)
+    overlay.save(overlay_path)
+    Image.alpha_composite(background, overlay).convert("RGB").save(target)
+    return {"kind": "source_first_frame_with_title", "version": COVER_DESIGN_VERSION,
+            "frame_title_version": FRAME_TITLE_VERSION, "platform": platform,
+            "overlay_path": str(overlay_path), "source_frame_sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
+            "text_rendered": title, "font_size": size, "lines": lines,
+            "title_bounds_normalized": [56 / WIDTH, top / HEIGHT, 1024 / WIDTH, bottom / HEIGHT]}
 
 
 def cover_layout(title):

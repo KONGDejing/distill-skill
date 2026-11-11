@@ -917,7 +917,7 @@ def _render(run_id, item_id):
 def _package(run_id, item_id):
     from services.factory_filenames import safe_filename
     from services.factory_platform_style import platform_style
-    from services.factory_cover import COVER_DESIGN_VERSION
+    from services.factory_cover import COVER_DESIGN_VERSION, FRAME_TITLE_VERSION
     from services.factory_handoff import HANDOFF_VERSION, build_handoff, handoff_files
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
@@ -938,6 +938,10 @@ def _package(run_id, item_id):
             existing = [p for p in existing if p["platform"] in platforms]
         reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
         if reuse_variants and all((p.get("cover_design") or {}).get("version") == COVER_DESIGN_VERSION
+                                  and (platform_style(p["platform"]).get("opening_mode") != "first_frame_title"
+                                       or ((p.get("cover_design") or {}).get("frame_title_version") == FRAME_TITLE_VERSION
+                                           and (p.get("cover_design") or {}).get("text_rendered") == content["title"]
+                                           and (p.get("delivery_quality") or {}).get("opening_mode") == "first_frame_title"))
                                   and p.get("source_media_fingerprint") == media.get("fingerprint")
                                   and p.get("delivery_layout") == "platform-zip-v1"
                                   and p.get("handoff_version") == HANDOFF_VERSION
@@ -956,8 +960,8 @@ def _package(run_id, item_id):
     check_cancel(run_id)
     emit(run_id, "publisher", "adapting", f"准备完整人工发布包：标题、正文、话题、AI说明、钩子、置顶评论及回复模板：{content['title']}")
     if reuse_variants:
-        # Upgrade an existing delivery without another model call or changing
-        # the video. Preserve its old archive and publication evidence.
+        # Upgrade finishing from the approved montage without another model
+        # call. Preserve its old archive and publication evidence.
         variants = [dict(p) for p in existing]
     else:
         publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan", "platform_style") if k in content}
@@ -981,21 +985,29 @@ def _package(run_id, item_id):
             raise ValueError("平台版本缺少标题")
         handoff = build_handoff(content, variant, route, warnings.get(platform))
         style = platform_style(platform)
-        from services.factory_cover import render_cover
-        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-design{COVER_DESIGN_VERSION}.png"
-        cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
+        frame_title = style.get("opening_mode") == "first_frame_title"
+        design_suffix = f"design{COVER_DESIGN_VERSION}" + (f"-firstframe{FRAME_TITLE_VERSION}" if frame_title else "")
+        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
+        if frame_title:
+            from services.factory_cover import render_frame_cover
+            handoff["cover_text"] = content["title"]
+            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
+        else:
+            from services.factory_cover import render_cover
+            cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
         from services.factory_delivery_video import render_delivery_video
-        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-design{COVER_DESIGN_VERSION}.mp4"
-        delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video)
+        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-{design_suffix}.mp4"
+        finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
+        delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
         manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
                     "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
                     "delivery_quality": delivery_quality, "platform_style": style,
-                    "cover_design": {k: v for k, v in cover_design.items() if k != "design_path"},
+                    "cover_design": {k: v for k, v in cover_design.items() if k not in {"design_path", "overlay_path"}},
                     "source_item_id": item_id, "sources": content.get("sources", []),
                     "visual_sources": media.get("visual_sources", []),
                     "note": "本包仅代表素材交付，不代表平台发布状态。请在官方客户端人工核对、上传并发布到分配的平台。"}
         # Versioned output keeps previously delivered archives intact on upgrade.
-        path = directory / f"{platform}-manual-v{HANDOFF_VERSION}-design{COVER_DESIGN_VERSION}.zip"
+        path = directory / f"{platform}-manual-v{HANDOFF_VERSION}-{design_suffix}.zip"
         temp = path.with_suffix(".zip.tmp")
         texts = handoff_files(handoff)
         with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
