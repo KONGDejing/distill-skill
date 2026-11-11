@@ -229,11 +229,26 @@ def download_video(item_id: str, db: Session = Depends(get_db)):
     item = db.get(FactoryItem, item_id)
     if not item or not item.media.get("video_path") or not item.content.get("title"):
         raise HTTPException(404, "成片尚未就绪")
-    path = Path(item.media["video_path"]).resolve()
+    path = Path(next((p["video_path"] for p in item.packages or [] if p.get("video_path")), item.media["video_path"])).resolve()
     if not path.is_relative_to(FACTORY_DIR.resolve()) or not path.is_file():
         raise HTTPException(404, "成片文件不存在")
     from services.factory_filenames import safe_filename
     return FileResponse(path, media_type="video/mp4", filename=safe_filename(item.content["title"], ".mp4"))
+
+
+@router.get("/items/{item_id}/cover")
+def download_cover(item_id: str, db: Session = Depends(get_db)):
+    item = db.get(FactoryItem, item_id)
+    if not item:
+        raise HTTPException(404, "作品不存在")
+    cover = next((p["cover_path"] for p in item.packages or [] if p.get("cover_path")), item.media.get("cover_path"))
+    if not cover:
+        raise HTTPException(404, "封面尚未就绪")
+    path = Path(cover).resolve()
+    if not path.is_relative_to(FACTORY_DIR.resolve()) or not path.is_file():
+        raise HTTPException(404, "封面文件不存在")
+    from services.factory_filenames import safe_filename
+    return FileResponse(path, media_type="image/png", filename=safe_filename(item.content["title"] + "—封面", ".png"))
 
 
 @router.get("/platforms/xiaohongshu/login-image", include_in_schema=False)

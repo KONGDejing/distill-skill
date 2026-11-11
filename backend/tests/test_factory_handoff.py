@@ -21,7 +21,7 @@ def test_missing_extras_produce_complete_copyable_handoff_without_new_facts():
     content, variant = inputs()
     before = deepcopy((content, variant))
     handoff = build_handoff(content, variant)
-    assert handoff["version"] == HANDOFF_VERSION == 2
+    assert handoff["version"] == HANDOFF_VERSION == 4
     assert handoff["title"] == variant["title"] and handoff["caption"] == variant["caption"]
     assert handoff["tags"] == ["AI论文", "研究条件"]
     assert handoff["cover_text"] == variant["title"]
@@ -56,8 +56,9 @@ def test_reviewed_overrides_and_partial_replies_are_preserved_and_completed():
     }
     handoff = build_handoff(content, variant, {"platform": "douyin", "day": "2026-11-12"},
                             "历史提交结果未明，请本人先核对平台记录。")
-    for field in ("cover_text", "alternate_titles", "follow_prompt", "ai_disclosure", "pinned_comment"):
+    for field in ("cover_text", "alternate_titles", "ai_disclosure", "pinned_comment"):
         assert handoff[field] == variant["manual_handoff"][field]
+    assert handoff["follow_prompt"] == content["follow_prompt"]
     assert handoff["hooks"][0] == "先核对条件A。" and 2 <= len(handoff["hooks"]) <= 3
     assert handoff["reply_templates"][0] == variant["manual_handoff"]["reply_templates"][0]
     assert len(handoff["reply_templates"]) >= 3

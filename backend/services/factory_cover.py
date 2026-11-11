@@ -8,11 +8,12 @@ from services.factory_media import WIDTH, HEIGHT, _font, _wrap
 def render_cover(content, target):
     from playwright.sync_api import sync_playwright
 
-    title = str(content.get("title", "AI热点讲明白"))[:36]
-    lines = _wrap(title, _font(112, bold=True), 880)
+    title = str(content.get("cover_text") or content.get("title") or "AI热点讲明白").strip()
+    lines = [line for paragraph in title.splitlines() if paragraph.strip()
+             for line in _wrap(paragraph.strip(), _font(112, bold=True), 880)]
     if len(lines) > 4:
         raise ValueError("封面标题过长，请缩短标题")
-    text = "".join(f'<text x="100" y="{430 + i * 152}" class="title">{escape(line)}</text>'
+    text = "".join(f'<text x="100" y="{430 + i * 152}" class="title" style="fill:{"#5ef0c5" if i == len(lines)-1 else "#f3f8ff"}">{escape(line)}</text>'
                    for i, line in enumerate(lines))
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">
     <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101d35"/><stop offset="1" stop-color="#060b14"/></linearGradient>
@@ -41,4 +42,5 @@ def render_cover(content, target):
             page.screenshot(path=str(target))
         finally:
             browser.close()
-    return {"kind": "original_svg_title_design", "design_path": str(svg_path)}
+    return {"kind": "original_svg_title_design", "design_path": str(svg_path),
+            "text_rendered": title, "lines": lines}

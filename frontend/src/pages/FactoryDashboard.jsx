@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Activity, ArrowDownToLine, ArrowRight, BookOpen, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, Clock3, ExternalLink, FileText, Film, FlaskConical, History, Layers3, Loader2, Pause, Play, Radio, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TrendingUp, Workflow, X, AlertCircle, PackageCheck } from 'lucide-react'
 import { factoryApi } from '../api/factory'
 import PlatformConnection from '../components/PlatformConnection'
-import PlatformPublisher from '../components/PlatformPublisher'
 import FactoryOperations from '../components/FactoryOperations'
 
 const VISUAL_STYLES = { tech_montage: '科技演示混剪', cards: '文字卡片（旧版）' }
@@ -83,32 +82,33 @@ export function ManualPackage({ pkg, item = {} }) {
   const platformName = PLATFORM_NAMES[pkg.platform] || pkg.platform
   const route = item.distribution || handoff?.distribution
   const otherRoute = route?.platform && route.platform !== pkg.platform
-  const warning = pkg.publication_warning || handoff?.publication_warning
-  const fields = [
-    ['标题', copy.title], ['正文', copy.caption],
-    ['话题', Array.isArray(copy.tags) ? copy.tags.map(tag => `#${asText(tag).replace(/^#+/, '')}`).join(' ') : copy.tags],
-    ['封面文字', copy.cover_text], ['自然关注句', copy.follow_prompt],
-    ['AI 制作说明', copy.ai_disclosure], ['置顶评论', copy.pinned_comment],
-  ]
+  const job = item.platform_jobs?.[pkg.platform] || (pkg.platform === 'xiaohongshu' ? item.xiaohongshu_job : null)
+  const uncertain = job?.result?.submission_uncertain === true || job?.status === 'uncertain' || pkg.status === 'uncertain'
+  const historicalReceipt = job?.status === 'submitted' || pkg.status === 'submitted'
+  const warning = pkg.publication_warning || handoff?.publication_warning || (uncertain
+    ? '历史提交结果仍不确定，请本人先在官方页面核对，避免重复上传。'
+    : historicalReceipt ? '历史提交回执已保留，不代表已公开发布。最新审核与公开状态请本人核对。' : '')
+  const tags = Array.isArray(copy.tags) ? copy.tags.map(tag => `#${asText(tag).replace(/^#+/, '')}`).join(' ') : asText(copy.tags)
+  const description = copy.description || [copy.caption, tags, copy.ai_disclosure].filter(Boolean).join('\n\n')
   const downloadUrl = safeLink(pkg.download_url)
   const copyUrl = safeLink(pkg.copy_url)
-  return <section aria-label={`${platformName}人工交付素材包`} className="min-w-0 bg-[#0e1722] p-4 sm:p-5">
-    <div className="flex flex-wrap items-center justify-between gap-2"><h5 className="text-sm font-medium text-slate-200">{platformName} · {otherRoute ? '历史素材包' : '人工交付素材包'}</h5><Status value={pkg.status} small /></div>
-    <p className="mt-2 text-xs leading-relaxed text-slate-400">{copy.title || '标题准备中'}</p>
-    {otherRoute && <p role="alert" className="mt-3 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200">当前唯一分配平台为{PLATFORM_NAMES[route.platform] || route.platform}，请勿上传此历史包或跨平台重复发布。</p>}
+  const replies = Array.isArray(copy.reply_templates) ? copy.reply_templates : []
+  return <section aria-label={`${platformName}人工发布文案`} className="min-w-0 bg-[#0e1722] p-4 sm:p-5">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h5 className="text-sm font-medium text-slate-200">{platformName} · {otherRoute ? '历史文案与归档' : '发布文案'}</h5><Status value={pkg.status} small /></div>
+    {otherRoute ? <p role="alert" className="mt-3 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200">当前唯一分配平台为{PLATFORM_NAMES[route.platform] || route.platform}，请勿上传此历史包或跨平台重复发布。</p>
+      : <p className="mt-2 text-xs leading-relaxed text-slate-400">上传完整成片（MP4），填写以下标题和正文。</p>}
     {warning && <p role="alert" className="mt-3 whitespace-pre-wrap break-words rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200">历史发布提醒：{asText(warning)}</p>}
-    <div className="mt-3 flex flex-wrap gap-2">
-      {downloadUrl && <a href={downloadUrl} download className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-300/20"><ArrowDownToLine size={14} />下载{platformName}{otherRoute ? '历史素材包' : '完整素材包'}</a>}
-      {copyUrl && <a href={copyUrl} download className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300/15 px-3 py-2 text-xs text-sky-200 hover:bg-sky-300/5"><FileText size={14} />下载{platformName}发布文案</a>}
-    </div>
-    {!handoff && <p className="mt-3 text-xs leading-relaxed text-amber-200/80">此包尚未补齐完整人工交付文案，下方保留已有内容。</p>}
-    <details className="mt-4 rounded-lg border border-white/[0.06] p-3 text-xs">
-      <summary className="cursor-pointer font-medium text-sky-200">查看完整发布文案与互动模板</summary>
-      <dl className="mt-4 space-y-4">{fields.map(([label, value]) => <div key={label}><dt className="mb-1 text-slate-500">{label}</dt><dd className="whitespace-pre-wrap break-words leading-6 text-slate-300">{asText(value) || '待补齐'}</dd></div>)}</dl>
-      <div className="mt-4"><h6 className="text-slate-500">开场钩子备选</h6><p className="mt-1 text-[11px] leading-relaxed text-slate-500">使用前核对与成片开头一致；备选文案不表示视频已更换开头。</p>{Array.isArray(copy.hooks) && copy.hooks.length ? <ol className="mt-2 list-decimal space-y-2 pl-5 text-slate-300">{copy.hooks.map((hook, index) => <li key={index} className="whitespace-pre-wrap break-words leading-6">{asText(hook)}</li>)}</ol> : <p className="mt-2 text-slate-500">待补齐</p>}</div>
-      <div className="mt-4"><h6 className="text-slate-500">回复模板</h6><p className="mt-1 text-[11px] leading-relaxed text-slate-500">供本人根据真实留言使用；这些问题是模板，不代表已收到留言。</p>{Array.isArray(copy.reply_templates) && copy.reply_templates.length ? <div className="mt-2 space-y-3">{copy.reply_templates.map((entry, index) => <div key={index} className="rounded-lg bg-white/[0.025] p-3"><p className="whitespace-pre-wrap break-words leading-6 text-slate-400">适用问题：{asText(entry.question)}</p><p className="mt-1 whitespace-pre-wrap break-words leading-6 text-slate-300">本人回复：{asText(entry.reply)}</p></div>)}</div> : <p className="mt-2 text-slate-500">待补齐</p>}</div>
-    </details>
-    {!otherRoute && <PlatformPublisher platform={pkg.platform} platformName={platformName} initialJob={item.platform_jobs?.[pkg.platform] || (pkg.platform === 'xiaohongshu' ? item.xiaohongshu_job : null)} packageStatus={pkg.status} />}
+    <dl className="mt-4 space-y-4 text-xs">{[['标题', copy.title], ['正文', description]].map(([label, value]) => <div key={label}><dt className="mb-1 text-slate-500">{label}</dt><dd className="whitespace-pre-wrap break-words leading-6 text-slate-300">{asText(value) || '待补齐'}</dd></div>)}</dl>
+    {(copy.pinned_comment || replies.length > 0) && <details className="mt-4 rounded-lg border border-white/[0.06] p-3 text-xs">
+      <summary className="cursor-pointer text-slate-400">可选评论回复</summary>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500">供本人根据真实留言使用；这些问题是模板，不代表已收到留言。</p>
+      {copy.pinned_comment && <div className="mt-3"><p className="text-slate-500">可选置顶评论</p><p className="mt-1 whitespace-pre-wrap break-words leading-6 text-slate-300">{asText(copy.pinned_comment)}</p></div>}
+      {replies.length > 0 && <div className="mt-3 space-y-3">{replies.map((entry, index) => <div key={index} className="rounded-lg bg-white/[0.025] p-3"><p className="whitespace-pre-wrap break-words leading-6 text-slate-400">适用问题：{asText(entry.question)}</p><p className="mt-1 whitespace-pre-wrap break-words leading-6 text-slate-300">本人回复：{asText(entry.reply)}</p></div>)}</div>}
+    </details>}
+    {(downloadUrl || copyUrl) && <details className="mt-4 rounded-lg border border-white/[0.06] p-3 text-xs"><summary className="cursor-pointer text-slate-500">可选归档</summary><div className="mt-3 flex flex-wrap gap-2">
+      {downloadUrl && <a href={downloadUrl} download className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-slate-400 hover:bg-white/5"><ArrowDownToLine size={14} />下载{platformName}{otherRoute ? '历史素材包' : '归档 ZIP'}</a>}
+      {copyUrl && <a href={copyUrl} download className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-slate-400 hover:bg-white/5"><FileText size={14} />下载文案文本</a>}
+    </div></details>}
   </section>
 }
 
@@ -127,7 +127,7 @@ export function ManualDeliveryPlan({ settings, releases, target }) {
 
 export function ManualPlatformChannels({ platforms }) {
   return <section className="rounded-2xl border border-white/[0.07] bg-[#0d141e] p-4"><div className="mb-4 flex items-center gap-2"><Radio size={15} className="text-slate-400" /><h3 className="text-xs font-semibold text-slate-300">人工交付平台</h3></div>
-    <div className="space-y-4">{platforms.map(platform => <PlatformConnection key={platform.id} platform={{ ...platform, name: platform.name || PLATFORM_NAMES[platform.id], automation: { mode: 'manual', enabled: false }, description: platform.id === 'bilibili' ? '长专题按独立计划交付素材包，由本人手动上传。' : '每条唯一路线，每天最多2条；下载素材包后由本人手动上传。' }} statusBadge={<Status value="manual" small />} />)}</div>
+    <div className="space-y-4">{platforms.map(platform => <PlatformConnection key={platform.id} platform={{ ...platform, name: platform.name || PLATFORM_NAMES[platform.id], automation: { mode: 'manual', enabled: false }, description: platform.id === 'bilibili' ? '长专题按独立计划交付完整成片，由本人手动上传。' : '每条唯一路线，每天最多2条；上传完整成片并填写标题、正文。' }} statusBadge={<Status value="manual" small />} />)}</div>
     <p className="mt-4 rounded-lg border border-amber-300/[0.08] bg-amber-300/[0.025] p-3 text-[10px] leading-relaxed text-slate-400">素材包就绪表示视频与文案已准备完成，不代表已提交或已公开发布。所有账号均由本人操作，结果请在官方页面自行核对。</p>
   </section>
 }
@@ -149,15 +149,16 @@ export function ContentCard({ item, index }) {
           <div className="mb-2 flex flex-wrap items-center gap-2"><span className="text-[10px] font-medium tracking-widest text-slate-500">CONTENT {String(index + 1).padStart(2, '0')}</span>{item.category && <span className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">{item.category}</span>}<Status value={item.status} small /></div>
           <h4 className="text-base font-semibold leading-relaxed text-slate-200">{item.title || '选题准备中'}</h4>{item.editor_name && <p className="mt-1 text-xs text-sky-200/70">剪辑负责人：{item.editor_name}</p>}
           {item.token_usage && <details className="mt-3 rounded-lg border border-white/10 p-3 text-xs text-slate-400"><summary className="cursor-pointer text-slate-300">本条模型用量：{item.token_usage.calls ? `${item.token_usage.total_tokens.toLocaleString()} token` : '尚无逐条记账'}{item.token_usage.history_may_be_incomplete ? '（历史记录不完整）' : ''}</summary><p className="mt-2 leading-6">输入 {item.token_usage.input_tokens.toLocaleString()} · 输出 {item.token_usage.output_tokens.toLocaleString()} · 已知缓存输入 {item.token_usage.cached_input_tokens.toLocaleString()}（包含在输入内）<br />首次制作 {item.token_usage.initial_tokens.toLocaleString()} · 返工 {item.token_usage.rework_tokens.toLocaleString()} · 未分类 {item.token_usage.unclassified_tokens.toLocaleString()}<br />已返回用量的调用 {item.token_usage.calls} 次；失败且未返回用量 {item.token_usage.failed_attempts_without_usage} 次。{item.token_usage.cache_unknown_calls > 0 && `其中 ${item.token_usage.cache_unknown_calls} 次未返回缓存明细。`}</p><p className="mt-2 leading-5">仅统计工厂模型调用，含所分配平台的文案。批次选题、复盘单列；编程调试会话、配音和本地视频渲染不计入此处。{item.token_usage.history_may_be_incomplete && '旧调用缺少作品标识，保留为批次未归属用量，不当作本条零消耗。'}</p></details>}
-          {item.distribution && <p className="mt-2 text-xs text-emerald-200/80">唯一分发平台：{PLATFORM_NAMES[item.distribution.platform]} · {item.distribution.day} · 下载素材包后本人手动上传<span className="block mt-1 text-slate-500">{item.distribution.reason}</span></p>}
+          {item.distribution && <p className="mt-2 text-xs text-emerald-200/80">唯一分发平台：{PLATFORM_NAMES[item.distribution.platform]} · {item.distribution.day} · 上传完整成片并填写标题、正文<span className="block mt-1 text-slate-500">{item.distribution.reason}</span></p>}
           {item.engagement_plan && <details className="mt-3 rounded-lg border border-sky-300/10 p-3 text-xs"><summary className="cursor-pointer text-sky-200">老周的开场与关注方案</summary><p className="mt-2 text-slate-300">选中开场：{item.engagement_plan.hooks?.[item.engagement_plan.selected]}</p><p className="mt-2 text-slate-400">观众收益：{item.engagement_plan.viewer_value}<br />正文兑现：{item.engagement_plan.payoff}<br />首镜头：{item.engagement_plan.opening_visual}<br />关注价值：{item.engagement_plan.follow_value}</p><p className="mt-2 text-slate-500">{item.engagement_plan.experiment} · 方案已下达不代表增长已验证</p></details>}
           {item.hook && <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-slate-400">{item.hook}</p>}
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-500">{item.duration > 0 && <span className="flex items-center gap-1"><Clock3 size={12} />{Math.round(item.duration)} 秒</span>}{VISUAL_STYLES[item.visual_style] && <span className="flex items-center gap-1"><Film size={12} />{VISUAL_STYLES[item.visual_style]}</span>}{(item.voice_label || VOICE_LABELS[item.tts_engine]) && <span className="flex items-center gap-1"><Radio size={12} />{item.voice_label || VOICE_LABELS[item.tts_engine]}</span>}<span className="flex items-center gap-1"><BookOpen size={12} />{sources.length} 个来源</span><span className="flex items-center gap-1"><PackageCheck size={12} />{packages.filter(p => p.download_url).length} 个平台素材包</span></div>
           {item.error && <p className="mt-3 break-words rounded-lg bg-rose-400/5 p-3 text-xs leading-relaxed text-rose-300">{item.error}</p>}
           <div className="mt-4 flex flex-wrap gap-2">
-            {(item.video_download_url || item.video_url) && <a href={safeLink(item.video_download_url || item.video_url)} download={item.video_filename || `${item.title}.mp4`} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-300/20"><ArrowDownToLine size={13} />下载成片</a>}
+            {(item.video_download_url || item.video_url) && <a href={safeLink(item.video_download_url || item.video_url)} download={item.video_filename || `${item.title}.mp4`} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-300/20"><ArrowDownToLine size={13} />下载完整成片</a>}
             <button onClick={() => setExpanded(!expanded)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-2 text-xs text-slate-400 hover:bg-white/5"><FileText size={13} />文案与依据<ChevronDown size={12} className={expanded ? 'rotate-180' : ''} /></button>
           </div>
+          {item.cover_url && <details className="mt-3 text-xs"><summary className="cursor-pointer text-slate-500">可选封面归档</summary><a href={safeLink(item.cover_download_url || item.cover_url)} download={`${item.title}—封面.png`} className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-slate-400"><ArrowDownToLine size={13} />下载封面图片（可选）</a></details>}
         </div>
       </div>
       {packages.length > 0 && <div className="space-y-px border-t border-white/[0.05] bg-white/[0.04]">{packages.map(pkg => <ManualPackage key={pkg.platform} pkg={pkg} item={item} />)}</div>}

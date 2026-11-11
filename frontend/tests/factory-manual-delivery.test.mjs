@@ -23,7 +23,7 @@ vm.runInNewContext(result.outputFiles[0].text, {
 const { SettingsPanel, ManualPackage, ManualDeliveryPlan, ManualPlatformChannels, ContentCard } = module.exports
 const render = (Component, props) => renderToStaticMarkup(React.createElement(Component, props))
 const handoff = {
-  title: '定稿标题', caption: '已审核正文\n第二行', tags: ['科技', '论文'], cover_text: '封面文字样例',
+  title: '定稿标题', description: '最终发布正文\n#科技 #论文\nAI制作说明样例', caption: '旧版正文', tags: ['科技', '论文'], cover_text: '封面文字样例',
   hooks: ['开场一', '开场二', '开场三'], follow_prompt: '关注句样例', ai_disclosure: 'AI制作说明样例',
   pinned_comment: '本人置顶评论样例', reply_templates: [{ question: '真实问题样例', reply: '本人回复样例' }],
   publication_warning: '历史提交结果不确定，请本人先核对', distribution: { platform: 'douyin', day: '2026-11-11' },
@@ -41,16 +41,19 @@ test('saving a manual plan always disables legacy upload switches', () => {
 })
 
 for (const [platform, name] of Object.entries({ douyin: '抖音', kuaishou: '快手', xiaohongshu: '小红书', bilibili: '哔哩哔哩' })) {
-  test(`${platform} shows complete handoff text and explicit downloads`, () => {
+  test(`${platform} shows final title and description with optional archives`, () => {
     const html = render(ManualPackage, { pkg: { platform, status: 'package_ready', manual_handoff: {
       ...handoff, distribution: { platform, day: '2026-11-11' } },
       download_url: `/api/factory/items/fixture/packages/${platform}`, copy_url: `/storage/${platform}/copy.txt` } })
-    for (const value of ['定稿标题', '已审核正文', '#科技 #论文', '封面文字样例', '开场一', '开场二', '开场三',
-      '关注句样例', 'AI制作说明样例', '本人置顶评论样例', '真实问题样例', '本人回复样例', '历史提交结果不确定，请本人先核对']) {
+    for (const value of ['定稿标题', '最终发布正文', '#科技 #论文', 'AI制作说明样例',
+      '本人置顶评论样例', '真实问题样例', '本人回复样例', '历史提交结果不确定，请本人先核对']) {
       assert.ok(html.includes(value), `Missing handoff value: ${value}`)
     }
-    assert.ok(html.includes(`下载${name}完整素材包`))
-    assert.ok(html.includes(`下载${name}发布文案`))
+    assert.ok(html.includes(`下载${name}归档 ZIP`))
+    assert.match(html, /<details[^>]*><summary[^>]*>可选归档/)
+    assert.match(html, /<summary[^>]*>可选评论回复/)
+    assert.equal((html.match(/<dt[ >]/g) || []).length, 2)
+    assert.doesNotMatch(html, /旧版正文|封面文字样例|开场一|开场二|开场三|关注句样例|开场钩子备选|自然关注句|使用前核对与成片开头/)
     assert.match(html, /这些问题是模板，不代表已收到留言/)
     assert.doesNotMatch(html, /<button|扫码登录/)
   })
@@ -97,6 +100,8 @@ test('main video downloads use the named API while playback keeps the original s
     video_filename: '中文大标题.mp4' } })
   assert.match(html, /href="\/api\/factory\/items\/fixture\/video" download="中文大标题.mp4"/)
   assert.match(html, /<source src="\/storage\/fixture\/video.mp4" type="video\/mp4"/)
+  assert.match(html, /下载完整成片/)
+  assert.doesNotMatch(html, /下载已排字封面/)
 })
 
 test('legacy video downloads and previews use the Chinese title as filename', () => {
@@ -107,4 +112,24 @@ test('legacy video downloads and previews use the Chinese title as filename', ()
   assert.match(html, /href="\/storage\/fixture\/preview.mp4" download="中文样片大标题.mp4"/)
   const fallback = render(ContentCard, { index: 0, item: { ...item, preview: { video_url: item.preview.video_url } } })
   assert.match(fallback, /href="\/storage\/fixture\/preview.mp4" download="中文成片大标题.mp4"/)
+})
+
+test('uncertain historical submissions remain prominent without extra editing steps', () => {
+  const html = render(ManualPackage, { pkg: { platform: 'douyin', status: 'submitted',
+    manual_handoff: { title: '定稿', description: '最终正文' } },
+    item: { platform_jobs: { douyin: { status: 'failed', result: { submission_uncertain: true } } } } })
+  assert.match(html, /历史提交结果仍不确定/)
+  assert.match(html, /避免重复上传/)
+  assert.doesNotMatch(html, /历史提交回执已保留/)
+})
+
+test('legacy copy uses existing text and the cover is an optional archive', () => {
+  const html = render(ManualPackage, { pkg: { platform: 'kuaishou',
+    manual_handoff: { title: '旧标题', caption: '已有正文', tags: ['科技'], ai_disclosure: '已有AI说明' } } })
+  assert.match(html, /已有正文/)
+  assert.match(html, /#科技/)
+  assert.match(html, /已有AI说明/)
+  const card = render(ContentCard, { index: 0, item: { title: '完整成片标题', video_url: '/storage/video.mp4', cover_url: '/storage/cover.png' } })
+  assert.match(card, /<details[^>]*><summary[^>]*>可选封面归档<\/summary><a[^>]*href="\/storage\/cover.png"/)
+  assert.match(card, /下载完整成片/)
 })

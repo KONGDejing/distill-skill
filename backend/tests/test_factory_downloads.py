@@ -39,3 +39,22 @@ def test_video_download_rejects_missing_or_outside_file(tmp_path, monkeypatch, o
     with pytest.raises(HTTPException) as exc:
         factory.download_video('id', db)
     assert exc.value.status_code == 404
+
+
+def test_cover_download_uses_finished_lettered_cover(tmp_path, monkeypatch):
+    item, db = fixture_item(tmp_path, monkeypatch)
+    cover = tmp_path / 'factory' / 'finished-cover.png'
+    cover.write_bytes(b'lettered png')
+    item.media['cover_path'] = str(tmp_path / 'factory' / 'old-cover.png')
+    item.packages[0]['cover_path'] = str(cover)
+    response = factory.download_cover('id', db)
+    assert response.path == cover
+    assert 'DLSS 5拿奖，画面谁说了算？—封面.png' in unquote(response.headers['content-disposition'])
+
+
+def test_video_download_prefers_complete_video(tmp_path, monkeypatch):
+    item, db = fixture_item(tmp_path, monkeypatch)
+    complete = tmp_path / 'factory' / 'complete.mp4'
+    complete.write_bytes(b'complete video with cover')
+    item.packages[0]['video_path'] = str(complete)
+    assert factory.download_video('id', db).path == complete

@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 
-HANDOFF_VERSION = 2
+HANDOFF_VERSION = 4
 _PLATFORM_NAMES = {"douyin": "抖音", "xiaohongshu": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩"}
 _AI_DISCLOSURE = "AI辅助整理文案、配音和剪辑；参考来源见正文及随附资料"
 _REPLY_TEMPLATES = (
@@ -74,7 +74,7 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
             break
         if fallback and fallback not in hooks:
             hooks.append(fallback)
-    follow = (_text(extra.get("follow_prompt")) or _text(content.get("follow_prompt"))
+    follow = (_text(content.get("follow_prompt")) or _text(extra.get("follow_prompt"))
               or "如果这些内容对你有帮助，欢迎关注，一起对照来源看懂新进展。")
     replies = []
     values = extra.get("reply_templates")
@@ -96,14 +96,15 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
          if route.get("day") else f"先确认本条只分配给{name}以及具体发布日期，再安排人工上传。"),
         "当天每个平台最多2条原创；将历史已提交和结果未明的作品也计入核对，额度用完则改日安排。",
         "如本条有历史提交、审核或结果未明，请本人先在平台确认是否已存在；确认之前不要再次上传，也不要改投其他平台。",
-        "本人使用官方应用或官方创作后台，选择本包视频和封面；只上传到唯一分配平台，不跨平台重复发布。",
-        "复制本包标题、正文和话题，核对来源与封面文字；如需使用备选钩子，先确认它与成片开头一致。",
+        "本人使用官方应用或官方创作后台，上传本包完整MP4；封面已融入视频开头，钩子与关注提醒由工厂完成。只上传到唯一分配平台。",
+        "填写本包发布标题和完整正文即可；正文已合并话题及AI制作说明。",
         "按平台要求如实填写AI制作声明，检查正文、画面、声音及可见范围，由本人确认提交。",
         "提交后由本人记录作品链接、作品ID、时间及平台实际状态；package_ready只表示素材包就绪，不代表已发布。",
         "发布后可由账号本人使用置顶评论；仅在收到相应真实留言后，核对语境和来源再采用回复模板。",
     ]
     return {
         "version": HANDOFF_VERSION, "platform": platform, "title": title, "caption": caption, "tags": tags,
+        "description": caption + "\n\n" + " ".join("#" + tag for tag in tags) + "\n\n" + (_text(extra.get("ai_disclosure")) or _AI_DISCLOSURE),
         "cover_text": _text(extra.get("cover_text")) or title,
         "alternate_titles": _texts(extra.get("alternate_titles"))[:3], "hooks": hooks[:3],
         "follow_prompt": follow, "ai_disclosure": _text(extra.get("ai_disclosure")) or _AI_DISCLOSURE,
@@ -120,12 +121,7 @@ def handoff_files(handoff):
         raise ValueError("不支持的人工发布包版本")
     route = handoff["distribution"]
     name = _PLATFORM_NAMES.get(handoff["platform"], handoff["platform"])
-    copy = [f"人工发布文案｜{name}", "标题", handoff["title"], "", "正文", handoff["caption"],
-            "", "话题", " ".join("#" + tag for tag in handoff["tags"]), "", "封面文字", handoff["cover_text"]]
-    if handoff["alternate_titles"]:
-        copy += ["", "备选标题（选择前核对与成片一致）", *handoff["alternate_titles"]]
-    copy += ["", "开场钩子备选（不表示成片已更换开头）", *handoff["hooks"], "", "自然关注句",
-             handoff["follow_prompt"], "", "AI制作说明", handoff["ai_disclosure"]]
+    copy = [f"人工发布文案｜{name}", "标题", handoff["title"], "", "正文（整段复制）", handoff["description"]]
     interaction = ["账号本人互动文案", "以下仅供账号本人置顶或回复真实留言；这些问题是模板，不表示已收到这些留言。",
                    "不得用模型生成的文字冒充观众评论或互动记录。", "", "置顶评论", handoff["pinned_comment"]]
     for index, entry in enumerate(handoff["reply_templates"], 1):

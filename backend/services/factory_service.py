@@ -110,12 +110,14 @@ def run_detail(db, run):
             "research_packet": item.brief.get("research_packet"),
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
             "review": item.review or {}, "media_quality": media.get("quality", {}),
-            "video_url": storage_url(media.get("video_path")), "webm_url": storage_url(media.get("webm_path")),
+            "video_url": storage_url(next((p["video_path"] for p in item.packages or [] if p.get("video_path")), media.get("video_path"))),
+            "webm_url": None if any(p.get("video_path") for p in item.packages or []) else storage_url(media.get("webm_path")),
             "video_download_url": f"/api/factory/items/{item.id}/video" if media.get("video_path") and content.get("title") else None,
             "video_filename": safe_filename(content["title"], ".mp4") if content.get("title") else None,
             "visual_style": media.get("style") or media.get("renderer_kind", "cards"),
             "audio_url": storage_url(media.get("audio_path")),
-            "cover_url": storage_url(media.get("cover_path")), "duration": media.get("duration"),
+            "cover_url": storage_url(next((p["cover_path"] for p in item.packages or [] if p.get("cover_path")), media.get("cover_path"))),
+            "cover_download_url": f"/api/factory/items/{item.id}/cover", "duration": media.get("duration"),
             "tts_engine": media.get("tts_engine"), "packages": packages, "error": item.error,
             "voice_profile": media.get("voice_profile"), "voice_label": media.get("voice_label"),
             "preview": {"video_url": storage_url(preview.get("video_path")),
@@ -726,6 +728,8 @@ def _package(run_id, item_id):
             existing = [p for p in existing if p["platform"] in platforms]
         reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
         if reuse_variants and all(p.get("handoff_version") == HANDOFF_VERSION
+                                  and p.get("cover_path") and Path(p["cover_path"]).is_file()
+                                  and p.get("video_path") and Path(p["video_path"]).is_file()
                                   and p.get("video_filename") == video_filename for p in existing):
             _save_item(item_id, status="completed", error=None)
             return
@@ -762,8 +766,16 @@ def _package(run_id, item_id):
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
             raise ValueError("平台版本缺少标题")
         handoff = build_handoff(content, variant, route, warnings.get(platform))
-        manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id"}}, "status": "package_ready", "published": False,
+        from services.factory_cover import render_cover
+        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}.png"
+        cover_design = render_cover({**content, "cover_text": handoff["cover_text"]}, cover_path)
+        from services.factory_delivery_video import render_delivery_video
+        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}.mp4"
+        delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video)
+        manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
                     "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename,
+                    "delivery_quality": delivery_quality,
+                    "cover_design": {k: v for k, v in cover_design.items() if k != "design_path"},
                     "source_item_id": item_id, "sources": content.get("sources", []),
                     "visual_sources": media.get("visual_sources", []),
                     "note": "本包仅代表素材交付，不代表平台发布状态。请在官方客户端人工核对、上传并发布到分配的平台。"}
@@ -772,8 +784,9 @@ def _package(run_id, item_id):
         temp = path.with_suffix(".zip.tmp")
         texts = handoff_files(handoff)
         with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
-            for key, name in (("video_path", video_filename), ("audio_path", "audio.mp3"), ("cover_path", "cover.png"), ("subtitle_path", "subtitles.ass")):
-                archive.write(media[key], name)
+            archive.write(cover_path, "cover.png")
+            for key, name in (("video_path", video_filename), ("audio_path", "audio.mp3"), ("subtitle_path", "subtitles.ass")):
+                archive.write(delivery_video if key == "video_path" else media[key], name)
             archive.writestr("metadata.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             archive.writestr("script.txt", content["script"])
             archive.writestr("发布说明.txt", manifest["note"] + "\n\n" + variant.get("caption", ""))
@@ -798,7 +811,8 @@ def _package(run_id, item_id):
                          "tags": variant.get("tags", []), "published": False,
                          "status": previous.get(platform, {}).get("status", "package_ready"), "path": str(path),
                          "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename,
-                         "copy_path": str(copy_path)})
+                         "copy_path": str(copy_path), "cover_path": str(cover_path), "cover_design": cover_design,
+                         "video_path": str(delivery_video), "delivery_quality": delivery_quality})
     _save_item(item_id, packages=packages, status="completed", error=None)
     emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份完整人工发布包，等待用户在官方客户端发布", "completed")
 

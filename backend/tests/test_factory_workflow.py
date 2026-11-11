@@ -38,6 +38,14 @@ def isolated_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(factory_llm, "SessionLocal", sessions)
     monkeypatch.setattr(factory_service, "FACTORY_DIR", tmp_path / "factory")
     monkeypatch.setattr(factory_service, "queue_available", lambda: True)
+    def fake_cover(content, target):
+        Path(target).write_bytes(content["cover_text"].encode())
+        return {"text_rendered": content["cover_text"]}
+    monkeypatch.setattr("services.factory_cover.render_cover", fake_cover)
+    def fake_complete(source, cover, target):
+        Path(target).write_bytes(Path(source).read_bytes())
+        return {"cover_integrated": True, "audio_preserved": True}
+    monkeypatch.setattr("services.factory_delivery_video.render_delivery_video", fake_complete)
     yield sessions
     engine.dispose()
 
@@ -391,6 +399,7 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 assert handoff["platform"] == package["platform"]
                 assert handoff["title"] == package["title"] and handoff["caption"] == "平台简介"
                 assert handoff["cover_text"] == f"{package['platform']} 封面文字"
+                assert archive.read("cover.png").decode() == handoff["cover_text"]
                 assert handoff["hooks"][:2] == ["先看原文里的条件。", "这条内容能说明什么？"]
                 assert handoff["pinned_comment"] == "一起对照所列原文。"
                 assert len(handoff["reply_templates"]) >= 3
@@ -468,7 +477,7 @@ def test_existing_archive_upgrade_reuses_video_and_preserves_uncertain_publicati
         package = item.packages[0]
         assert package["platform"] == "douyin" and Path(package["path"]) != old_zip
         assert package["published"] is False
-        assert package["handoff_version"] == HANDOFF_VERSION == 2
+        assert package["handoff_version"] == HANDOFF_VERSION == 4
         assert package["video_filename"] == "已有定稿.mp4"
         with zipfile.ZipFile(package["path"]) as archive:
             assert "video.mp4" not in archive.namelist()
