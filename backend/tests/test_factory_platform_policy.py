@@ -20,18 +20,15 @@ from services import xiaohongshu_connector as connector
 from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
 
 
-def test_xhs_policy_cannot_be_enabled_by_environment_or_cached_login(monkeypatch):
-    monkeypatch.setenv("XIAOHONGSHU_AUTOMATION_ENABLED", "true")
-    assert not automation_enabled("xiaohongshu")
-    assert not automation_enabled(" XIAOHONGSHU ")
-    assert automation_state("xiaohongshu")["mode"] == "manual"
-    with pytest.raises(AutomationDisabled, match="官方授权"):
-        require_automation("xiaohongshu")
+@pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou", "bilibili", "future_platform"])
+def test_policy_cannot_be_enabled_by_environment_or_cached_login(monkeypatch, platform):
+    monkeypatch.setenv(platform.upper() + "_AUTOMATION_ENABLED", "true")
+    assert not automation_enabled(platform)
+    assert not automation_enabled(" " + platform.upper() + " ")
+    assert automation_state(platform)["mode"] == "manual"
+    with pytest.raises(AutomationDisabled, match="本人手动"):
+        require_automation(platform)
     assert issubclass(AutomationDisabled, ValueError)
-    for platform in ("douyin", "kuaishou", "bilibili"):
-        assert automation_enabled(platform)
-        assert automation_state(platform)["mode"] == "automated"
-        assert require_automation(platform) is None
 
 
 @pytest.mark.parametrize("action", ["login", "inspect", "prepare", "publish"])
@@ -94,24 +91,25 @@ def sessions():
     engine.dispose()
 
 
-def test_manual_analytics_never_imports_browser_or_overwrites_historical_metrics(sessions, monkeypatch):
+@pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou", "bilibili"])
+def test_manual_analytics_never_imports_browser_or_overwrites_historical_metrics(sessions, monkeypatch, platform):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
     with sessions() as db:
-        old = FactoryAnalyticsSnapshot(platform="xiaohongshu", status="connected", collected_at=datetime.utcnow()-timedelta(days=2),
+        old = FactoryAnalyticsSnapshot(platform=platform, status="connected", collected_at=datetime.utcnow()-timedelta(days=2),
             data={"status": "connected", "metrics": {"followers": 17, "views": 101}, "period": {"label": "historical fixture"}})
         db.add(old); db.commit()
-        result = analytics.capture("xiaohongshu")
+        result = analytics.capture(platform)
         assert result["status"] == "manual" and "metrics" not in result
-        assert analytics.save_snapshot(db, "xiaohongshu", result).id == old.id
+        assert analytics.save_snapshot(db, platform, result).id == old.id
         assert db.query(FactoryAnalyticsSnapshot).count() == 1
-        view = next(row for row in analytics.overview(db)["platforms"] if row["platform"] == "xiaohongshu")
+        view = next(row for row in analytics.overview(db)["platforms"] if row["platform"] == platform)
         assert view["status"] == "manual" and view["historical_only"]
         assert view["metrics"] == {"followers": 17, "views": 101}
         assert view["period"]["label"] == "historical fixture" and "自动采集已停止" in view["message"]
         assert view["collected_at"].startswith(old.collected_at.isoformat())
 
 
-def test_operations_loop_skips_xhs_capture_and_snapshot(sessions, tmp_path, monkeypatch):
+def test_operations_loop_skips_all_account_capture_and_snapshots(sessions, tmp_path, monkeypatch):
     class EndLoop(BaseException):
         pass
     monkeypatch.setattr(operations, "init_db", lambda: None)
@@ -126,8 +124,8 @@ def test_operations_loop_skips_xhs_capture_and_snapshot(sessions, tmp_path, monk
     monkeypatch.setattr(operations.time, "sleep", lambda _: (_ for _ in ()).throw(EndLoop()))
     with pytest.raises(EndLoop):
         operations.serve()
-    assert [call.args[0] for call in capture.call_args_list] == ["douyin", "kuaishou", "bilibili"]
-    assert [call.args[1] for call in save.call_args_list] == ["douyin", "kuaishou", "bilibili"]
+    capture.assert_not_called()
+    save.assert_not_called()
 
 
 def load_factoryctl():
@@ -138,24 +136,27 @@ def load_factoryctl():
 
 
 @pytest.mark.parametrize("action", ["start", "restart", "stop", "status"])
-def test_factoryctl_never_starts_xhs_but_can_stop_or_report_legacy_unit(monkeypatch, action):
+def test_factoryctl_never_starts_accounts_but_can_stop_or_report_legacy_units(monkeypatch, action):
     control = load_factoryctl(); command = Mock(); monkeypatch.setattr(control, "run", command)
     control.main([action])
     args = command.call_args.args
-    assert ("short-video-ai-factory-xiaohongshu.service" in args) is (action in {"stop", "status"})
+    for unit in control.LEGACY_UNITS:
+        assert (unit in args) is (action in {"stop", "status"})
+    assert len(control.UNITS) == len(control.LEGACY_UNITS) == 4
     assert "short-video-ai-factory-api.service" in args
 
 
-def test_factoryctl_install_does_not_create_or_replace_xhs_unit(tmp_path, monkeypatch):
+def test_factoryctl_install_does_not_create_or_replace_account_units(tmp_path, monkeypatch):
     control = load_factoryctl()
     root, home = tmp_path / "checkout", tmp_path / "test-user"
     root.mkdir(); directory = home / ".config/systemd/user"; directory.mkdir(parents=True)
-    old_unit = directory / "short-video-ai-factory-xiaohongshu.service"
-    old_unit.write_text("retained historical unit")
+    old_units = [directory / name for name in control.LEGACY_UNITS]
+    for unit in old_units:
+        unit.write_text("retained historical unit")
     monkeypatch.setattr(control, "ROOT", root)
     monkeypatch.setattr(control.Path, "home", lambda: home)
     command = Mock(); monkeypatch.setattr(control, "run", command)
     control.install(3000)
-    assert old_unit.read_text() == "retained historical unit"
-    assert len(list(directory.glob("*.service"))) == len(control.UNITS) + 1
+    assert all(unit.read_text() == "retained historical unit" for unit in old_units)
+    assert len(list(directory.glob("*.service"))) == len(control.UNITS) + len(control.LEGACY_UNITS)
     command.assert_called_once_with("systemctl", "--user", "daemon-reload")

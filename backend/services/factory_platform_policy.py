@@ -1,8 +1,8 @@
 """Platform automation boundaries, independent of UI switches and credentials.
 
-Xiaohongshu has no implemented official authorization integration here. Browser
-automation stays disabled until a real authorized capability replaces it; a
-login, stored cookie, environment flag, or ordinary settings update cannot opt in.
+The factory delivers complete media packages for the owner to upload manually.
+Account automation stays disabled for every platform; a login, stored cookie,
+environment flag, or ordinary settings update cannot opt in.
 """
 
 
@@ -11,7 +11,8 @@ class AutomationDisabled(ValueError):
 
 
 def automation_enabled(platform):
-    return str(platform).strip().lower() != "xiaohongshu"
+    # Fail closed for future platform names as well as the four current ones.
+    return False
 
 
 def automation_state(platform):
@@ -21,7 +22,7 @@ def automation_state(platform):
         "platform": platform,
         "mode": "automated" if enabled else "manual",
         "enabled": enabled,
-        "reason": None if enabled else "小红书浏览器自动化已停用；未接入官方授权能力，仅支持手动发布与查看。",
+        "reason": "账号自动化已停用；工厂仅交付素材包，由本人手动上传、查看数据及核对发布结果。",
     }
 
 

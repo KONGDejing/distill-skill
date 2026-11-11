@@ -31,7 +31,7 @@ def iso(value):
 
 def config_dict(config):
     from services.factory_platform_policy import automation_state
-    keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times")
+    keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
             "editor_quotas": editor_quotas(min(config.daily_target, 6)),
             "distribution_policy": "single-platform-v1", "platform_daily_limit": 2,
@@ -77,6 +77,7 @@ def production_summary(production):
 
 
 def run_detail(db, run):
+    from services.factory_filenames import safe_filename
     result = run_dict(run)
     result["report"] = run.report or {}
     result["plan"] = run.plan or {}
@@ -88,7 +89,8 @@ def run_detail(db, run):
     for item in items:
         content, media = item.content or {}, item.media or {}
         preview = media.get("preview") or {}
-        packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}"} for package in item.packages or []]
+        packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}",
+                     "copy_url": storage_url(package.get("copy_path"))} for package in item.packages or []]
         publication = db.query(FactoryPublication).filter_by(item_id=item.id, platform="xiaohongshu").order_by(FactoryPublication.created_at.desc()).first()
         from services.factory_publishing import job_dict
         publications = db.query(FactoryPublication).filter_by(item_id=item.id).order_by(
@@ -109,6 +111,8 @@ def run_detail(db, run):
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
             "review": item.review or {}, "media_quality": media.get("quality", {}),
             "video_url": storage_url(media.get("video_path")), "webm_url": storage_url(media.get("webm_path")),
+            "video_download_url": f"/api/factory/items/{item.id}/video" if media.get("video_path") and content.get("title") else None,
+            "video_filename": safe_filename(content["title"], ".mp4") if content.get("title") else None,
             "visual_style": media.get("style") or media.get("renderer_kind", "cards"),
             "audio_url": storage_url(media.get("audio_path")),
             "cover_url": storage_url(media.get("cover_path")), "duration": media.get("duration"),
@@ -178,6 +182,7 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
             raise ValueError("剩余剪辑配额必须与本轮数量一致，且每人不超过2条")
         config["editor_quotas"] = dict(editor_quota_override)
     config["auto_publish_xiaohongshu"] = False
+    config["publish_enabled"] = False
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 12 + 12)
     config["engagement_required"] = True
     config["director_hook_required"] = True
@@ -706,9 +711,12 @@ def _render(run_id, item_id):
 
 @item_usage("platform_adaptation")
 def _package(run_id, item_id):
+    from services.factory_filenames import safe_filename
+    from services.factory_handoff import HANDOFF_VERSION, build_handoff, handoff_files
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
         content, media, existing = item.content, item.media, item.packages or []
+        video_filename = safe_filename(content["title"], ".mp4")
         platforms = run.settings_snapshot["platforms"]
         route = item.brief.get("distribution") or {}
         if run.settings_snapshot.get("distribution_policy") == "single-platform-v1" or route:
@@ -716,14 +724,30 @@ def _package(run_id, item_id):
                 raise ValueError("尚未确定唯一分发平台，保留成片等待排期")
             platforms = [route["platform"]]
             existing = [p for p in existing if p["platform"] in platforms]
-        if len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing):
+        reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
+        if reuse_variants and all(p.get("handoff_version") == HANDOFF_VERSION
+                                  and p.get("video_filename") == video_filename for p in existing):
             _save_item(item_id, status="completed", error=None)
             return
+        publications = db.query(FactoryPublication).filter_by(item_id=item_id, action="publish").all()
+        warnings = {}
+        for job in publications:
+            if job.status == "submitted":
+                warnings[job.platform] = "这条作品已有平台接收记录，请在官方作品管理核对，不要重复上传。"
+            elif job.status in {"queued", "running"} or (job.result or {}).get("submission_uncertain"):
+                warnings[job.platform] = "这条作品已有提交尝试但结果未确认；请本人先在官方作品管理确认是否已发布或审核中，再决定是否上传，不能重复提交。"
     check_cancel(run_id)
-    emit(run_id, "publisher", "adapting", f"准备 {len(platforms)} 个平台的标题、简介、封面及素材包：{content['title']}")
-    adapted = call_agent(run_id, "publisher", {"content": content, "platforms": platforms}, max_tokens=3000,
-                         work_kind="rework" if existing else "initial")
-    variants = adapted.get("platforms", [])
+    emit(run_id, "publisher", "adapting", f"准备完整人工发布包：标题、正文、话题、AI说明、钩子、置顶评论及回复模板：{content['title']}")
+    if reuse_variants:
+        # Upgrade an existing delivery without another model call or changing
+        # the video. Preserve its old archive and publication evidence.
+        variants = [dict(p) for p in existing]
+    else:
+        publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan") if k in content}
+        adapted = call_agent(run_id, "publisher", {"content": publication_content, "platforms": platforms,
+            "delivery_mode": "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=3000,
+                             work_kind="rework" if existing else "initial")
+        variants = adapted.get("platforms", [])
     if not isinstance(variants, list) or len(variants) != len(platforms) or {p.get("platform") for p in variants} != set(platforms):
         raise ValueError("运营员未交付全部平台版本")
     if run.settings_snapshot.get("engagement_required"):
@@ -731,22 +755,30 @@ def _package(run_id, item_id):
              "completed", validate_follow_prompt(content))
     packages = []
     directory = FACTORY_DIR / run_id / item_id
+    directory.mkdir(parents=True, exist_ok=True)
+    previous = {p["platform"]: p for p in existing}
     for variant in variants:
         platform = variant["platform"]
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
             raise ValueError("平台版本缺少标题")
-        manifest = {**variant, "status": "package_ready", "published": False,
+        handoff = build_handoff(content, variant, route, warnings.get(platform))
+        manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id"}}, "status": "package_ready", "published": False,
+                    "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename,
                     "source_item_id": item_id, "sources": content.get("sources", []),
                     "visual_sources": media.get("visual_sources", []),
-                    "note": "素材已准备完成，尚未上传或发布。需要连接平台后执行发布。"}
-        path = directory / f"{platform}.zip"
-        temp = directory / f"{platform}.zip.tmp"
+                    "note": "本包仅代表素材交付，不代表平台发布状态。请在官方客户端人工核对、上传并发布到分配的平台。"}
+        # Versioned output keeps previously delivered archives intact on upgrade.
+        path = directory / f"{platform}-manual-v{HANDOFF_VERSION}.zip"
+        temp = path.with_suffix(".zip.tmp")
+        texts = handoff_files(handoff)
         with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
-            for key, name in (("video_path", "video.mp4"), ("audio_path", "audio.mp3"), ("cover_path", "cover.png"), ("subtitle_path", "subtitles.ass")):
+            for key, name in (("video_path", video_filename), ("audio_path", "audio.mp3"), ("cover_path", "cover.png"), ("subtitle_path", "subtitles.ass")):
                 archive.write(media[key], name)
             archive.writestr("metadata.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             archive.writestr("script.txt", content["script"])
             archive.writestr("发布说明.txt", manifest["note"] + "\n\n" + variant.get("caption", ""))
+            for name, text in texts.items():
+                archive.writestr(name, text)
             if media.get("visual_sources"):
                 archive.writestr("visual-sources.json", json.dumps(media["visual_sources"], ensure_ascii=False, indent=2))
                 for source in media["visual_sources"]:
@@ -760,11 +792,15 @@ def _package(run_id, item_id):
                 if edl.is_relative_to(FACTORY_DIR.resolve()) and edl.is_file():
                     archive.write(edl, "edit-decision-list.json")
         os.replace(temp, path)
+        copy_path = directory / f"{platform}-发布文案.txt"
+        copy_path.write_text(texts["发布文案.txt"], encoding="utf-8")
         packages.append({"platform": platform, "title": variant["title"], "caption": variant.get("caption", ""),
                          "tags": variant.get("tags", []), "published": False,
-                         "status": "package_ready", "path": str(path)})
+                         "status": previous.get(platform, {}).get("status", "package_ready"), "path": str(path),
+                         "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename,
+                         "copy_path": str(copy_path)})
     _save_item(item_id, packages=packages, status="completed", error=None)
-    emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份平台素材包，等待平台接入", "completed")
+    emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份完整人工发布包，等待用户在官方客户端发布", "completed")
 
 
 @batch_usage("reporting")
@@ -869,17 +905,6 @@ def execute_run(run_id):
                         _write_and_review(run_id, item_id)
                     _render(run_id, item_id)
                     _package(run_id, item_id)
-                with SessionLocal() as db:
-                    snapshot = db.get(FactoryRun, run_id).settings_snapshot
-                    auto_publish = snapshot.get("auto_publish_xiaohongshu", False) and not snapshot.get("publish_enabled", False)
-                if auto_publish:
-                    try:
-                        from services.factory_publishing import auto_submit
-                        auto_submit(item_id, run_id)
-                    except (RunCancelled, MemoryPressure, ModelServiceUnavailable):
-                        raise
-                    except Exception as exc:
-                        emit(run_id, "publisher", "platform_submission", f"成片已保留，小红书提交未完成：{str(exc)[:300]}", "warning")
                 with SessionLocal() as db:
                     db.get(FactoryRun, run_id).completed_count = db.query(FactoryItem).filter_by(run_id=run_id, status="completed").count()
                     db.commit()

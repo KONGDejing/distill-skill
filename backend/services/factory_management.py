@@ -11,7 +11,7 @@ from services.factory_team import editor_id, editor_quotas
 from agents.registry import EDITOR_IDS, DAILY_EDITOR_QUOTAS, DAILY_TARGET
 
 WEEKS = [
-    {"week": 1, "focus": "建立基线、修复交付，验证150秒样片", "actions": ["同一主题只改变开场方式做对照", "每日核对原始资料、声音与画面", "启用三平台数据采集，接入B站账号"], "decision": "先保证真实完整的发布与数据；样片不过关就返工，不用重复视频凑6条"},
+    {"week": 1, "focus": "建立基线、修复交付，验证150秒样片", "actions": ["同一主题只改变开场方式做对照", "每日核对原始资料、声音与画面", "根据用户提供的官方数据建立基线，保留统计日期"], "decision": "先保证真实完整的交付与数据；样片不过关就返工，不用重复视频凑6条"},
     {"week": 2, "focus": "优化开头和讲解结构", "actions": ["每个平台至少比较3组同系列内容", "单独比较问题式与结果式开场", "根据评论里的真实疑问补充下一条选题"], "decision": "样本不足就继续收集，不把一次高播放当规律"},
     {"week": 3, "focus": "形成系列，验证持续关注理由", "actions": ["在每日6条、每位剪辑师2条内调整选题，不增加制作名额", "比较两种自然关注提醒，每次只变一个因素", "B站专题用多个来源解释一个完整问题"], "decision": "同时检查完播与净增粉丝，避免只追播放或堆砌热点"},
     {"week": 4, "focus": "复核可重复的内容方式", "actions": ["复测表现较好的结构，核对相同统计周期", "停止反复低效且没有明确改进依据的内容套路", "提交四平台月报、遗留问题和下月安排"], "decision": "报告未达标平台与原因，不承诺必然涨粉，不买粉、不互粉冲数"},
@@ -20,9 +20,9 @@ RHYTHM = [
     {"time": "00:30", "owner": "老周 / 小探", "task": "自动开工，筛选有出处的候选与素材，确定6条原创计划；小影、小影2、小影3各2条"},
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
-    {"time": "每30分钟", "owner": "小数", "task": "读取官方数据，保留采集时间、平台统计周期与缺失字段"},
-    {"time": "6个既定时段（±15分钟）", "owner": "小麦", "task": "每条只发一个平台，每平台最多2条、每天合计6条；小红书交付人工发布包，其他平台逐条保存回执"},
-    {"time": "每周三 / 周六 20:00", "owner": "小麦 / 小影", "task": "B站每周2条6–10分钟专题；账号与长视频流程完成接入后启用"},
+    {"time": "收到用户提供的数据后", "owner": "小数", "task": "整理本人提供的官方统计，保留日期、周期与缺失字段；不自动浏览账号后台"},
+    {"time": "6个建议时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；每条只分配一个平台、每平台最多2条，用户本人通过官方客户端上传和回复评论"},
+    {"time": "每周三 / 周六 20:00（长视频规划）", "owner": "小麦 / 小影", "task": "B站保留每周2条6–10分钟专题规划；长视频制作流程就绪后也只交付人工发布包"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
 UPGRADES = {
@@ -32,7 +32,7 @@ UPGRADES = {
     "writer": "每条先写一句观众问题，正文给案例和边界；用实测语速修订约150秒，关注提醒不承诺不存在的下期。",
     "producer": "先画叙事分镜再选片；记录素材时间窗与使用记录，保留完整动作，关键术语出现时同步展示对应画面。",
     "reviewer": "区分脚本事实审核、素材描述对齐和成片技术检查；未进行逐帧语义验收不得写成已通过。",
-    "publisher": "同一账号串行上传与发布，先核对真实回执；评论按问题回复，商业承诺和无法确定的技术问题转待处理。",
+    "publisher": "逐条交付标题、正文、话题、封面文字、钩子、AI说明、置顶评论及真实问题回复模板；提示用户核对历史提交，未经本人确认不记录已发布。",
     "analyst": "用同平台同周期比较，区分新增和净增、当前粉丝和累计统计；缺失数据不填0，不将账号整体涨粉归因给单条。",
 }
 UPGRADES["producer2"] = "为自己负责的视频保留完整分镜、配音和素材记录；技术概念用具体动作解释，逐段检查术语与画面的对应。"
@@ -65,8 +65,11 @@ def initialize(db):
                                "observed_at": snapshot.collected_at.replace(tzinfo=timezone.utc).isoformat() if snapshot else None}
     plan = FactoryGrowthPlan(id=1, baselines=baselines, policy={"weeks": 4, "weekly_min": .05, "weekly_stretch": .10,
         "shorts_per_day": DAILY_TARGET, "editor_quotas": dict(DAILY_EDITOR_QUOTAS),
-        "max_short_submissions_per_day": DAILY_TARGET, "short_seconds": 150, "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
-        "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_login_and_long_video_integration"}})
+        "max_short_submissions_per_day": DAILY_TARGET, "short_seconds": 150,
+        "delivery_mode": "manual", "single_platform_per_original": True, "max_per_platform_per_day": 2,
+        "account_automation_enabled": False, "analytics_mode": "manual_or_historical",
+        "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
+        "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_long_video_manual_delivery"}})
     db.add(plan); db.commit()
     return plan
 
@@ -125,14 +128,15 @@ def sync_work_orders(db, state, analytics, now):
     current_run_ids = {r.id for r in runs if r.settings_snapshot.get("target_duration_seconds") == 150}
     approved = [i for i in items if i.run_id in current_run_ids and i.review.get("approved") is True and i.content]
     ready = [i for i in items if i.status == "completed" and 135 <= float(i.media.get("duration", 0)) <= 165]
+    delivered = sum(_handoff_complete(i) for i in ready)
     connected = sum(p["status"] == "connected" for p in analytics["platforms"])
     specs = [
         ("researcher", "05:00", "选题与素材清单", f"至少{target}份有正文与出处的资料，候选按三位剪辑师配额覆盖通用科技、论文和热点展会", min(sum(bool(s.get("url") and s.get("text")) for r in runs for s in r.sources), sum(len(r.plan.get("candidates", [])) for r in runs)), target),
         ("researcher3", "05:15", "给小影3交接热点与展会素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
-        ("publisher", "22:15", "按唯一平台分发，小红书交付人工发布包", "每条只分配一个平台、每天合计6条；抖音和快手记录回执，小红书等待官方客户端人工发布，不以素材包冒充已发布", state["summary"]["fully_submitted_slots"], target),
-        ("analyst", "22:25", "补齐四平台经营数据", "4个平台有2小时内官方数据，缺失指标和统计周期明确标记", connected, 4),
+        ("publisher", "22:15", "交付6套完整人工发布包", "每条只分配一个平台、每平台最多2条；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，用户本人上传，不以素材包冒充已发布", delivered, target),
+        ("analyst", "22:25", "整理人工提供的经营数据", "只用用户提供的官方统计或留存历史数据，标明数据日期、周期和缺失；不自动读取账号，等待人工数据时不编造增长", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]
     for index, owner in enumerate(EDITOR_IDS):
@@ -205,7 +209,7 @@ def sync_work_orders(db, state, analytics, now):
         if db.get(FactoryWorkOrder, key):
             continue
         db.add(FactoryWorkOrder(key=key, kind="bilibili", owner="publisher", title="B站6–10分钟专题",
-            acceptance="小探资料包→小文专题脚本→小影章节制作→小审事实与成片验收→小麦发布→小数48小时复盘；实际360–600秒及官方提交回执",
+            acceptance="小探资料包→小文专题脚本→小影章节制作→小审验收→小麦交付人工发布包；实际360–600秒，发布由本人完成，有人工提供的数据后再复盘",
             due_at=due, status="blocked", evidence={"blocker": "长视频制作与B站投稿流程尚待联调", "seconds_range": [360, 600], "platform": "bilibili"}))
     db.commit()
 
@@ -221,6 +225,15 @@ def work_orders(db, now=None):
 def _score(name, weight, value, basis, denominator=None):
     return {"name": name, "weight": weight, "earned": round(weight * max(0, min(1, value)), 1) if value is not None else None,
             "basis": basis, "sample_count": denominator}
+
+
+def _handoff_complete(item):
+    """Score tangible local deliveries; never treat an archive as a receipt."""
+    from services.factory_schedule import _manual_package_ready
+    route = item.brief.get("distribution") or {}
+    packages = item.packages or []
+    return (len(packages) == 1 and route.get("platform") is not None
+            and _manual_package_ready(packages[0], route["platform"], route))
 
 
 def scorecards(db, analytics):
@@ -261,8 +274,8 @@ def scorecards(db, analytics):
                      _score("素材描述对齐审核", 25, ratio(sum(i.content.get("editorial_review", {}).get("approved") is True for i in complete), len(complete)), "只代表口播与已核对素材描述的审核", len(complete)),
                      pending("成片逐帧语义与听感抽检", 30), pending("平台观看体验", 20)],
         "reviewer": [pending("事实抽检准确率", 40), pending("漏检与误拒复核", 30), pending("返工后质量改善", 30)],
-        "publisher": [_score("提交回执取得率", 40, ratio(sum(j.status == "submitted" for j in jobs), len(jobs)), "仅统计真实提交任务，已提交仍不等于公开审核通过", len(jobs)),
-                      pending("按时发布", 25), pending("评论响应质量", 20), pending("问题闭环", 15)],
+        "publisher": [_score("完整人工交付率", 40, ratio(sum(_handoff_complete(i) for i in complete), len(complete)), "核对完整文案和实际素材包；用户是否发布不计为员工交付结果", len(complete)),
+                      pending("按时交付", 25), pending("互动模板质量", 20), pending("问题闭环", 15)],
         "analyst": [_score("平台数据覆盖", 40, len(connected) / 4, "四个平台中实际取得当前数据的平台数", 4),
                     _score("统计周期完整", 20, ratio(sum(bool(p.get("period", {}).get("start") and p.get("period", {}).get("end")) for p in connected), len(connected)), "核对每个平台周期", len(connected)),
                     pending("归因与实验结论质量", 25), pending("日报数据校验", 15)],

@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "short-video-ai-factory"
 CREATOR_PLATFORMS = ("douyin", "kuaishou", "bilibili")
 UNITS = [f"{PREFIX}-{role}.service" for role in
-         ("api", "worker", "scheduler", "operations", *(f"creator-{platform}" for platform in CREATOR_PLATFORMS))]
-LEGACY_UNITS = [f"{PREFIX}-xiaohongshu.service"]
+         ("api", "worker", "scheduler", "operations")]
+LEGACY_UNITS = [f"{PREFIX}-xiaohongshu.service",
+                *(f"{PREFIX}-creator-{platform}.service" for platform in CREATOR_PLATFORMS)]
 ALL_UNITS = [*UNITS, *LEGACY_UNITS]
 
 
@@ -40,11 +41,8 @@ def install(port):
         "scheduler": f"{python} -m services.factory_scheduler",
         "operations": f"{python} -m services.factory_operations",
     }
-    commands.update({f"creator-{platform}": f"{python} {ROOT / 'backend/services/creator_connector.py'} --serve --platform {platform}"
-                     for platform in CREATOR_PLATFORMS})
     for role, command in commands.items():
         unit = directory / f"{PREFIX}-{role}.service"
-        creator_environment = f"EnvironmentFile=-{runtime / 'creator-browser.env'}\n" if role.startswith("creator-") else ""
         unit.write_text(f"""[Unit]
 Description=Short Video AI Factory / {role}
 After=network-online.target
@@ -52,7 +50,7 @@ After=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-{network_file}
-{creator_environment}WorkingDirectory={ROOT / 'backend'}
+WorkingDirectory={ROOT / 'backend'}
 ExecStart={command}
 Environment=PYTHONUNBUFFERED=1
 Environment=OMP_NUM_THREADS=4

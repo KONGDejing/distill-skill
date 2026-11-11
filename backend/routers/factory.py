@@ -35,6 +35,7 @@ class SettingsUpdate(BaseModel):
     platforms: list[Literal["douyin", "xiaohongshu", "kuaishou"]] | None = Field(default=None, min_length=1, max_length=3)
     visual_style: Literal["tech_montage", "cards"] | None = None
     publish_enabled: bool | None = None
+    manual_delivery_enabled: bool | None = None
     publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=DAILY_TARGET)
 
     @field_validator("publish_times", "platforms")
@@ -63,45 +64,20 @@ def overview(db: Session = Depends(get_db)):
         employees.append({**agent, "status": "working" if event and event.status == "running" else "idle",
                           "current_task": event.message if event and event.status == "running" else None})
     platforms = [dict(platform) for platform in PLATFORMS]
-    from services.xiaohongshu_connector import connection_state
-    login = connection_state()
-    if login.get("authenticated"):
-        platform = next(p for p in platforms if p["id"] == "xiaohongshu")
-        platform["login_status"] = "authenticated"
-        platform["account_name"] = login.get("display_name")
-        verified = db.query(FactoryPublication).filter_by(platform="xiaohongshu", status="submitted").first() is not None
-        platform["status"] = "connected" if verified else "not_connected"
-        platform["description"] = f"{login.get('display_name') or '账号'} 已登录，" + ("浏览器提交已验证；最终审核以平台为准。" if verified else "视频提交功能等待首条验证。")
-    from services.creator_connector import connection_state as creator_state
+    from services.factory_platform_policy import automation_state
     for platform in platforms:
         platform["enabled"] = platform["id"] in config["platforms"]
-        if not platform["enabled"] and platform["id"] != "bilibili":
-            platform.update(status="paused", description="小麦负责后续 B站长视频运营；当前不参与短视频生产与发布。" if platform["id"] == "bilibili" else "已退出当前短视频发行计划。")
-            continue
-        if platform["id"] not in {"douyin", "kuaishou", "bilibili"}:
-            continue
-        state = creator_state(platform["id"])
-        platform["login_status"] = "authenticated" if state.get("authenticated") else state.get("state_code", "unknown")
-        platform["account_name"] = state.get("display_name")
-        platform["capabilities"] = state.get("capabilities", {})
-        verified = db.query(FactoryPublication).filter_by(platform=platform["id"], status="submitted").first() is not None
-        platform["status"] = "connected" if state.get("authenticated") and verified else "not_connected"
-        platform["description"] = ((f"{state.get('display_name') or '账号'} 已登录；" + ("已核验提交回执，公开状态以平台审核为准。" if verified else "上传与提交待实际验证。"))
-                                   if state.get("authenticated") else f"{state.get('status', '未连接')}；完成官方扫码后继续验证发布。")
-        if platform["id"] == "bilibili":
-            platform["description"] += " 每周2条6–10分钟专题，周三/周六20:00；长视频流程待联调，不参与短视频队列。"
+        state = automation_state(platform["id"])
+        platform.update(automation=state, status=state["mode"], login_status=state["mode"],
+                        account_name=None, capabilities={"prepare": False, "publish": False},
+                        description=("人工发布：每天最多2条，仅接收分配给本平台的作品。" if platform["enabled"]
+                                     else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases
     from services.factory_editorial import STRATEGY
     from services.factory_visuals import library_summary
     from services.factory_analytics import overview as analytics_overview
     from services.factory_operations import overview as operations_overview
     from services.factory_llm import model_runtime
-    from services.factory_platform_policy import automation_state, automation_enabled
-    for platform in platforms:
-        platform["automation"] = automation_state(platform["id"])
-        if not automation_enabled(platform["id"]):
-            platform.update(status="manual", login_status="manual",
-                            description="人工发布：每天最多2条，仅接收分配给本平台的作品。自动浏览、数据采集、账号巡检和浏览器发布已停用。")
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
             "analytics": analytics_overview(db), "operations": operations_overview(db),
             "strategy": STRATEGY, "asset_library": library_summary(),
@@ -113,17 +89,17 @@ def overview(db: Session = Depends(get_db)):
 def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     config = get_config(db)
     updates = data.model_dump(exclude_none=True)
-    if updates.get("auto_publish_xiaohongshu"):
-        raise HTTPException(409, "小红书仅支持官方客户端人工操作，不能启用浏览器自动发布")
+    if updates.get("publish_enabled") or updates.get("auto_publish_xiaohongshu"):
+        raise HTTPException(409, "所有平台均由本人手动发布，不能启用自动上传或自动发布")
     merged = {**config_dict(config), **updates}
     if merged["daily_target"] > 2 * len(merged["platforms"]):
         raise HTTPException(422, "每个平台每天最多2条，原创目标不能超过启用平台的总分发名额")
-    if merged["publish_enabled"] and len(merged["publish_times"]) != merged["daily_target"]:
-        raise HTTPException(422, "每个发布时间对应一条原创视频，时间数量应等于每日原创目标")
-    if merged["publish_enabled"]:
-        updates["auto_publish_xiaohongshu"] = False
-        if not config.publish_enabled:
+    if merged["manual_delivery_enabled"] and len(merged["publish_times"]) != merged["daily_target"]:
+        raise HTTPException(422, "每个交付时间对应一条原创视频，时间数量应等于每日原创目标")
+    if merged["manual_delivery_enabled"]:
+        if not config.manual_delivery_enabled:
             config.publish_start_at = datetime.utcnow()
+    updates.update(publish_enabled=False, auto_publish_xiaohongshu=False)
     for key, value in updates.items():
         setattr(config, key, value)
     db.commit()
@@ -144,8 +120,10 @@ def create_run(data: StartRun, db: Session = Depends(get_db)):
 def get_run(run_id: str, db: Session = Depends(get_db)):
     run = require_run(db, run_id)
     from services.factory_publishing import refresh_job
+    from services.factory_platform_policy import automation_enabled
     for job in db.query(FactoryPublication).join(FactoryItem, FactoryPublication.item_id == FactoryItem.id).filter(FactoryItem.run_id == run_id, FactoryPublication.status.in_(["queued", "running"])):
-        refresh_job(db, job)
+        if automation_enabled(job.platform):
+            refresh_job(db, job)
     return run_detail(db, run)
 
 
@@ -240,7 +218,22 @@ def download_package(item_id: str, platform: str, db: Session = Depends(get_db))
     path = Path(package["path"]).resolve()
     if not path.is_relative_to(FACTORY_DIR.resolve()) or not path.is_file():
         raise HTTPException(404, "素材包文件不存在")
-    return FileResponse(path, media_type="application/zip", filename=f"{platform}-{item_id[:8]}.zip")
+    from services.factory_filenames import safe_filename
+    name = next((p["name"] for p in PLATFORMS if p["id"] == platform), platform)
+    title = item.content.get("title") or package.get("title")
+    return FileResponse(path, media_type="application/zip", filename=safe_filename(f"{title}—{name}发布包", ".zip"))
+
+
+@router.get("/items/{item_id}/video")
+def download_video(item_id: str, db: Session = Depends(get_db)):
+    item = db.get(FactoryItem, item_id)
+    if not item or not item.media.get("video_path") or not item.content.get("title"):
+        raise HTTPException(404, "成片尚未就绪")
+    path = Path(item.media["video_path"]).resolve()
+    if not path.is_relative_to(FACTORY_DIR.resolve()) or not path.is_file():
+        raise HTTPException(404, "成片文件不存在")
+    from services.factory_filenames import safe_filename
+    return FileResponse(path, media_type="video/mp4", filename=safe_filename(item.content["title"], ".mp4"))
 
 
 @router.get("/platforms/xiaohongshu/login-image", include_in_schema=False)
@@ -256,6 +249,11 @@ def xiaohongshu_login_image():
 
 @router.get("/platforms/xiaohongshu/login-state")
 def xiaohongshu_login_state():
+    from services.factory_platform_policy import automation_state
+    policy = automation_state("xiaohongshu")
+    if not policy["enabled"]:
+        return {"platform": "xiaohongshu", "authenticated": False, "qr_ready": False,
+                "state_code": "manual", "status": policy["reason"], "automation": policy}
     from services.xiaohongshu_connector import connection_state
     return connection_state()
 
@@ -285,10 +283,11 @@ def xiaohongshu_action(item_id: str, action: str, db: Session = Depends(get_db))
 @router.get("/platform-jobs/{job_id}")
 def get_publication_job(job_id: str, db: Session = Depends(get_db)):
     from services.factory_publishing import refresh_job, job_dict
+    from services.factory_platform_policy import automation_enabled
     job = db.get(FactoryPublication, job_id)
     if not job:
         raise HTTPException(404, "平台任务不存在")
-    return job_dict(refresh_job(db, job))
+    return job_dict(refresh_job(db, job) if automation_enabled(job.platform) else job)
 
 
 @router.post("/platform-jobs/{job_id}/publish", status_code=202)

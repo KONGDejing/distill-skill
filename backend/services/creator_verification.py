@@ -12,15 +12,18 @@ from urllib.parse import urlsplit
 
 from services import creator_connector as connector
 from services.creator_login_status import douyin_verification
+from services.factory_platform_policy import require_automation
 
 
 def _directory(platform):
+    require_automation(platform)
     if platform != "douyin":
         raise ValueError("该平台尚未启用官方身份验证窗口")
     return connector._directories(platform)
 
 
 def page_token(platform):
+    require_automation(platform)
     if platform != "douyin":
         return ""
     directory = _directory(platform)
@@ -37,6 +40,7 @@ def page_token(platform):
 
 
 def authorize(platform, token, origin, expected_origin, fetch_site=None):
+    require_automation(platform)
     value = connector._read(_directory(platform) / "verification-token.json")
     if (not token or value.get("expires_at", 0) <= time.time()
             or not secrets.compare_digest(str(value.get("token", "")), token)):
@@ -47,6 +51,7 @@ def authorize(platform, token, origin, expected_origin, fetch_site=None):
 
 @contextmanager
 def _official_page(platform):
+    require_automation(platform)
     from playwright.sync_api import sync_playwright
     directory = _directory(platform)
     if not connector._alive(platform):
@@ -113,6 +118,7 @@ def _frame_id(page, box):
 
 
 def frame(platform):
+    require_automation(platform)
     with _official_page(platform) as page:
         panel, box = _panel(page)
         try:
@@ -130,6 +136,7 @@ def frame(platform):
 
 
 def interact(platform, action, frame_id, x=None, y=None, code=None):
+    require_automation(platform)
     if action not in {"click", "fill_code"}:
         raise ValueError("不支持的验证操作")
     if action == "click" and (not isinstance(x, (int, float)) or not isinstance(y, (int, float))

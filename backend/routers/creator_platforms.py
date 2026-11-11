@@ -9,6 +9,7 @@ from database import get_db
 from models.factory import FactoryPublication
 from services import creator_connector
 from services.factory_resources import MemoryPressure
+from services.factory_platform_policy import automation_state, automation_enabled, require_automation
 
 router = APIRouter()
 
@@ -19,15 +20,28 @@ def require_platform(platform):
     return creator_connector.PLATFORMS[platform]
 
 
+def require_account_automation(platform):
+    require_platform(platform)
+    try:
+        require_automation(platform)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
 @router.get("/platforms/{platform}/login-state")
 def login_state(platform: str):
     require_platform(platform)
+    policy = automation_state(platform)
+    if not policy["enabled"]:
+        return JSONResponse({"platform": platform, "authenticated": False, "qr_ready": False,
+                             "state_code": "manual", "status": policy["reason"], "automation": policy},
+                            headers={"Cache-Control": "no-store, private"})
     return JSONResponse(creator_connector.connection_state(platform), headers={"Cache-Control": "no-store, private"})
 
 
 @router.post("/platforms/{platform}/connect", status_code=202)
 def connect(platform: str):
-    require_platform(platform)
+    require_account_automation(platform)
     try:
         return creator_connector.submit_command(platform, "login")
     except (ValueError, RuntimeError) as exc:
@@ -36,7 +50,7 @@ def connect(platform: str):
 
 @router.get("/platforms/{platform}/login-image", include_in_schema=False)
 def login_image(platform: str):
-    require_platform(platform)
+    require_account_automation(platform)
     state = creator_connector.connection_state(platform)
     path = creator_connector.login_image_path(platform)
     if not state.get("qr_ready") or not path.is_file():
@@ -50,16 +64,24 @@ def login_image(platform: str):
 
 @router.get("/platforms/{platform}/login", response_class=HTMLResponse, include_in_schema=False)
 def login_page(platform: str):
-    from services.creator_verification import page_token
     details = require_platform(platform)
+    policy = automation_state(platform)
+    if not policy["enabled"]:
+        return HTMLResponse('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                            f'<title>{escape(details["name"])}人工发布</title><main><a href="/">返回内容工厂</a>'
+                            f'<h1>账号自动化已停用</h1><p>{escape(policy["reason"])}</p>'
+                            '<p>请下载素材包，在官方客户端人工发布。</p></main></html>',
+                            headers={"Cache-Control": "no-store, private"})
+    require_account_automation(platform)
+    from services.creator_verification import page_token
     page = _LOGIN_PAGE.replace("__PLATFORM__", platform).replace("__NAME__", escape(details["name"]))
     page = page.replace("__VERIFICATION_TOKEN__", page_token(platform))
     return HTMLResponse(page, headers={"Cache-Control": "no-store, private"})
 
 
 def authorize_verification(platform, request):
+    require_account_automation(platform)
     from services.creator_verification import authorize
-    require_platform(platform)
     try:
         authorize(platform, request.headers.get("X-Factory-Verification", ""), request.headers.get("origin"),
                   str(request.base_url).rstrip("/"), request.headers.get("sec-fetch-site"))
@@ -140,7 +162,7 @@ def creator_job(platform: str, job_id: str, db: Session = Depends(get_db)):
     job = db.get(FactoryPublication, job_id)
     if not job or job.platform != platform:
         raise HTTPException(404, "该平台任务不存在")
-    return job_dict(refresh_job(db, job))
+    return job_dict(refresh_job(db, job) if automation_enabled(platform) else job)
 
 
 @router.post("/platforms/{platform}/jobs/{job_id}/publish", status_code=202)

@@ -22,6 +22,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+if __package__:
+    from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
+else:
+    # Historical user services execute this file directly, without PYTHONPATH.
+    from factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
+
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / ".runtime" / "creator-connectors"
 PLATFORMS = {
@@ -161,7 +167,18 @@ def _latest_login(platform):
 
 def connection_state(platform) -> dict:
     directory = platform_directory(platform)
-    state, active = _read(directory / "state.json"), _alive(platform)
+    state = _read(directory / "state.json")
+    state = state if isinstance(state, dict) else {}
+    if not automation_enabled(platform):
+        policy = automation_state(platform)
+        return {**policy, "automation": policy, "status": "manual", "state_code": "manual",
+                "message": policy["reason"], "automation_enabled": False, "cache_only": True,
+                "display_name": state.get("display_name"), "updated_at": state.get("updated_at"),
+                "cached_updated_at": state.get("updated_at"), "cached_authenticated": bool(state.get("authenticated")),
+                "authenticated": False, "session_active": False, "qr_ready": False, "qr_version": None,
+                "login_command": None, "verification": None, "prepared_item_id": state.get("prepared_item_id"),
+                "capabilities": {name: False for name in ("login", "inspect", "prepare", "publish", "analytics", "verification")}}
+    active = _alive(platform)
     # A read-only snapshot lets API updates classify a newly observed checkpoint
     # without restarting an in-progress browser confirmation session.
     if platform == "douyin" and active and _recent(state.get("updated_at")) and state.get("state_code") in {"network_error", "needs_verification"}:
@@ -202,6 +219,7 @@ def connection_state(platform) -> dict:
 
 def install_service(platform, *, start=False):
     """Create an independent user unit; API restarts cannot terminate this browser."""
+    require_automation(platform)
     directory = _directories(platform)
     units = Path.home() / ".config" / "systemd" / "user"
     units.mkdir(parents=True, exist_ok=True)
@@ -237,6 +255,7 @@ WantedBy=default.target
 
 
 def _ensure_daemon(platform):
+    require_automation(platform)
     directory = _directories(platform)
     with (directory / "start.lock").open("a") as lock:
         os.chmod(lock.name, 0o600)
@@ -296,6 +315,7 @@ def _payload(platform, action, payload):
 
 
 def submit_command(platform, action, payload=None) -> dict:
+    require_automation(platform)
     _platform(platform)
     if action not in ACTIONS:
         raise ValueError("不支持的平台操作")
@@ -318,6 +338,7 @@ def submit_command(platform, action, payload=None) -> dict:
 
 
 def _enqueue_command(platform, action, clean):
+    require_automation(platform)
     directory = _directories(platform)
     identifier = str(uuid.uuid4())
     result = {"platform": platform, "command_id": identifier, "action": action,
@@ -357,6 +378,7 @@ def _valid_evidence(platform, evidence):
 
 class _Browser:
     def __init__(self, platform, playwright):
+        require_automation(platform)
         self.platform, self.directory = platform, _directories(platform)
         module = importlib.import_module(f"services.creator_adapters.{platform}")
         options = {"headless": True, "viewport": {"width": 1440, "height": 1000},
@@ -377,6 +399,7 @@ class _Browser:
             self.adapter.login()
 
     def login(self):
+        require_automation(self.platform)
         current = self.adapter.inspect()
         if not current.get("authenticated") and current.get("status") != "needs_verification":
             login_image_path(self.platform).unlink(missing_ok=True)
@@ -399,6 +422,7 @@ class _Browser:
             self.adapter.page.wait_for_timeout(500)
 
     def inspect(self):
+        require_automation(self.platform)
         value = self.adapter.inspect()
         authenticated = value.get("authenticated") is True
         name = value.get("display_name")
@@ -429,6 +453,7 @@ class _Browser:
         return state
 
     def prepare(self, payload):
+        require_automation(self.platform)
         if payload["item_id"] in _ledger(self.platform):
             raise ValueError("该作品已有提交记录，禁止自动重新准备")
         if not self.inspect()["authenticated"]:
@@ -444,6 +469,7 @@ class _Browser:
         return {**value, "status": "prepared", "item_id": payload["item_id"], "published": False}
 
     def publish(self, payload):
+        require_automation(self.platform)
         self.submission_attempted = None
         ledger = _ledger(self.platform)
         item_id = payload["item_id"]
@@ -495,6 +521,7 @@ def _failure_fields(action, browser):
 
 
 def _serve(platform):
+    require_automation(platform)
     from playwright.sync_api import sync_playwright
     directory = _directories(platform)
     def stop(_signum, _frame):
@@ -580,7 +607,11 @@ if __name__ == "__main__":
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--install", action="store_true")
     arguments = parser.parse_args()
-    if arguments.install:
-        install_service(arguments.platform, start=True)
-    elif arguments.serve:
-        _serve(arguments.platform)
+    try:
+        if arguments.install:
+            install_service(arguments.platform, start=True)
+        elif arguments.serve:
+            _serve(arguments.platform)
+    except AutomationDisabled as exc:
+        # Disabled historical units must not enter an on-failure restart loop.
+        print(str(exc), flush=True)

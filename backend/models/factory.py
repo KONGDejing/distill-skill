@@ -25,6 +25,7 @@ class FactoryConfig(Base):
     auto_publish_xiaohongshu = Column(Boolean, nullable=False, default=False)
     visual_style = Column(String(30), nullable=False, default="tech_montage")
     publish_enabled = Column(Boolean, nullable=False, default=False)
+    manual_delivery_enabled = Column(Boolean, nullable=False, default=True)
     publish_times = Column(JSON, nullable=False, default=lambda: list(DEFAULT_PUBLISH_TIMES))
     publish_start_at = Column(DateTime, nullable=True)
     publish_jitter_seconds = Column(Integer, nullable=False, default=900)

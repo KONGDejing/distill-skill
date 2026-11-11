@@ -472,11 +472,11 @@ def test_new_voice_requirement_preserves_existing_paper_submission_receipt(publi
 
 @pytest.fixture
 def distribution_publishing(creator_publishing, monkeypatch):
-    """Restore production guards; connectors remain strict offline mocks."""
-    from services import factory_distribution, factory_platform_policy
+    """Exercise routing/quota separately from the global manual-account policy."""
+    from services import factory_distribution
     env = creator_publishing
     monkeypatch.setattr(factory_publishing, 'guard_publication', factory_distribution.guard_publication)
-    monkeypatch.setattr(factory_publishing, 'require_automation', factory_platform_policy.require_automation)
+    monkeypatch.setattr(factory_publishing, 'require_automation', lambda platform: None)
     with env.sessions() as db:
         run = db.get(FactoryRun, env.run_id)
         run.settings_snapshot = {'distribution_policy': factory_distribution.CURRENT_DISTRIBUTION_POLICY}
@@ -508,8 +508,9 @@ def test_new_operations_require_the_assigned_platform(distribution_publishing):
 
 
 def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(distribution_publishing, monkeypatch):
-    from services.factory_platform_policy import AutomationDisabled
+    from services.factory_platform_policy import AutomationDisabled, require_automation
     env = distribution_publishing
+    monkeypatch.setattr(factory_publishing, 'require_automation', require_automation)
     forbidden = Mock(side_effect=AssertionError('No XHS connector operation allowed'))
     monkeypatch.setattr(xiaohongshu_connector, 'connection_state', forbidden)
     monkeypatch.setattr(xiaohongshu_connector, 'command_result', forbidden)

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from services import creator_connector as connector
+from services.factory_platform_policy import AutomationDisabled
 
 
 def test_kuaishou_hashtag_limit_includes_caption_and_deduplicates(monkeypatch):
@@ -17,6 +18,9 @@ def test_kuaishou_hashtag_limit_includes_caption_and_deduplicates(monkeypatch):
 
 
 def _browser(monkeypatch, tmp_path):
+    # Isolate the retained receipt/audit algorithm; default-policy rejection is
+    # exercised separately without this test-only boundary override.
+    monkeypatch.setattr(connector, "require_automation", lambda _: None)
     monkeypatch.setattr(connector, "RUNTIME", tmp_path)
     browser = object.__new__(connector._Browser)
     browser.platform = "douyin"
@@ -142,67 +146,46 @@ def test_stopped_daemon_never_looks_authenticated(monkeypatch, tmp_path):
     assert not state["authenticated"] and not state["session_active"] and not state["qr_ready"]
 
 
-def test_expired_stale_and_refreshing_qr_are_hidden(monkeypatch, tmp_path):
-    from datetime import datetime, timedelta, timezone
-    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
-    monkeypatch.setattr(connector, '_alive', lambda _: True)
-    directory = connector._directories('bilibili')
-    (directory / 'login.png').write_bytes(b'official-image-fixture')
-    state = {'authenticated': False, 'session_active': True, 'qr_ready': True,
-             'state_code': 'waiting_scan', 'updated_at': connector._now()}
-    connector._write(directory / 'state.json', state)
-    assert connector.connection_state('bilibili')['qr_ready']
-    assert connector.connection_state('bilibili')['qr_version']
-    for update in ({'state_code': 'qr_expired'}, {'authenticated': True},
-                   {'updated_at': (datetime.now(timezone.utc)-timedelta(minutes=2)).isoformat()}):
-        connector._write(directory / 'state.json', {**state, **update})
-        assert not connector.connection_state('bilibili')['qr_ready']
-    connector._write(directory / 'state.json', state)
-    monkeypatch.setattr(connector, '_ensure_daemon', lambda _: None)
-    command = connector.submit_command('bilibili', 'login')
-    assert not connector.connection_state('bilibili')['qr_ready']
-    assert connector.connection_state('bilibili')['login_command']['command_id'] == command['command_id']
-    connector._write(directory / 'results' / (command['command_id']+'.json'), {**command, 'status': 'completed'})
-    assert connector.connection_state('bilibili')['qr_ready']
+def test_manual_connection_never_exposes_even_fresh_cached_qr(monkeypatch, tmp_path):
+    monkeypatch.setattr(connector, "RUNTIME", tmp_path)
+    alive = Mock(side_effect=AssertionError("Manual status cannot inspect a process"))
+    monkeypatch.setattr(connector, "_alive", alive)
+    directory = connector._directories("bilibili")
+    picture = directory / "login.png"
+    picture.write_bytes(b"retained-image-fixture")
+    connector._write(directory / "state.json", {"authenticated": True, "session_active": True, "qr_ready": True,
+                     "state_code": "waiting_scan", "updated_at": connector._now()})
+    before = {path: path.read_bytes() for path in directory.rglob("*") if path.is_file()}
+    state = connector.connection_state("bilibili")
+    assert state["status"] == "manual" and state["cache_only"]
+    assert not state["qr_ready"] and state["qr_version"] is None
+    assert state["login_command"] is None and not state["authenticated"]
+    assert state["cached_authenticated"] and not any(state["capabilities"].values())
+    assert all(path.read_bytes() == data for path, data in before.items())
+    alive.assert_not_called()
 
 
-def test_multiple_refresh_requests_share_one_pending_login(monkeypatch, tmp_path):
-    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
-    monkeypatch.setattr(connector, '_ensure_daemon', lambda _: None)
-    first = connector.submit_command('douyin', 'login')
-    assert connector.submit_command('douyin', 'login')['command_id'] == first['command_id']
-    directory = connector.platform_directory('douyin')
-    assert len(list((directory / 'commands').glob('*.json'))) == 1
-    connector._write(directory / 'results' / (first['command_id']+'.json'), {**first, 'status': 'completed'})
-    assert connector.submit_command('douyin', 'login')['command_id'] != first['command_id']
+def test_refresh_requests_never_queue_or_mutate_cached_login(monkeypatch, tmp_path):
+    monkeypatch.setattr(connector, "RUNTIME", tmp_path / "untouched")
+    for _ in range(2):
+        with pytest.raises(AutomationDisabled):
+            connector.submit_command("douyin", "login")
+    assert not connector.RUNTIME.exists()
 
 
-def test_browser_hides_expired_picture_without_recapturing_it(monkeypatch, tmp_path):
-    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
+@pytest.mark.parametrize("action", ["login", "inspect", "prepare", "publish"])
+def test_retained_browser_object_cannot_operate_or_delete_cached_files(monkeypatch, tmp_path, action):
+    monkeypatch.setattr(connector, "RUNTIME", tmp_path)
     browser = object.__new__(connector._Browser)
-    browser.platform, browser.directory = 'douyin', connector._directories('douyin')
-    browser.prepared = None
+    browser.platform, browser.directory = "douyin", connector._directories("douyin")
     browser.adapter = Mock()
-    browser.adapter.inspect.return_value = {'authenticated': False, 'status': 'qr_expired', 'url': 'https://creator.douyin.com/'}
-    browser.adapter.supports_prepare = browser.adapter.supports_publish = False
-    (browser.directory / 'login.png').write_bytes(b'expired')
-    result = browser.inspect()
-    assert not result['qr_ready']
-    browser.adapter.capture_login_image.assert_not_called()
-    assert not (browser.directory / 'login.png').exists()
-
-
-def test_login_failure_is_not_reported_as_ready(monkeypatch, tmp_path):
-    monkeypatch.setattr(connector, 'RUNTIME', tmp_path)
-    browser = object.__new__(connector._Browser)
-    browser.platform, browser.directory = 'douyin', connector._directories('douyin')
-    browser.adapter = Mock()
-    browser.adapter.inspect.return_value = {'authenticated': False, 'status': 'network_error'}
-    browser.inspect = Mock(return_value={'authenticated': False, 'state_code': 'network_error', 'qr_ready': False, 'error': '官方页面尚未生成二维码'})
-    monkeypatch.setattr(connector.time, 'monotonic', Mock(side_effect=[0,26]))
-    result = browser.login()
-    assert result['status'] == 'failed' and '尚未生成' in result['message']
-    browser.adapter.login.assert_called_once_with(refresh=True)
+    picture = browser.directory / "login.png"
+    picture.write_bytes(b"retained-image")
+    args = ({"item_id": "fixture-item"},) if action in {"prepare", "publish"} else ()
+    with pytest.raises(AutomationDisabled):
+        getattr(browser, action)(*args)
+    assert not browser.adapter.mock_calls
+    assert picture.read_bytes() == b"retained-image"
 
 
 def test_login_routes_never_expose_upload_payload_or_expired_image(monkeypatch):
@@ -215,7 +198,7 @@ def test_login_routes_never_expose_upload_payload_or_expired_image(monkeypatch):
     with TestClient(app) as client:
         response = client.get('/api/factory/platforms/bilibili/login-state')
         assert response.status_code == 200 and 'no-store' in response.headers['cache-control']
-        assert client.get('/api/factory/platforms/bilibili/login-image').status_code == 404
+        assert client.get('/api/factory/platforms/bilibili/login-image').status_code == 409
         result = {'action': 'login', 'command_id': 'test', 'status': 'running', 'payload': {'private': 'must-not-be-returned'}}
         monkeypatch.setattr(connector, 'command_result', lambda *args: result)
         response = client.get('/api/factory/platforms/bilibili/login-commands/test')

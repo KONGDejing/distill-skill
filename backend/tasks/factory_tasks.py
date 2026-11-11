@@ -41,7 +41,7 @@ def _schedule_factory():
                 db.commit()
                 return {"recovered": active.id}
         config = get_config(db)
-        if config.publish_enabled:
+        if config.manual_delivery_enabled or config.publish_enabled:
             from services.factory_schedule import tick
             return tick(db, config)
         if active:

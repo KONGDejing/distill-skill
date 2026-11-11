@@ -1,5 +1,6 @@
-"""Durable timed releases. Production and browser jobs run independently."""
+"""Durable production and manual-delivery schedules, independent of account automation."""
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from secrets import randbelow
 from sqlalchemy import func
@@ -7,6 +8,7 @@ from agents.registry import DAILY_TARGET
 
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
+from services.factory_distribution import CURRENT_DISTRIBUTION_POLICY, local_day
 from services.factory_resources import MemoryPressure, ensure_memory_available
 
 PREPARE_LEAD = timedelta(minutes=20)
@@ -201,9 +203,26 @@ def _result(status, message, job=None):
     return {"status": status, "message": message, **({"job_id": job.id} if job else {})}
 
 
-def step_platform(db, slot, item, platform, now, enabled):
+def _manual_package_ready(package, platform, route):
+    from services.factory_handoff import HANDOFF_VERSION, handoff_files
+    if not package or package.get("handoff_version") != HANDOFF_VERSION:
+        return False
+    handoff = package.get("manual_handoff") or {}
+    try:
+        if handoff.get("platform") != platform or any(
+                handoff["distribution"].get(key) != route.get(key) for key in ("platform", "day", "policy")):
+            return False
+        handoff_files(handoff)  # Reject incomplete legacy metadata without opening media.
+        return all(package.get(key) and Path(package[key]).is_file() for key in ("path", "copy_path"))
+    except (KeyError, TypeError, ValueError, AttributeError, OSError):
+        return False
+
+
+def step_platform(db, slot, item, platform, now, enabled, timezone_name="Asia/Shanghai"):
     """Advance at most one command per tick; never retry ambiguous submissions."""
-    jobs = {job.action: publishing.refresh_job(db, job) for job in
+    from services.factory_platform_policy import automation_enabled
+    automated = automation_enabled(platform)
+    jobs = {job.action: publishing.refresh_job(db, job) if automated else job for job in
             db.query(FactoryPublication).filter_by(item_id=item.id, platform=platform).all()}
     submitted, prepared = jobs.get("publish"), jobs.get("prepare")
     if submitted:
@@ -214,18 +233,37 @@ def step_platform(db, slot, item, platform, now, enabled):
                 return {**_result("submitted", "官方最近核对：" + label, submitted), "official_observation": observed}
             return _result("submitted", "平台已确认接收，最新公开状态尚待核对", submitted)
         if submitted.status in {"queued", "running"}:
-            return _result("publishing", "正在核对平台提交回执", submitted)
+            return _result("publishing" if automated else "blocked",
+                           "正在核对平台提交回执" if automated else "历史提交结果待本人在官方客户端核对；未重发或自动核验", submitted)
         detail = (submitted.result or {}).get("message") or "提交未完成"
         if (submitted.result or {}).get("submission_uncertain") and "核对官方作品列表" not in detail:
-            detail = "小麦正在核对官方记录；仅官方要求本人验证时需你操作，不会重复提交。" + detail
+            detail = ("小麦正在核对官方记录；仅官方要求本人验证时需你操作，不会重复提交。" if automated
+                      else "请本人在官方客户端核对历史提交结果；自动核验已停用，不会重复提交。") + detail
         if item.media.get("publication_hold") and "旧版已停发" not in detail:
             detail += "；此旧版已停发，保留历史提交记录"
         return _result("blocked", detail, submitted)
+    if not automated:
+        if not enabled:
+            return _result("paused", "人工交付排期已暂停")
+        if now < slot.due_at:
+            return _result("waiting", "素材制作完成，等待排期到点交付")
+        if now >= deadline(db, slot):
+            return _result("missed", "已超过人工交付排期窗口，素材包保留，请重新排期后交付")
+        if (item.media or {}).get("publication_hold"):
+            return _result("blocked", "此版本已暂停交付，请先处理作品质检或版本问题")
+        route = (item.brief or {}).get("distribution") or {}
+        if route.get("platform") != platform or route.get("policy") != CURRENT_DISTRIBUTION_POLICY:
+            return _result("blocked", "请先按内容分配唯一交付平台，历史多平台记录不会再次扩散")
+        if route.get("day") != local_day(now, timezone_name):
+            return _result("blocked", "分配日期与今天不符，请显式重新排期后交付")
+        package = next((p for p in item.packages or [] if p.get("platform") == platform), None)
+        if not _manual_package_ready(package, platform, route):
+            return _result("waiting", "人工素材包尚未完整就绪")
+        if prepared and prepared.status in {"queued", "running"}:
+            return _result("blocked", "历史上传任务状态待本人核对；自动上传已停用", prepared)
+        return _result("manual_ready", "素材包已备好，请在官方客户端人工发布；自动浏览、采集和发布已停用")
     if prepared and prepared.status in {"queued", "running"}:
         return _result("uploading", "正在上传视频", prepared)
-    from services.factory_platform_policy import automation_enabled
-    if not automation_enabled(platform):
-        return _result("manual_ready", "素材包已备好，请在官方客户端人工发布；自动浏览、采集和发布已停用")
     if not enabled:
         return _result("paused", "当前发行计划已暂停此平台")
     if now >= deadline(db, slot):
@@ -263,7 +301,7 @@ def step_platform(db, slot, item, platform, now, enabled):
 
 
 def advance_slot(db, slot, config, now):
-    enabled = config.publish_enabled
+    from services.factory_platform_policy import automation_enabled
     if not slot.item_id and slot.run_id:
         item = db.query(FactoryItem).filter_by(run_id=slot.run_id, position=slot.position).first()
         if item:
@@ -289,7 +327,8 @@ def advance_slot(db, slot, config, now):
         # An explicit memory pause stops new publishing even if other clips are ready.
         paused = db.query(FactoryRun).filter_by(status="paused_memory").first() is not None
         results = {p: step_platform(db, slot, item, p, now,
-                    enabled and p in config.platforms and not paused) for p in slot.platforms}
+                    (config.publish_enabled and not paused if automation_enabled(p) else config.manual_delivery_enabled)
+                    and p in config.platforms, config.timezone) for p in slot.platforms}
         statuses = {r["status"] for r in results.values()}
         if statuses == {"submitted"}:
             slot.status = "submitted"
@@ -309,7 +348,7 @@ def advance_slot(db, slot, config, now):
 
 def tick(db, config, now=None):
     now = now or datetime.now(ZoneInfo(config.timezone))
-    if config.publish_enabled:
+    if config.manual_delivery_enabled or config.publish_enabled:
         plan_slots(db, config, now)
         production = plan_production(db, config, now)
     else:

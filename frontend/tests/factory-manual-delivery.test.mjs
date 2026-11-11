@@ -1,0 +1,110 @@
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
+import test from 'node:test'
+import { build } from 'esbuild'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+
+const entry = fileURLToPath(new URL('../src/pages/FactoryDashboard.jsx', import.meta.url))
+const result = await build({ entryPoints: [entry], bundle: true, write: false,
+  platform: 'node', format: 'cjs', jsx: 'automatic', external: ['react', 'react/jsx-runtime'] })
+const require = createRequire(import.meta.url)
+const effects = []
+const hookReact = { ...React, useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
+  useRef: initial => ({ current: initial }), useEffect: effect => effects.push(effect) }
+const forbidden = () => { throw new Error('Manual delivery must not call account APIs or start polling') }
+const module = { exports: {} }
+vm.runInNewContext(result.outputFiles[0].text, {
+  module, exports: module.exports, require: name => name === 'react' ? hookReact : require(name),
+  fetch: forbidden, setInterval: forbidden, setTimeout: forbidden,
+})
+const { SettingsPanel, ManualPackage, ManualDeliveryPlan, ManualPlatformChannels, ContentCard } = module.exports
+const render = (Component, props) => renderToStaticMarkup(React.createElement(Component, props))
+const handoff = {
+  title: '定稿标题', caption: '已审核正文\n第二行', tags: ['科技', '论文'], cover_text: '封面文字样例',
+  hooks: ['开场一', '开场二', '开场三'], follow_prompt: '关注句样例', ai_disclosure: 'AI制作说明样例',
+  pinned_comment: '本人置顶评论样例', reply_templates: [{ question: '真实问题样例', reply: '本人回复样例' }],
+  publication_warning: '历史提交结果不确定，请本人先核对', distribution: { platform: 'douyin', day: '2026-11-11' },
+}
+
+test('saving a manual plan always disables legacy upload switches', () => {
+  let saved
+  const form = SettingsPanel({ settings: { daily_target: 6, manual_delivery_enabled: true,
+    publish_enabled: true, auto_publish_xiaohongshu: true }, onSave: value => { saved = value } })
+  form.props.onSubmit({ preventDefault() {} })
+  assert.equal(saved.manual_delivery_enabled, true)
+  assert.equal(saved.publish_enabled, false)
+  assert.equal(saved.auto_publish_xiaohongshu, false)
+  assert.match(renderToStaticMarkup(form), /启用人工交付计划/)
+})
+
+for (const [platform, name] of Object.entries({ douyin: '抖音', kuaishou: '快手', xiaohongshu: '小红书', bilibili: '哔哩哔哩' })) {
+  test(`${platform} shows complete handoff text and explicit downloads`, () => {
+    const html = render(ManualPackage, { pkg: { platform, status: 'package_ready', manual_handoff: {
+      ...handoff, distribution: { platform, day: '2026-11-11' } },
+      download_url: `/api/factory/items/fixture/packages/${platform}`, copy_url: `/storage/${platform}/copy.txt` } })
+    for (const value of ['定稿标题', '已审核正文', '#科技 #论文', '封面文字样例', '开场一', '开场二', '开场三',
+      '关注句样例', 'AI制作说明样例', '本人置顶评论样例', '真实问题样例', '本人回复样例', '历史提交结果不确定，请本人先核对']) {
+      assert.ok(html.includes(value), `Missing handoff value: ${value}`)
+    }
+    assert.ok(html.includes(`下载${name}完整素材包`))
+    assert.ok(html.includes(`下载${name}发布文案`))
+    assert.match(html, /这些问题是模板，不代表已收到留言/)
+    assert.doesNotMatch(html, /<button|扫码登录/)
+  })
+}
+
+test('historical packages cannot look like the current upload route', () => {
+  const html = render(ManualPackage, { pkg: { platform: 'kuaishou', status: 'submitted',
+    manual_handoff: handoff, download_url: '/api/factory/items/fixture/packages/kuaishou' },
+    item: { distribution: { platform: 'douyin' } } })
+  assert.match(html, /当前唯一分配平台为抖音，请勿上传此历史包/)
+  assert.match(html, /下载快手历史素材包/)
+  assert.doesNotMatch(html, /下载快手完整素材包|手动打开快手创作者中心/)
+})
+
+test('suggested times depend only on the manual delivery setting', () => {
+  const props = { target: 6, releases: [{ id: 'fixture', status: 'manual_ready', platforms: ['douyin'],
+    due_at: '2026-11-11T00:00:00+08:00', nominal_at: '2026-11-11T00:00:00+08:00' }] }
+  assert.equal(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), '')
+  const html = render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: true, publish_enabled: false } })
+  assert.match(html, /人工交付计划/)
+  assert.match(html, /建议发布时间/)
+  assert.match(html, /到点不会自动上传或提交/)
+  assert.match(html, /每平台最多2条/)
+})
+
+test('connection effects cannot poll even with legacy enabled account data', () => {
+  effects.length = 0
+  const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({
+    id, status: 'connected', automation: { enabled: true },
+  })) })
+  assert.doesNotMatch(html, /扫码登录|刷新登录状态|\/login/)
+  assert.match(html, /所有账号均由本人操作/)
+  assert.equal(effects.length, 4)
+  for (const effect of effects) {
+    const cleanup = effect()
+    if (cleanup) cleanup()
+  }
+})
+
+
+test('main video downloads use the named API while playback keeps the original source', () => {
+  const html = render(ContentCard, { index: 0, item: { id: 'fixture', title: '论文真正解决了什么',
+    video_url: '/storage/fixture/video.mp4', video_download_url: '/api/factory/items/fixture/video',
+    video_filename: '中文大标题.mp4' } })
+  assert.match(html, /href="\/api\/factory\/items\/fixture\/video" download="中文大标题.mp4"/)
+  assert.match(html, /<source src="\/storage\/fixture\/video.mp4" type="video\/mp4"/)
+})
+
+test('legacy video downloads and previews use the Chinese title as filename', () => {
+  const item = { title: '中文成片大标题', video_url: '/storage/fixture/video.mp4',
+    preview: { title: '中文样片大标题', video_url: '/storage/fixture/preview.mp4' } }
+  const html = render(ContentCard, { index: 0, item })
+  assert.match(html, /href="\/storage\/fixture\/video.mp4" download="中文成片大标题.mp4"/)
+  assert.match(html, /href="\/storage\/fixture\/preview.mp4" download="中文样片大标题.mp4"/)
+  const fallback = render(ContentCard, { index: 0, item: { ...item, preview: { video_url: item.preview.video_url } } })
+  assert.match(fallback, /href="\/storage\/fixture\/preview.mp4" download="中文成片大标题.mp4"/)
+})

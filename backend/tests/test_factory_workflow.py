@@ -1,6 +1,7 @@
 """Workflow invariants, tested without a model, renderer, broker or live database."""
 import json
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -10,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryRun
+from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryRun, FactoryPublication
 from services import factory_llm, factory_service, factory_resources
 
 
@@ -31,7 +32,7 @@ def isolated_factory(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'workflow-test.db'}",
                            connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine, tables=[FactoryConfig.__table__, FactoryRun.__table__,
-                                            FactoryItem.__table__, FactoryEvent.__table__])
+                                            FactoryItem.__table__, FactoryEvent.__table__, FactoryPublication.__table__])
     sessions = sessionmaker(bind=engine)
     monkeypatch.setattr(factory_service, "SessionLocal", sessions)
     monkeypatch.setattr(factory_llm, "SessionLocal", sessions)
@@ -312,20 +313,29 @@ def test_rejected_script_never_reaches_rendering_or_packaging(isolated_factory, 
     lock.release.assert_called_once()
 
 
-@pytest.mark.parametrize("single_platform", [False, True])
-def test_archives_contain_assets_and_only_target_assigned_platform(isolated_factory, monkeypatch, single_platform):
-    run_id, item_id = _seed_item(isolated_factory, content={
-        "title": "AI 工具使用指南", "script": "这是经过审核的测试文案。", "sources": [SOURCE],
-    })
-    directory = factory_service.FACTORY_DIR / run_id / item_id
+def _package_media(directory):
     directory.mkdir(parents=True)
     media = {}
-    file_names = {"video_path": "video.mp4", "audio_path": "audio.mp3",
-                  "cover_path": "cover.png", "subtitle_path": "subtitles.ass"}
-    for field, filename in file_names.items():
+    for field, filename in {"video_path": "video.mp4", "audio_path": "audio.mp3",
+                            "cover_path": "cover.png", "subtitle_path": "subtitles.ass"}.items():
         path = directory / filename
         path.write_bytes(f"fixture-only:{filename}".encode())
         media[field] = str(path)
+    return media
+
+
+@pytest.mark.parametrize("single_platform", [False, True])
+def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isolated_factory, monkeypatch, single_platform):
+    from services.factory_handoff import HANDOFF_VERSION
+
+    approved_copy = {"title": "AI 工具使用指南：怎样核对边界？", "script": "这是经过审核的测试文案。", "sources": [SOURCE],
+                     "hook": "怎样核对工具的使用边界？", "follow_prompt": "欢迎一起对照原文看证据。"}
+    content = {**approved_copy, "research_packet": {"raw": "RESEARCH_PACKET_NOT_FOR_PUBLISHER" * 1000},
+               "paper_document": {"pages": [{"text": "FULL_PDF_NOT_FOR_PUBLISHER" * 2000}]},
+               "scenes": [{"paper_highlights": [{"text": "SCENE_HIGHLIGHT_NOT_FOR_PUBLISHER" * 1000}]}]}
+    run_id, item_id = _seed_item(isolated_factory, content=content)
+    directory = factory_service.FACTORY_DIR / run_id / item_id
+    media = _package_media(directory)
     factory_service._save_item(item_id, media=media)
     platforms = ["xiaohongshu"] if single_platform else PLATFORMS
     if single_platform:
@@ -336,7 +346,10 @@ def test_archives_contain_assets_and_only_target_assigned_platform(isolated_fact
             item.brief = {**item.brief, "distribution": {"platform": "xiaohongshu", "day": "2026-11-11", "policy": "single-platform-v1"}}
             db.commit()
     variants = [{"platform": platform, "title": f"{platform} 标题", "caption": "平台简介",
-                 "tags": ["AI"], "published": True, "status": "published"} for platform in platforms]
+                 "tags": ["AI"], "published": True, "status": "published",
+                 "manual_handoff": {"cover_text": f"{platform} 封面文字", "pinned_comment": "一起对照所列原文。",
+                                    "hooks": ["先看原文里的条件。", "这条内容能说明什么？"]}}
+                for platform in platforms]
     model = Mock(return_value={"platforms": variants})
     monkeypatch.setattr(factory_service, "call_agent", model)
 
@@ -344,7 +357,12 @@ def test_archives_contain_assets_and_only_target_assigned_platform(isolated_fact
     # Redelivery must reuse complete archives instead of calling the model again.
     factory_service._package(run_id, item_id)
     assert model.call_count == 1
-    assert model.call_args.args[2]["platforms"] == platforms
+    payload = model.call_args.args[2]
+    assert model.call_args.args[1] == "publisher"
+    assert payload["platforms"] == platforms and payload["delivery_mode"] == "manual"
+    assert payload["content"] == approved_copy
+    assert all(marker not in json.dumps(payload) for marker in (
+        "RESEARCH_PACKET_NOT_FOR_PUBLISHER", "FULL_PDF_NOT_FOR_PUBLISHER", "SCENE_HIGHLIGHT_NOT_FOR_PUBLISHER"))
 
     with isolated_factory() as db:
         item = db.get(FactoryItem, item_id)
@@ -353,15 +371,119 @@ def test_archives_contain_assets_and_only_target_assigned_platform(isolated_fact
         for package in item.packages:
             assert package["status"] == "package_ready"
             assert package.get("published", False) is False
+            assert package["handoff_version"] == HANDOFF_VERSION
+            assert package["video_filename"] == "AI 工具使用指南：怎样核对边界？.mp4"
             assert Path(package["path"]).is_file()
             with zipfile.ZipFile(package["path"]) as archive:
-                assert set(file_names.values()).issubset(archive.namelist())
-                assert archive.read("video.mp4") == b"fixture-only:video.mp4"
+                assert {"AI 工具使用指南：怎样核对边界？.mp4", "audio.mp3", "cover.png", "subtitles.ass", "发布文案.txt",
+                        "互动回复模板.txt", "资料来源.txt", "手动发布说明.txt"}.issubset(archive.namelist())
+                assert "video.mp4" not in archive.namelist()
+                assert archive.read(package["video_filename"]) == b"fixture-only:video.mp4"
+                assert archive.getinfo(package["video_filename"]).flag_bits & 0x800
                 metadata = json.loads(archive.read("metadata.json"))
                 assert metadata["platform"] == package["platform"]
+                assert metadata["video_filename"] == package["video_filename"]
                 assert metadata["published"] is False
                 assert metadata["status"] == "package_ready"
                 assert archive.read("script.txt").decode() == "这是经过审核的测试文案。"
+                handoff = metadata["manual_handoff"]
+                assert handoff == package["manual_handoff"]
+                assert handoff["platform"] == package["platform"]
+                assert handoff["title"] == package["title"] and handoff["caption"] == "平台简介"
+                assert handoff["cover_text"] == f"{package['platform']} 封面文字"
+                assert handoff["hooks"][:2] == ["先看原文里的条件。", "这条内容能说明什么？"]
+                assert handoff["pinned_comment"] == "一起对照所列原文。"
+                assert len(handoff["reply_templates"]) >= 3
+                assert "#AI" in archive.read("发布文案.txt").decode("utf-8")
+                assert "AI辅助整理文案、配音和剪辑" in archive.read("发布文案.txt").decode("utf-8")
+                assert "不表示已收到这些留言" in archive.read("互动回复模板.txt").decode("utf-8")
+                assert SOURCE["url"] in archive.read("资料来源.txt").decode("utf-8")
+                assert Path(package["copy_path"]).read_bytes() == archive.read("发布文案.txt")
+                if single_platform:
+                    assert handoff["distribution"]["platform"] == "xiaohongshu"
+                    assert "2026-11-11" in archive.read("手动发布说明.txt").decode("utf-8")
+
+
+@pytest.mark.parametrize("old_version", [None, 1], ids=["legacy", "manual-v1"])
+def test_existing_archive_upgrade_reuses_video_and_preserves_uncertain_publication(isolated_factory, monkeypatch, old_version):
+    from services.factory_handoff import HANDOFF_VERSION
+
+    run_id, item_id = _seed_item(isolated_factory, status="completed", content={
+        "title": "已有定稿", "script": "这是已经审核的原始口播。", "sources": [SOURCE],
+        "hook": "先核对原文。", "follow_prompt": "一起看清来源与边界。",
+    })
+    directory = factory_service.FACTORY_DIR / run_id / item_id
+    media = _package_media(directory)
+    old_zip = directory / ("douyin-manual.zip" if old_version else "douyin.zip")
+    with zipfile.ZipFile(old_zip, "w") as archive:
+        archive.writestr("metadata.json", json.dumps({"handoff_version": old_version}))
+        archive.write(media["video_path"], "video.mp4")
+    original_zip = old_zip.read_bytes()
+    original_files = {path: Path(path).read_bytes() for path in media.values()}
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        run.settings_snapshot = {**run.settings_snapshot, "platforms": ["douyin"],
+                                 "distribution_policy": "single-platform-v1"}
+        item = db.get(FactoryItem, item_id)
+        item.brief = {**item.brief, "distribution": {"platform": "douyin", "day": "2026-11-12",
+                                                    "policy": "single-platform-v1"}}
+        item.media = media
+        publication = FactoryPublication(item_id=item_id, platform="douyin", action="publish", status="failed",
+            command_id="historical-command", result={"submission_attempted": True, "submission_uncertain": True,
+                                                      "message": "已点击提交，尚无官方回执"})
+        db.add(publication)
+        db.flush()
+        existing = {"platform": "douyin", "title": "沿用旧标题", "caption": "沿用已定稿正文", "tags": ["AI"],
+                    "status": "prepared", "published": False, "path": str(old_zip),
+                    "publication_job_id": publication.id}
+        if old_version:
+            existing.update(handoff_version=old_version,
+                            manual_handoff={"version": old_version, "cover_text": "保留已交付封面文字"})
+        item.packages = [existing]
+        db.commit()
+        old_publication = deepcopy({column.name: getattr(publication, column.name)
+                                    for column in FactoryPublication.__table__.columns})
+        old_content = deepcopy(item.content)
+        old_counters = (run.llm_calls, run.input_tokens, run.output_tokens)
+    model = Mock(side_effect=AssertionError("Archive upgrades must not call a model"))
+    render = Mock(side_effect=AssertionError("Archive upgrades must not render again"))
+    monkeypatch.setattr(factory_service, "call_agent", model)
+    monkeypatch.setattr(factory_service, "_render", render)
+
+    factory_service._package(run_id, item_id)
+    factory_service._package(run_id, item_id)
+
+    model.assert_not_called()
+    render.assert_not_called()
+    assert old_zip.read_bytes() == original_zip
+    assert {path: Path(path).read_bytes() for path in original_files} == original_files
+    with isolated_factory() as db:
+        item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
+        assert item.content == old_content and item.media == media
+        assert (run.llm_calls, run.input_tokens, run.output_tokens) == old_counters
+        assert db.query(FactoryPublication).count() == 1
+        publication = db.get(FactoryPublication, old_publication["id"])
+        assert {column.name: getattr(publication, column.name)
+                for column in FactoryPublication.__table__.columns} == old_publication
+        package = item.packages[0]
+        assert package["platform"] == "douyin" and Path(package["path"]) != old_zip
+        assert package["published"] is False
+        assert package["handoff_version"] == HANDOFF_VERSION == 2
+        assert package["video_filename"] == "已有定稿.mp4"
+        with zipfile.ZipFile(package["path"]) as archive:
+            assert "video.mp4" not in archive.namelist()
+            assert archive.read("已有定稿.mp4") == original_files[media["video_path"]]
+            metadata = json.loads(archive.read("metadata.json"))
+            assert metadata["video_filename"] == package["video_filename"]
+            handoff = metadata["manual_handoff"]
+            assert handoff["version"] == HANDOFF_VERSION
+            assert handoff["title"] == "沿用旧标题" and handoff["caption"] == "沿用已定稿正文"
+            if old_version:
+                assert handoff["cover_text"] == "保留已交付封面文字"
+            assert "结果未确认" in handoff["publication_warning"]
+            instructions = archive.read("手动发布说明.txt").decode("utf-8")
+            assert "请本人先在官方作品管理确认" in instructions and "不能重复提交" in instructions
+            assert "package_ready" in instructions and "不代表已提交" in instructions
 
 
 def test_model_budget_stops_before_any_network_request(isolated_factory, monkeypatch):
@@ -527,11 +649,12 @@ def test_rejected_replacement_stops_before_rendering_even_with_more_reserves(iso
         assert run.active_slot is None
 
 
-def test_resume_completed_video_recovers_submission_without_rendering(isolated_factory, monkeypatch):
+@pytest.mark.parametrize("already_complete", [False, True])
+def test_manual_delivery_never_auto_submits_even_with_old_snapshot(isolated_factory, monkeypatch, already_complete):
     import redis
     from services import factory_publishing
 
-    run_id, item_id = _seed_item(isolated_factory, status="completed")
+    run_id, item_id = _seed_item(isolated_factory, status="completed" if already_complete else "planned")
     with isolated_factory() as db:
         run = db.get(FactoryRun, run_id)
         run.settings_snapshot = {**run.settings_snapshot, "auto_publish_xiaohongshu": True}
@@ -544,6 +667,8 @@ def test_resume_completed_video_recovers_submission_without_rendering(isolated_f
     monkeypatch.setattr(factory_service, "_make_plan", lambda _run_id: None)
     monkeypatch.setattr(factory_service, "call_agent", lambda *args, **kwargs: {"summary": "已恢复提交阶段"})
     render, review, package, submit = Mock(), Mock(), Mock(), Mock()
+    package.side_effect = lambda *_: factory_service._save_item(item_id, status="completed")
+    monkeypatch.setattr(factory_service, "_ensure_visual_support", Mock())
     monkeypatch.setattr(factory_service, "_write_and_review", review)
     monkeypatch.setattr(factory_service, "_render", render)
     monkeypatch.setattr(factory_service, "_package", package)
@@ -551,10 +676,12 @@ def test_resume_completed_video_recovers_submission_without_rendering(isolated_f
 
     factory_service.execute_run(run_id)
 
-    review.assert_not_called()
-    render.assert_not_called()
-    package.assert_not_called()
-    submit.assert_called_once_with(item_id, run_id)
+    for step in (review, render, package):
+        if already_complete:
+            step.assert_not_called()
+        else:
+            step.assert_called_once_with(run_id, item_id)
+    submit.assert_not_called()
     with isolated_factory() as db:
         run = db.get(FactoryRun, run_id)
         assert run.status == "completed"

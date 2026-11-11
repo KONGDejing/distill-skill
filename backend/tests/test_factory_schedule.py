@@ -48,21 +48,35 @@ def env(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env, monkeypatch):
+@pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou"])
+def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env, monkeypatch, tmp_path, platform):
     from services import factory_platform_policy
-    monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: platform != "xiaohongshu")
+    monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: False)
     state = Mock(side_effect=AssertionError("manual platform must not query browser"))
     monkeypatch.setattr(schedule.publishing, "_connection_state", state)
     item = env.db.get(FactoryItem, "item")
-    item.brief = {"distribution": {"platform": "xiaohongshu", "day": "2026-11-09", "policy": "single-platform-v1"}}
-    item.packages = [{"platform": "xiaohongshu", "status": "package_ready"}]
+    refresh = Mock(side_effect=AssertionError("manual history must not be refreshed"))
+    monkeypatch.setattr(schedule.publishing, "refresh_job", refresh)
+    package = tmp_path / "manual.zip"
+    package.write_bytes(b"fixture")
+    copy = tmp_path / "manual-copy.txt"
+    copy.write_text("fixture copy", encoding="utf-8")
+    env.config.publish_enabled = False
+    item.brief = {"distribution": {"platform": platform, "day": "2026-11-09", "policy": "single-platform-v1"}}
+    from services.factory_handoff import HANDOFF_VERSION, build_handoff
+    handoff = build_handoff({"sources": [{"url": "https://example.invalid/source"}]},
+        {"platform": platform, "title": "fixture", "caption": "fixture", "tags": ["fixture"]},
+        item.brief["distribution"])
+    item.packages = [{"platform": platform, "status": "package_ready", "path": str(package),
+                      "copy_path": str(copy), "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff}]
     env.db.commit()
     schedule.advance_slot(env.db, env.slot, env.config, env.slot.due_at)
-    assert env.slot.platforms == ["xiaohongshu"]
+    assert env.slot.platforms == [platform]
     assert env.slot.status == "manual_ready"
-    assert env.slot.results["xiaohongshu"]["status"] != "submitted"
+    assert env.slot.results[platform]["status"] != "submitted"
     env.begin.assert_not_called()
     state.assert_not_called()
+    refresh.assert_not_called()
 
 
 def test_carried_video_does_not_create_seventh_original_and_keeps_editor_quota(env, monkeypatch):
@@ -453,6 +467,7 @@ def test_legacy_schema_upgrade_backfills_nominal_only_and_is_idempotent(tmp_path
     with engine.connect() as conn:
         assert conn.exec_driver_sql('SELECT due_at,nominal_at,jitter_seconds FROM factory_releases').one()==('2026-11-09 09:00:00.000000','2026-11-09 09:00:00.000000',None)
         assert conn.exec_driver_sql('SELECT publish_jitter_seconds FROM factory_config').scalar()==900
+        assert conn.exec_driver_sql('SELECT manual_delivery_enabled FROM factory_config').scalar()==1
     engine.dispose()
 
 
