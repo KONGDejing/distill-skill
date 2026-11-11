@@ -11,7 +11,7 @@ const AGENT_ICONS = { director: Workflow, researcher: Search, researcher3: Searc
 const ACTIVE = new Set(['queued', 'running', 'researching', 'planning', 'writing', 'reviewing', 'rendering', 'adapting', 'reporting', 'cancelling', 'cancel_requested', 'processing'])
 const RETRYABLE = new Set(['paused_memory', 'failed', 'partial', 'cancelled', 'error', 'interrupted'])
 const STATUS_LABELS = {
-  manual: '人工交付', manual_ready: '待人工发布', deferred: '保留待排期', scheduled: '已排期', waiting_media: '等待成片', missed: '错过建议时间', uploading: '上传中', publishing: '提交处理中', queued: '排队中', planned: '待创作', pending: '待开始', running: '执行中', researching: '采集资料', planning: '选题决策', writing: '创作中', reviewing: '审核中', rendering: '制作中', adapting: '准备交付包', reporting: '生成日报', processing: '处理中',
+  automated: '自动发布', manual: '人工交付', manual_ready: '待人工发布', deferred: '保留待排期', scheduled: '已排期', waiting_media: '等待成片', missed: '错过建议时间', uploading: '上传中', publishing: '提交处理中', queued: '排队中', planned: '待创作', pending: '待开始', running: '执行中', researching: '采集资料', planning: '选题决策', writing: '创作中', reviewing: '审核中', rendering: '制作中', adapting: '准备交付包', reporting: '生成日报', processing: '处理中',
   completed: '已完成', succeeded: '已完成', complete: '已完成', ready: '已就绪', approved: '审核通过', package_ready: '素材包就绪', prepared: '已上传待提交', submitted: '平台已接收', published: '已发布',
   paused_memory: '内存保护暂停', idle: '待命', active: '工作中', busy: '工作中', working: '工作中', online: '待命', waiting: '待任务', paused: '已暂停', offline: '离线', blocked: '受阻 · 见原因',
   rejected: '需返工', failed: '失败', error: '异常', partial: '部分完成', cancelled: '已取消', cancelling: '正在取消', cancel_requested: '正在取消', interrupted: '执行中断',
@@ -57,9 +57,9 @@ function Stat({ icon: Icon, label, value, suffix, detail }) {
 }
 
 export function SettingsPanel({ settings, onSave, onClose, busy }) {
-  const [form, setForm] = useState({ daily_target: settings.daily_target || 6, target_duration_seconds: settings.target_duration_seconds || 150, schedule_enabled: Boolean(settings.schedule_enabled), schedule_time: settings.schedule_time || '00:30', manual_delivery_enabled: Boolean(settings.manual_delivery_enabled), publish_times: settings.publish_times || [], publish_jitter_seconds: settings.publish_jitter_seconds ?? 900, visual_style: settings.visual_style || 'tech_montage' })
+  const [form, setForm] = useState({ daily_target: settings.daily_target || 6, target_duration_seconds: settings.target_duration_seconds || 150, schedule_enabled: Boolean(settings.schedule_enabled), schedule_time: settings.schedule_time || '00:30', publish_enabled: Boolean(settings.publish_enabled), manual_delivery_enabled: Boolean(settings.manual_delivery_enabled), publish_times: settings.publish_times || [], publish_jitter_seconds: settings.publish_jitter_seconds ?? 900, visual_style: settings.visual_style || 'tech_montage' })
   return (
-    <form onSubmit={e => { e.preventDefault(); onSave({ ...form, publish_enabled: false, auto_publish_xiaohongshu: false }) }} className="factory-enter mb-6 rounded-2xl border border-emerald-300/15 bg-[#101e24] p-5 sm:p-6">
+    <form onSubmit={e => { e.preventDefault(); onSave({ ...form, auto_publish_xiaohongshu: false }) }} className="factory-enter mb-6 rounded-2xl border border-emerald-300/15 bg-[#101e24] p-5 sm:p-6">
       <div className="mb-5 flex items-center justify-between"><div><h3 className="text-sm font-semibold">生产计划</h3><p className="mt-1 text-xs text-slate-400">新设置用于后续生产批次，正在执行的任务按原计划继续。</p></div><button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-400 hover:text-white" aria-label="关闭生产设置"><X size={18} /></button></div>
       <div className="flex flex-col gap-5 sm:flex-row sm:flex-wrap sm:items-end">
         <label className="text-xs text-slate-400">每日原创目标<div className="mt-2 flex items-center gap-2"><input type="number" min="1" max="6" required value={form.daily_target} onChange={e => setForm({ ...form, daily_target: e.target.value === '' ? '' : Number(e.target.value) })} className="w-24 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white" /><span>条</span></div></label>
@@ -67,7 +67,8 @@ export function SettingsPanel({ settings, onSave, onClose, busy }) {
         <label className="text-xs text-slate-400">每日提前开工（北京时间）<input type="time" required value={form.schedule_time} onChange={e => setForm({ ...form, schedule_time: e.target.value })} className="mt-2 block rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white [color-scheme:dark]" /></label>
         <label className="text-xs text-slate-400">视频视觉风格<select value={form.visual_style} onChange={e => setForm({ ...form, visual_style: e.target.value })} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2.5 text-sm text-white"><option value="tech_montage">科技演示混剪（推荐）</option><option value="cards">文字卡片（旧版）</option></select><span className="mt-2 block max-w-64 text-[11px] leading-relaxed text-slate-500">{form.visual_style === 'tech_montage' ? '使用真实视频素材；素材不足时暂停该条制作并提示。' : '使用文字卡片与配音制作。'}</span></label>
         <label className="flex cursor-pointer items-center gap-3 py-3 text-sm text-slate-300"><input type="checkbox" checked={form.schedule_enabled} onChange={e => setForm({ ...form, schedule_enabled: e.target.checked })} className="h-4 w-4 accent-emerald-300" />启用每日自动生产</label>
-        <label className="flex cursor-pointer items-start gap-3 py-2 text-sm text-slate-300"><input type="checkbox" checked={form.manual_delivery_enabled} onChange={e => setForm({ ...form, manual_delivery_enabled: e.target.checked })} className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-300" /><span>启用人工交付计划<span className="mt-1 block max-w-64 text-[11px] leading-relaxed text-slate-500">生成建议发布时间与唯一平台路线，素材包由本人手动上传到抖音、快手或小红书；各平台每天最多2条。</span></span></label>
+        <label className="flex cursor-pointer items-start gap-3 py-2 text-sm text-slate-300"><input type="checkbox" checked={form.publish_enabled} onChange={e => setForm({ ...form, publish_enabled: e.target.checked })} className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-300" /><span>抖音自动发布<span className="mt-1 block max-w-64 text-[11px] leading-relaxed text-slate-500">仅上传分配给抖音的最终成片，每天最多2条，必须声明内容由AI生成；需要官方本人验证时暂停提示。</span></span></label>
+        <label className="flex cursor-pointer items-start gap-3 py-2 text-sm text-slate-300"><input type="checkbox" checked={form.manual_delivery_enabled} onChange={e => setForm({ ...form, manual_delivery_enabled: e.target.checked })} className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-300" /><span>启用人工交付计划<span className="mt-1 block max-w-64 text-[11px] leading-relaxed text-slate-500">生成建议发布时间与唯一平台路线，快手、小红书由本人手动上传；抖音按独立开关自动发布，各平台每天最多2条。</span></span></label>
         <label className="w-full text-xs text-slate-400">基准建议发布时间（北京时间，每个时间对应一条原创）<input aria-label="每日建议发布时间" defaultValue={form.publish_times.join('，')} onChange={e => setForm({ ...form, publish_times: e.target.value.split(/[,，\s]+/).filter(Boolean) })} className="mt-2 block w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white" /></label>
         <label className="text-xs text-slate-400">随机浮动范围（秒）<input aria-label="发布时间随机浮动秒数" type="number" min="0" max="900" step="1" required value={form.publish_jitter_seconds} onChange={e => setForm({ ...form, publish_jitter_seconds: Number(e.target.value) })} className="mt-2 block w-28 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5 text-sm text-white" /><span className="mt-2 block text-[11px] text-slate-500">900 表示前后15分钟；每天每个时段生成一次并保存，调整用于后续新排期。</span></label>
         <button disabled={busy} className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-300 px-5 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40 sm:ml-auto">{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}保存计划</button>
@@ -82,6 +83,7 @@ export function ManualPackage({ pkg, item = {} }) {
   const platformName = PLATFORM_NAMES[pkg.platform] || pkg.platform
   const route = item.distribution || handoff?.distribution
   const otherRoute = route?.platform && route.platform !== pkg.platform
+  const automated = pkg.platform === 'douyin' && pkg.automation?.enabled === true
   const job = item.platform_jobs?.[pkg.platform] || (pkg.platform === 'xiaohongshu' ? item.xiaohongshu_job : null)
   const uncertain = job?.result?.submission_uncertain === true || job?.status === 'uncertain' || pkg.status === 'uncertain'
   const historicalReceipt = job?.status === 'submitted' || pkg.status === 'submitted'
@@ -96,7 +98,7 @@ export function ManualPackage({ pkg, item = {} }) {
   return <section aria-label={`${platformName}人工发布文案`} className="min-w-0 bg-[#0e1722] p-4 sm:p-5">
     <div className="flex flex-wrap items-center justify-between gap-2"><h5 className="text-sm font-medium text-slate-200">{platformName} · {otherRoute ? '历史文案与归档' : '发布文案'}</h5><Status value={pkg.status} small /></div>
     {otherRoute ? <p role="alert" className="mt-3 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200">当前唯一分配平台为{PLATFORM_NAMES[route.platform] || route.platform}，请勿上传此历史包或跨平台重复发布。</p>
-      : <p className="mt-2 text-xs leading-relaxed text-slate-400">上传完整成片（MP4），填写以下标题和正文。</p>}
+      : <p className="mt-2 text-xs leading-relaxed text-slate-400">{automated ? '抖音按排期自动上传，并选择官方“内容由AI生成”声明。下方文案供查看与归档，请按任务状态核对，避免重复上传。' : '上传完整成片（MP4），填写以下标题和正文。'}</p>}
     {warning && <p role="alert" className="mt-3 whitespace-pre-wrap break-words rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs leading-relaxed text-amber-200">历史发布提醒：{asText(warning)}</p>}
     <dl className="mt-4 space-y-4 text-xs">{[['标题', copy.title], ['正文', description]].map(([label, value]) => <div key={label}><dt className="mb-1 text-slate-500">{label}</dt><dd className="whitespace-pre-wrap break-words leading-6 text-slate-300">{asText(value) || '待补齐'}</dd></div>)}</dl>
     {(copy.pinned_comment || replies.length > 0) && <details className="mt-4 rounded-lg border border-white/[0.06] p-3 text-xs">
@@ -113,10 +115,10 @@ export function ManualPackage({ pkg, item = {} }) {
 }
 
 export function ManualDeliveryPlan({ settings, releases, target }) {
-  if (!settings.manual_delivery_enabled) return null
+  if (!settings.manual_delivery_enabled && !settings.publish_enabled) return null
   return <section className="mb-6 rounded-2xl border border-white/[0.07] bg-[#0d141e] p-5">
-    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-slate-200">人工交付计划 · 北京时间</h3><span className="text-xs text-slate-400">每天 {target} 条原创 · 每条唯一路线 · 每平台最多2条</span></div>
-    <p className="mb-4 text-xs leading-relaxed text-slate-400">建议时间基准：{(settings.publish_times || []).join(' · ')}。每个时段前后浮动 {settings.publish_jitter_seconds ?? 900} 秒，生成后固定。以下是建议发布时间，到点不会自动上传或提交。每条只交付给分配的平台，员工不固定绑定账号；抖音、快手、小红书均由本人上传并核对结果。B站长专题保留独立计划。</p>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-slate-200">发布与交付计划 · 北京时间</h3><span className="text-xs text-slate-400">每天 {target} 条原创 · 每条唯一路线 · 每平台最多2条</span></div>
+    <p className="mb-4 text-xs leading-relaxed text-slate-400">建议时间基准：{(settings.publish_times || []).join(' · ')}。每个时段前后浮动 {settings.publish_jitter_seconds ?? 900} 秒，生成后固定。抖音自动发布开启时按排期上传并声明AI生成；快手、小红书到点只交付素材包，由本人上传。每条只分配一个平台，员工不固定绑定账号。B站长专题保留独立计划。</p>
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{releases.slice(0, 20).map(slot => <div key={slot.id} className="rounded-xl border border-white/[0.06] p-3">
       <p className="mb-2 text-[10px] text-slate-500">建议发布时间</p><div className="flex items-center justify-between gap-1"><span className="text-xs text-slate-200">{formatDate(slot.due_at, false, true)}</span><Status value={slot.status} small /></div>
       <p className="mt-1 text-[10px] text-slate-500">基准 {formatDate(slot.nominal_at, true)} · {slot.jitter_seconds == null ? '沿用原排期' : `${slot.jitter_seconds >= 0 ? '+' : ''}${slot.jitter_seconds}秒`}</p><p className="mt-2 truncate text-[11px] text-slate-400" title={slot.title}>{slot.title || '等待原创成片'}</p>
@@ -126,9 +128,9 @@ export function ManualDeliveryPlan({ settings, releases, target }) {
 }
 
 export function ManualPlatformChannels({ platforms }) {
-  return <section className="rounded-2xl border border-white/[0.07] bg-[#0d141e] p-4"><div className="mb-4 flex items-center gap-2"><Radio size={15} className="text-slate-400" /><h3 className="text-xs font-semibold text-slate-300">人工交付平台</h3></div>
-    <div className="space-y-4">{platforms.map(platform => <PlatformConnection key={platform.id} platform={{ ...platform, name: platform.name || PLATFORM_NAMES[platform.id], automation: { mode: 'manual', enabled: false }, description: platform.id === 'bilibili' ? '长专题按独立计划交付完整成片，由本人手动上传。' : '每条唯一路线，每天最多2条；上传完整成片并填写标题、正文。' }} statusBadge={<Status value="manual" small />} />)}</div>
-    <p className="mt-4 rounded-lg border border-amber-300/[0.08] bg-amber-300/[0.025] p-3 text-[10px] leading-relaxed text-slate-400">素材包就绪表示视频与文案已准备完成，不代表已提交或已公开发布。所有账号均由本人操作，结果请在官方页面自行核对。</p>
+  return <section className="rounded-2xl border border-white/[0.07] bg-[#0d141e] p-4"><div className="mb-4 flex items-center gap-2"><Radio size={15} className="text-slate-400" /><h3 className="text-xs font-semibold text-slate-300">平台发布方式</h3></div>
+    <div className="space-y-4">{platforms.map(platform => <PlatformConnection key={platform.id} platform={{ ...platform, name: platform.name || PLATFORM_NAMES[platform.id], automation: platform.id === 'douyin' ? (platform.automation || { enabled: false }) : { mode: 'manual', enabled: false }, description: platform.id === 'douyin' && platform.automation?.enabled ? '按排期自动上传最终成片，每天最多2条，必须选择官方AI生成声明。' : platform.id === 'bilibili' ? '长专题按独立计划交付完整成片，由本人手动上传。' : '每条唯一路线，每天最多2条；上传完整成片并填写标题、正文。' }} loadState={platform.id === 'douyin' ? factoryApi.getPlatformLoginState : undefined} statusBadge={<Status value={platform.id === 'douyin' && platform.automation?.enabled ? 'automated' : 'manual'} small />} />)}</div>
+    <p className="mt-4 rounded-lg border border-amber-300/[0.08] bg-amber-300/[0.025] p-3 text-[10px] leading-relaxed text-slate-400">素材包就绪表示视频与文案已准备完成，不代表已提交或已公开发布。抖音按官方回执记录提交结果；快手和小红书由本人操作。平台已接收与审核通过、公开可见分别记录。</p>
   </section>
 }
 

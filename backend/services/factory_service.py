@@ -89,7 +89,9 @@ def run_detail(db, run):
     for item in items:
         content, media = item.content or {}, item.media or {}
         preview = media.get("preview") or {}
+        from services.factory_platform_policy import automation_state
         packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}",
+                     "automation": automation_state(package['platform']),
                      "copy_url": storage_url(package.get("copy_path"))} for package in item.packages or []]
         publication = db.query(FactoryPublication).filter_by(item_id=item.id, platform="xiaohongshu").order_by(FactoryPublication.created_at.desc()).first()
         from services.factory_publishing import job_dict

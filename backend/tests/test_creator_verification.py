@@ -23,15 +23,15 @@ def test_observed_confirmation_and_identity_are_distinct(body, kind):
 
 def test_manual_state_does_not_resume_cached_identity_verification(monkeypatch, tmp_path):
     monkeypatch.setattr(connector, "RUNTIME", tmp_path)
-    directory = connector._directories("douyin")
+    directory = connector._directories("kuaishou")
     connector._write(directory / "state.json", {"state_code": "needs_verification", "authenticated": False,
                      "verification": {"kind": "identity"}, "updated_at": connector._now()})
     connector._write(directory / "login-ui.json", {"body": "身份验证"})
     before = {path: path.read_bytes() for path in directory.rglob("*") if path.is_file()}
-    state = connector.connection_state("douyin")
+    state = connector.connection_state("kuaishou")
     assert state["state_code"] == "manual" and state["verification"] is None
     with pytest.raises(AutomationDisabled):
-        connector.submit_command("douyin", "login")
+        connector.submit_command("kuaishou", "login")
     assert not list((directory / "commands").iterdir())
     assert all(path.read_bytes() == data for path, data in before.items())
 
@@ -80,7 +80,7 @@ def test_disabled_verification_request_never_reads_or_echoes_code(monkeypatch, t
     monkeypatch.setattr(verification, "interact", handler)
     code = "451239"
     with TestClient(application) as client:
-        response = client.post("/api/factory/platforms/douyin/verification-input",
+        response = client.post("/api/factory/platforms/kuaishou/verification-input",
                                json={"action": "fill_code", "frame_id": "test", "code": code})
         assert response.status_code == 409 and code not in response.text
         assert "自动化已停用" in response.text

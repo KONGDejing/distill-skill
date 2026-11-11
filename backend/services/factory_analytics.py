@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from models.factory import FactoryAnalyticsSnapshot
-from services.factory_platform_policy import automation_enabled, automation_state
+from services.factory_platform_policy import analytics_enabled, analytics_state
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTALS = {
@@ -113,8 +113,8 @@ def normalize(platform, responses, body=""):
 
 
 def capture(platform):
-    if not automation_enabled(platform):
-        policy = automation_state(platform)
+    if not analytics_enabled(platform):
+        policy = analytics_state(platform)
         return {"status": "manual", "platform": policy["platform"], "message": policy["reason"],
                 "automation_enabled": False, "automation": policy, "historical_data_retained": True}
     from playwright.sync_api import sync_playwright
@@ -156,7 +156,7 @@ def capture(platform):
 
 
 def save_snapshot(db, platform, data):
-    if not automation_enabled(platform) or data.get("status") == "manual":
+    if not analytics_enabled(platform) or data.get("status") == "manual":
         # A disabled capture is a policy state, not a new data observation.
         return db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform).order_by(FactoryAnalyticsSnapshot.id.desc()).first()
     snapshot = FactoryAnalyticsSnapshot(platform=platform, status=data["status"], data=data)
@@ -171,8 +171,8 @@ def overview(db):
         latest = db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform).order_by(FactoryAnalyticsSnapshot.id.desc()).first()
         good = db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform, status="connected").order_by(FactoryAnalyticsSnapshot.id.desc()).first()
         data = dict(good.data) if good else {"metrics": dict.fromkeys(METRICS), "period": {}}
-        if not automation_enabled(platform):
-            policy = automation_state(platform)
+        if not analytics_enabled(platform):
+            policy = analytics_state(platform)
             platforms.append({**data, "platform": platform, "status": "manual", "automation": policy,
                 "automation_enabled": False, "historical_only": bool(good),
                 "message": policy["reason"] + " 自动采集已停止；以下仅保留历史数据及原采集时间。",

@@ -130,3 +130,14 @@ def test_restored_session_does_not_wait_for_a_logged_out_login_button():
         assert client.login()["authenticated"]
     client.page.goto.assert_called_once()
     client.page.get_by_role.assert_not_called()
+
+
+@pytest.mark.parametrize('declaration_visible,ai_generated', [(False, True), (True, False)])
+def test_publish_requires_both_ai_flag_and_official_declaration(declaration_visible, ai_generated):
+    client = adapter()
+    client.page.url = 'https://creator.douyin.com/creator-micro/content/post/video'
+    client.page.get_by_placeholder.return_value.input_value.return_value = '定稿标题'
+    with patch.object(client, 'visible', return_value=Mock() if declaration_visible else None):
+        with pytest.raises(ValueError, match='AI'):
+            client.publication_control({}, {'title': '定稿标题', 'ai_generated': ai_generated})
+    client.page.get_by_role.assert_not_called()

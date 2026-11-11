@@ -13,7 +13,7 @@ from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, Factory
 from agents.registry import AGENTS
 from services import factory_analytics
 from services.factory_resources import memory_state
-from services.factory_platform_policy import automation_enabled
+from services.factory_platform_policy import analytics_enabled
 
 PRIVATE = Path(__file__).resolve().parents[2] / ".runtime/operations"
 ASSIGNMENTS = {
@@ -25,7 +25,7 @@ ASSIGNMENTS = {
     "producer2": "独立完成分配的视频，重点讲清论文原理与技术演示，记录自己的素材和返工",
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
-    "publisher": "按内容分配三平台各2条，交付6个完整ZIP和标题正文；由用户本人上传和回复评论",
+    "publisher": "按内容分配三平台各2条，交付6个完整ZIP和标题正文；抖音自动上传并声明AI生成，快手、小红书由本人上传；评论由本人回复",
     "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
 }
 
@@ -55,7 +55,7 @@ def overview(db, now=None):
     for job in uncertain:
         if job.result.get("submission_uncertain"):
             alerts.append({"key": "issue:publication:" + job.id, "owner_id": "publisher", "owner": "小麦", "platform": job.platform, "item_id": job.item_id,
-                           "message": job.result.get("message", "提交结果待核对"), "next_action": "请本人在官方作品列表人工核对，已上传或审核中不要重复提交；工厂不自动访问账号"})
+                           "message": job.result.get("message", "提交结果待核对"), "next_action": ("在抖音官方窗口完成要求的本人验证，并核对该作品是否已接收；保留不确定记录，不重复提交" if job.platform == "douyin" else "请本人在官方作品列表人工核对，已上传或审核中不要重复提交；工厂不自动访问该账号")})
     items = db.query(FactoryItem).filter(FactoryItem.status != "deferred", or_(
         (FactoryItem.created_at >= start) & (FactoryItem.created_at < start + timedelta(days=1)),
         FactoryItem.brief["distribution"]["day"].as_string() == now.date().isoformat())).all()
@@ -143,7 +143,7 @@ def serve():
                 with SessionLocal() as db:
                     patrol(db)
                     for platform in ("douyin", "xiaohongshu", "kuaishou", "bilibili"):
-                        if not automation_enabled(platform):
+                        if not analytics_enabled(platform):
                             continue
                         last = db.query(FactoryAnalyticsSnapshot).filter_by(platform=platform).order_by(FactoryAnalyticsSnapshot.id.desc()).first()
                         if last and datetime.utcnow() - last.collected_at < timedelta(minutes=30):

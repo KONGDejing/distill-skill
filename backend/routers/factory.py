@@ -68,9 +68,14 @@ def overview(db: Session = Depends(get_db)):
     for platform in platforms:
         platform["enabled"] = platform["id"] in config["platforms"]
         state = automation_state(platform["id"])
+        connection = {}
+        if state["enabled"]:
+            from services.creator_connector import connection_state
+            connection = connection_state(platform["id"])
         platform.update(automation=state, status=state["mode"], login_status=state["mode"],
-                        account_name=None, capabilities={"prepare": False, "publish": False},
-                        description=("人工发布：每天最多2条，仅接收分配给本平台的作品。" if platform["enabled"]
+                        account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
+                        description=(("自动发布：每天最多2条，仅接收分配给抖音的作品，必须声明AI生成。" if state["enabled"]
+                                      else "人工发布：每天最多2条，仅接收分配给本平台的作品。") if platform["enabled"]
                                      else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases
     from services.factory_editorial import STRATEGY
@@ -89,8 +94,8 @@ def overview(db: Session = Depends(get_db)):
 def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     config = get_config(db)
     updates = data.model_dump(exclude_none=True)
-    if updates.get("publish_enabled") or updates.get("auto_publish_xiaohongshu"):
-        raise HTTPException(409, "所有平台均由本人手动发布，不能启用自动上传或自动发布")
+    if updates.get("auto_publish_xiaohongshu"):
+        raise HTTPException(409, "小红书由本人手动发布，不能启用自动上传或自动发布")
     merged = {**config_dict(config), **updates}
     if merged["daily_target"] > 2 * len(merged["platforms"]):
         raise HTTPException(422, "每个平台每天最多2条，原创目标不能超过启用平台的总分发名额")
@@ -99,7 +104,9 @@ def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     if merged["manual_delivery_enabled"]:
         if not config.manual_delivery_enabled:
             config.publish_start_at = datetime.utcnow()
-    updates.update(publish_enabled=False, auto_publish_xiaohongshu=False)
+    updates.update(auto_publish_xiaohongshu=False)
+    if updates.get("publish_enabled") and not config.publish_enabled:
+        config.publish_start_at = datetime.utcnow()
     for key, value in updates.items():
         setattr(config, key, value)
     db.commit()

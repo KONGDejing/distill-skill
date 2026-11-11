@@ -20,7 +20,16 @@ from services import xiaohongshu_connector as connector
 from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
 
 
-@pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou", "bilibili", "future_platform"])
+def test_only_douyin_upload_is_authorized_and_analytics_stays_manual():
+    from services.factory_platform_policy import analytics_enabled
+    assert automation_enabled(" DOUYIN ")
+    assert automation_state("douyin")["mode"] == "automated"
+    require_automation("douyin")
+    assert "AI生成" in automation_state("douyin")["reason"]
+    assert not any(analytics_enabled(p) for p in ["douyin", "kuaishou", "xiaohongshu", "bilibili"])
+
+
+@pytest.mark.parametrize("platform", ["xiaohongshu", "kuaishou", "bilibili", "future_platform"])
 def test_policy_cannot_be_enabled_by_environment_or_cached_login(monkeypatch, platform):
     monkeypatch.setenv(platform.upper() + "_AUTOMATION_ENABLED", "true")
     assert not automation_enabled(platform)
@@ -89,6 +98,16 @@ def sessions():
     Base.metadata.create_all(engine)
     yield sessionmaker(bind=engine)
     engine.dispose()
+
+
+def test_settings_enable_only_douyin_without_enabling_other_accounts(sessions):
+    from routers.factory import SettingsUpdate, update_settings
+    with sessions() as db:
+        result = update_settings(SettingsUpdate(publish_enabled=True, manual_delivery_enabled=True), db)
+        assert result['publish_enabled'] and result['manual_delivery_enabled']
+        assert result['platform_automation']['douyin']['enabled']
+        assert not result['auto_publish_xiaohongshu']
+        assert all(not result['platform_automation'][p]['enabled'] for p in ['kuaishou', 'xiaohongshu'])
 
 
 @pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou", "bilibili"])

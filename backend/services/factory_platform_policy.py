@@ -1,8 +1,7 @@
-"""Platform automation boundaries, independent of UI switches and credentials.
+"""The owner authorizes Douyin publishing; other accounts remain manual.
 
-The factory delivers complete media packages for the owner to upload manually.
-Account automation stays disabled for every platform; a login, stored cookie,
-environment flag, or ordinary settings update cannot opt in.
+Credentials and generic switches cannot enable another platform. The runtime
+publish switch separately pauses scheduled uploads without changing this scope.
 """
 
 
@@ -11,8 +10,17 @@ class AutomationDisabled(ValueError):
 
 
 def automation_enabled(platform):
-    # Fail closed for future platform names as well as the four current ones.
+    return str(platform).strip().lower() == "douyin"
+
+
+def analytics_enabled(platform):
+    # Restoring upload authorization does not turn on background account browsing.
     return False
+
+
+def analytics_state(platform):
+    return {"platform": str(platform).strip().lower(), "mode": "manual", "enabled": False,
+            "reason": "账号数据自动采集保持关闭；由本人提供官方数据，历史统计及采集时间保留。"}
 
 
 def automation_state(platform):
@@ -22,7 +30,8 @@ def automation_state(platform):
         "platform": platform,
         "mode": "automated" if enabled else "manual",
         "enabled": enabled,
-        "reason": "账号自动化已停用；工厂仅交付素材包，由本人手动上传、查看数据及核对发布结果。",
+        "reason": ("抖音按排期自动上传最终成片，必须选择官方“内容由AI生成”声明；需要本人验证时暂停并提示。"
+                   if enabled else "账号自动化已停用；工厂仅交付素材包，由本人手动上传、查看数据及核对发布结果。"),
     }
 
 

@@ -22,7 +22,7 @@ RHYTHM = [
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "收到用户提供的数据后", "owner": "小数", "task": "整理本人提供的官方统计，保留日期、周期与缺失字段；不自动浏览账号后台"},
-    {"time": "6个建议时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；每条只分配一个平台、每平台最多2条，用户本人通过官方客户端上传和回复评论"},
+    {"time": "6个建议时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；每条只分配一个平台、每平台最多2条，抖音由服务自动上传并声明AI生成；快手、小红书由用户本人上传；评论由本人回复"},
     {"time": "每周三 / 周六 20:00（长视频规划）", "owner": "小麦 / 小影", "task": "B站保留每周2条6–10分钟专题规划；长视频制作流程就绪后也只交付人工发布包"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -67,8 +67,8 @@ def initialize(db):
     plan = FactoryGrowthPlan(id=1, baselines=baselines, policy={"weeks": 4, "weekly_min": .05, "weekly_stretch": .10,
         "shorts_per_day": DAILY_TARGET, "editor_quotas": dict(DAILY_EDITOR_QUOTAS),
         "max_short_submissions_per_day": DAILY_TARGET, "short_seconds": 150,
-        "delivery_mode": "manual", "single_platform_per_original": True, "max_per_platform_per_day": 2,
-        "account_automation_enabled": False, "analytics_mode": "manual_or_historical",
+        "delivery_mode": "mixed", "platform_delivery_modes": {"douyin": "automated", "kuaishou": "manual", "xiaohongshu": "manual", "bilibili": "manual"}, "single_platform_per_original": True, "max_per_platform_per_day": 2,
+        "account_automation_enabled": True, "automated_platforms": ["douyin"], "analytics_mode": "manual_or_historical",
         "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
         "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_long_video_manual_delivery"}})
     db.add(plan); db.commit()
@@ -139,7 +139,7 @@ def sync_work_orders(db, state, analytics, now):
         ("researcher3", "05:15", "给小影3交接热点与展会素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
-        ("publisher", "22:15", "交付6套完整人工发布包", "每条只分配一个平台、每平台最多2条；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，用户本人上传，不以素材包冒充已发布", delivered, target),
+        ("publisher", "22:15", "交付6套完整人工发布包", "每条只分配一个平台、每平台最多2条；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，抖音由服务自动上传并声明AI生成；其他平台由用户本人上传，不以素材包冒充已发布", delivered, target),
         ("analyst", "22:25", "整理人工提供的经营数据", "只用用户提供的官方统计或留存历史数据，标明数据日期、周期和缺失；不自动读取账号，等待人工数据时不编造增长", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]

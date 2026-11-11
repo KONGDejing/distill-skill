@@ -317,6 +317,7 @@ def creator_publishing(publishing, monkeypatch):
         item = db.get(FactoryItem, env.item_id)
         item.packages = item.packages + [
             {"platform": platform, "title": "AI 教程", "caption": "使用指南", "tags": ["AI"],
+             "video_path": item.media["video_path"], "cover_path": item.media["cover_path"],
              "status": "package_ready", "published": False} for platform in env.states]
         db.commit()
     return env
@@ -528,6 +529,40 @@ def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(dist
         assert factory_publishing.begin_publication(db, env.item_id, 'publish', 'xiaohongshu').id == receipt.id
         assert receipt.result == {'submission_uncertain': True}
     forbidden.assert_not_called()
+
+
+def test_douyin_uses_final_export_and_ai_disclosure_while_other_platforms_stay_manual(distribution_publishing, monkeypatch, tmp_path):
+    from services.factory_platform_policy import AutomationDisabled, require_automation
+    env = distribution_publishing
+    monkeypatch.setattr(factory_publishing, 'require_automation', require_automation)
+    with env.sessions() as db:
+        item = db.get(FactoryItem, env.item_id)
+        final, cover = tmp_path / 'complete.mp4', tmp_path / 'finished-cover.png'
+        final.write_bytes(b'approved export with branded opening')
+        cover.write_bytes(b'approved lettered cover')
+        item.packages = [{**p, 'video_path': str(final), 'cover_path': str(cover)} if p['platform'] == 'douyin' else p for p in item.packages]
+        db.commit()
+        for platform in ('xiaohongshu', 'kuaishou', 'bilibili'):
+            with pytest.raises(AutomationDisabled):
+                factory_publishing.begin_publication(db, item.id, 'prepare', platform)
+        job = factory_publishing.begin_publication(db, item.id, 'prepare', 'douyin')
+        assert job.status == 'queued'
+        platform, action, payload = env.creator_submit.call_args.args
+        assert (platform, action) == ('douyin', 'prepare')
+        assert payload['video_path'] == str(final) and payload['cover_path'] == str(cover)
+        assert payload['ai_generated'] is True and '内容由AI生成' in payload['caption']
+    env.creator_submit.assert_called_once()
+
+
+def test_douyin_missing_final_export_does_not_silently_upload_source_montage(distribution_publishing):
+    env = distribution_publishing
+    with env.sessions() as db:
+        item = db.get(FactoryItem, env.item_id)
+        item.packages = [{k: v for k, v in p.items() if k != 'video_path'} for p in item.packages]
+        db.commit()
+        with pytest.raises(ValueError, match='最终交付成片'):
+            factory_publishing.begin_publication(db, item.id, 'prepare', 'douyin')
+    env.creator_submit.assert_not_called()
 
 
 @pytest.mark.parametrize('action', ['prepare', 'publish'])

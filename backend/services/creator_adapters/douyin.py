@@ -227,7 +227,10 @@ class Adapter(SubmissionWatch, BaseAdapter):
         caption = payload.get("caption", "") + "\n" + " ".join("#" + tag for tag in payload.get("tags", []))
         self.page.locator('[contenteditable=true]').fill(caption.strip())
         self.page.get_by_text("请选择自主声明", exact=True).click()
-        self.page.locator("label.semi-radio").filter(has_text="内容由AI生成").click()
+        disclosure = self.page.locator("label.semi-radio").filter(has_text="内容由AI生成")
+        disclosure.click()
+        if not disclosure.locator('input[type="radio"]').is_checked():
+            raise ValueError("官方AI生成声明未选中，停止准备，不会提交")
         self.page.get_by_role("button", name="确定", exact=True).click()
         if payload.get("cover_path"):
             self.page.get_by_text("选择封面", exact=True).first.click()
@@ -251,6 +254,8 @@ class Adapter(SubmissionWatch, BaseAdapter):
     def publication_control(self, payload, prepared):
         if urlsplit(self.page.url).path != "/creator-micro/content/post/video":
             raise ValueError("当前不是这条作品的官方发布表单，未点击提交")
+        if prepared.get("ai_generated") is not True:
+            raise ValueError("未记录本作品AI生成声明，未点击提交")
         if self.page.get_by_placeholder("填写作品标题，为作品获得更多流量").input_value() != prepared["title"]:
             raise ValueError("发布表单的标题与已准备作品不一致")
         if self.visible([self.page.get_by_text("内容由AI生成", exact=True)]) is None:

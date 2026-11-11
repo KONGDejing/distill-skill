@@ -36,6 +36,7 @@ PLATFORMS = {
     "bilibili": {"name": "哔哩哔哩", "hosts": {"member.bilibili.com", "passport.bilibili.com", "www.bilibili.com"}, "title_limit": 80, "caption_limit": 2000},
 }
 ACTIONS = {"login", "inspect", "prepare", "publish"}
+AUTOMATION_POLICY_VERSION = "douyin-ai-disclosure-v1"
 _STOP = False
 
 
@@ -342,11 +343,28 @@ def _enqueue_command(platform, action, clean):
     directory = _directories(platform)
     identifier = str(uuid.uuid4())
     result = {"platform": platform, "command_id": identifier, "action": action,
+              "automation_policy_version": AUTOMATION_POLICY_VERSION,
               "status": "queued", "message": "已加入官方创作后台操作队列",
               "created_at": _now(), "updated_at": _now()}
     _write(directory / "results" / f"{identifier}.json", result)
     _write(directory / "commands" / f"{identifier}.json", {**result, "payload": clean})
     return result
+
+
+def _retire_legacy_commands(platform):
+    """Restoring one account never replays queues from the former automation."""
+    directory = platform_directory(platform)
+    for path in (directory / "commands").glob("*.json"):
+        command = _read(path)
+        result_path = directory / "results" / path.name
+        result = _read(result_path)
+        if (result.get("status") not in {"queued", "running"}
+                or command.get("automation_policy_version") == AUTOMATION_POLICY_VERSION):
+            continue
+        result.update(status="failed", message="恢复自动发布前的旧任务已隔离，未自动执行；历史提交结果仍需核对", updated_at=_now())
+        if command.get("action") == "publish":
+            result["submission_uncertain"] = True
+        _write(result_path, result)
 
 
 def command_result(platform, command_id) -> dict:
@@ -537,6 +555,7 @@ def _serve(platform):
             raise SystemExit(2)
         (directory / "daemon.pid").write_text(str(os.getpid()))
         (directory / "daemon.pid").chmod(0o600)
+        _retire_legacy_commands(platform)
         for path in (directory / "results").glob("*.json"):
             result = _read(path)
             if result.get("status") == "running":

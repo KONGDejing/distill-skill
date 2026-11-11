@@ -21,6 +21,9 @@ from services.factory_handoff import HANDOFF_VERSION, build_handoff
 
 @pytest.fixture
 def manual(tmp_path, monkeypatch):
+    from services import factory_platform_policy
+    monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda _: False)
+    monkeypatch.setattr(creator_platforms, "automation_enabled", lambda _: False)
     engine = create_engine(f"sqlite:///{tmp_path / 'manual.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine, tables=[model.__table__ for model in
         (FactoryConfig, FactoryRun, FactoryItem, FactoryPublication, FactoryRelease, FactoryEvent)])
@@ -64,7 +67,7 @@ def manual(tmp_path, monkeypatch):
 
 def test_manual_default_and_settings_do_not_enable_account_automation(manual):
     assert manual.config.manual_delivery_enabled is True
-    for update in (factory.SettingsUpdate(publish_enabled=True), factory.SettingsUpdate(auto_publish_xiaohongshu=True)):
+    for update in (factory.SettingsUpdate(auto_publish_xiaohongshu=True),):
         with pytest.raises(HTTPException) as error:
             factory.update_settings(update, manual.db)
         assert error.value.status_code == 409

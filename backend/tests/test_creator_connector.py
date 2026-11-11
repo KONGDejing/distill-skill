@@ -146,6 +146,24 @@ def test_stopped_daemon_never_looks_authenticated(monkeypatch, tmp_path):
     assert not state["authenticated"] and not state["session_active"] and not state["qr_ready"]
 
 
+def test_restore_quarantines_old_pending_commands_but_preserves_receipts_and_new_queue(monkeypatch, tmp_path):
+    monkeypatch.setattr(connector, "RUNTIME", tmp_path)
+    directory = connector._directories('douyin')
+    original = {}
+    for name, status, policy in [('old', 'queued', None), ('receipt', 'submitted', None),
+                                  ('uncertain', 'failed', None), ('new', 'queued', connector.AUTOMATION_POLICY_VERSION)]:
+        command = {'action': 'publish', 'automation_policy_version': policy}
+        result = {'status': status, 'evidence': {'fixture': name}}
+        connector._write(directory / 'commands' / (name + '.json'), command)
+        connector._write(directory / 'results' / (name + '.json'), result)
+        original[name] = (directory / 'results' / (name + '.json')).read_bytes()
+    connector._retire_legacy_commands('douyin')
+    retired = connector._read(directory / 'results' / 'old.json')
+    assert retired['status'] == 'failed' and retired['submission_uncertain'] is True
+    for name in ['receipt', 'uncertain', 'new']:
+        assert (directory / 'results' / (name + '.json')).read_bytes() == original[name]
+
+
 def test_manual_connection_never_exposes_even_fresh_cached_qr(monkeypatch, tmp_path):
     monkeypatch.setattr(connector, "RUNTIME", tmp_path)
     alive = Mock(side_effect=AssertionError("Manual status cannot inspect a process"))
@@ -169,7 +187,7 @@ def test_refresh_requests_never_queue_or_mutate_cached_login(monkeypatch, tmp_pa
     monkeypatch.setattr(connector, "RUNTIME", tmp_path / "untouched")
     for _ in range(2):
         with pytest.raises(AutomationDisabled):
-            connector.submit_command("douyin", "login")
+            connector.submit_command("kuaishou", "login")
     assert not connector.RUNTIME.exists()
 
 
@@ -177,7 +195,7 @@ def test_refresh_requests_never_queue_or_mutate_cached_login(monkeypatch, tmp_pa
 def test_retained_browser_object_cannot_operate_or_delete_cached_files(monkeypatch, tmp_path, action):
     monkeypatch.setattr(connector, "RUNTIME", tmp_path)
     browser = object.__new__(connector._Browser)
-    browser.platform, browser.directory = "douyin", connector._directories("douyin")
+    browser.platform, browser.directory = "kuaishou", connector._directories("kuaishou")
     browser.adapter = Mock()
     picture = browser.directory / "login.png"
     picture.write_bytes(b"retained-image")
