@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import TimeoutError as BrowserTimeout
+from playwright.sync_api import TimeoutError as BrowserTimeout, expect
 
 from .base import BaseAdapter, clean_url
 from .submission import SubmissionWatch
@@ -215,6 +215,50 @@ class Adapter(SubmissionWatch, BaseAdapter):
             if tip is not None:
                 tip.click(timeout=3000)
 
+    def _location_control(self):
+        # Observed official location combobox, distinct from the hot-topic box.
+        control = self.page.locator('.semi-select-filterable.semi-select-no-arrow')
+        if control.count() != 1:
+            raise ValueError("无法唯一定位官方作品位置控件，未提交")
+        return control
+
+    def set_publication_location(self, payload):
+        city = payload.get("requested_publication_city")
+        if not city:
+            return None
+        if city != "北京":
+            raise ValueError("当前只联调了北京作品位置，未提交")
+        self._verified_location = None
+        control = self._location_control()
+        if 'semi-select-open' not in (control.get_attribute('class') or ''):
+            control.click()
+        # Select the city itself, never a university/landmark containing 北京.
+        option = self.page.get_by_role('option').filter(
+            has=self.page.get_by_text('北京市', exact=True))
+        if option.count() != 1 or not option.is_visible():
+            field = control.locator('input')
+            field.fill('北京市' if field.input_value() == '北京' else '北京')
+        option.wait_for(state='visible', timeout=15000)
+        if option.count() != 1 or '中国北京市' not in option.inner_text():
+            raise ValueError("官方搜索未返回唯一的中国北京市选项，未提交")
+        option.click()
+        selected = control.locator('.semi-select-selection-text').inner_text().strip()
+        if selected != '北京市':
+            raise ValueError("作品位置尚未选中北京市，未提交")
+        self._verified_location = {"city": "北京", "country": "CN", "selected_text": selected,
+                                   "verification_method": "official_editor_location"}
+        return dict(self._verified_location)
+
+    def require_publication_location(self, prepared):
+        if not prepared.get("requested_publication_city"):
+            return
+        evidence = getattr(self, '_verified_location', None)
+        if (prepared['requested_publication_city'] != '北京' or not evidence
+                or evidence.get('city') != '北京'):
+            raise ValueError("作品位置北京尚未在官方表单核验，未点击提交")
+        if self._location_control().locator('.semi-select-selection-text').inner_text().strip() != '北京市':
+            raise ValueError("作品位置在准备后发生变化，未点击提交")
+
     def prepare(self, payload):
         self.page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=45000)
         self.page.locator('input[type=file][accept*="video"]').first.set_input_files(payload["video_path"], timeout=30000)
@@ -229,8 +273,14 @@ class Adapter(SubmissionWatch, BaseAdapter):
         self.page.get_by_text("请选择自主声明", exact=True).click()
         disclosure = self.page.locator("label.semi-radio").filter(has_text="内容由AI生成")
         disclosure.click()
-        if not disclosure.locator('input[type="radio"]').is_checked():
-            raise ValueError("官方AI生成声明未选中，停止准备，不会提交")
+        # This portal reuses name="default" across unrelated radio groups.
+        # Native checked can be cleared by the cover settings while Semi's
+        # controlled AI choice remains selected. Verify the observed official
+        # selected state, then also require the saved AI label before submit.
+        try:
+            expect(disclosure).to_have_class(re.compile(r'(?:^|\s)semi-radio-checked(?:\s|$)'), timeout=5000)
+        except AssertionError as exc:
+            raise ValueError("官方AI生成声明未选中，停止准备，不会提交") from exc
         self.page.get_by_role("button", name="确定", exact=True).click()
         if payload.get("cover_path"):
             self.page.get_by_text("选择封面", exact=True).first.click()
@@ -247,13 +297,15 @@ class Adapter(SubmissionWatch, BaseAdapter):
             except BrowserTimeout:
                 pass
         self._prepared_title = payload["title"]
+        location = self.set_publication_location(payload)
         self.publication_control(payload, payload)
-        return {"status": "prepared", "uploaded": True, "ai_disclosure": "内容由AI生成",
+        return {"status": "prepared", "uploaded": True, "ai_disclosure": "内容由AI生成", "location_evidence": location,
                 "message": "视频、文案、竖封面及AI声明已准备，等待定时提交"}
 
     def publication_control(self, payload, prepared):
         if urlsplit(self.page.url).path != "/creator-micro/content/post/video":
             raise ValueError("当前不是这条作品的官方发布表单，未点击提交")
+        self.require_publication_location(prepared)
         if prepared.get("ai_generated") is not True:
             raise ValueError("未记录本作品AI生成声明，未点击提交")
         if self.page.get_by_placeholder("填写作品标题，为作品获得更多流量").input_value() != prepared["title"]:

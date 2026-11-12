@@ -67,6 +67,15 @@ class BaseAdapter:
         """Validate live item/editor/AI disclosure; return its actual publish UI."""
         raise ValueError("尚未核验官方发布控件，未点击提交")
 
+    def require_publication_location(self, prepared):
+        """A Beijing network route is not proof of an official work-location tag.
+
+        Until the official location integration is verified, a requested city
+        blocks submission rather than silently uploading without that tag.
+        """
+        if prepared.get("requested_publication_city"):
+            raise ValueError("作品位置要求北京，官方地点标签尚未完成联调；网络出口验证不能代替作品位置，未点击提交")
+
     def start_submission_watch(self):
         """Optional read-only listener, started before the framework's UI click."""
 

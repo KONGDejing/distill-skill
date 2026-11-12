@@ -223,6 +223,7 @@ class Adapter(SubmissionWatch, BaseAdapter):
         if (address.scheme != "https" or address.hostname != self.portal_host
                 or address.path != "/article/publish/video"):
             raise ValueError("当前不是这条作品的官方发布表单，未点击提交")
+        self.require_publication_location(prepared)
         if not self.page.locator('[contenteditable=true]').inner_text().startswith(prepared["title"]):
             raise ValueError("发布表单的文案与已准备作品不一致")
         if self.visible([self.page.locator(".ant-select-selection-item").filter(has_text="内容为AI生成")]) is None:

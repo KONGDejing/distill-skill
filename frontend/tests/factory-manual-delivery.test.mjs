@@ -72,21 +72,21 @@ test('schedule is visible for either Douyin publishing or manual delivery', () =
   const props = { target: 6, releases: [{ id: 'fixture', status: 'manual_ready', platforms: ['douyin'],
     due_at: '2026-11-11T00:00:00+08:00', nominal_at: '2026-11-11T00:00:00+08:00' }] }
   assert.equal(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: false } }), '')
-  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /抖音自动发布/)
+  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /抖音、快手自动发布/)
   const html = render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: true, publish_enabled: false } })
   assert.match(html, /发布与交付计划/)
   assert.match(html, /建议发布时间/)
-  assert.match(html, /快手、小红书到点只交付素材包/)
+  assert.match(html, /小红书到点生成下载包/)
   assert.match(html, /每平台最多2条/)
 })
 
 test('connection effects cannot poll even with legacy enabled account data', () => {
   effects.length = 0
   const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({
-    id, status: 'connected', automation: { enabled: id !== 'douyin' },
+    id, status: 'connected', automation: { enabled: !['douyin', 'kuaishou'].includes(id) },
   })) })
   assert.doesNotMatch(html, /扫码登录|刷新登录状态|\/login/)
-  assert.match(html, /快手和小红书由本人操作/)
+  assert.match(html, /小红书由本人操作/)
   assert.equal(effects.length, 4)
   for (const effect of effects) {
     const cleanup = effect()
@@ -136,11 +136,12 @@ test('legacy copy uses existing text and the cover is an optional archive', () =
 })
 
 
-test('only authorized Douyin renders login controls, even if another platform sends a legacy enabled flag', () => {
+test('only Douyin and Kuaishou render authorized login controls', () => {
   const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({ id, automation: { enabled: true } })) })
   assert.match(html, /抖音自动|自动发布/)
   assert.match(html, /\/platforms\/douyin\/login/)
-  for (const id of ['kuaishou', 'xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
+  assert.match(html, /\/platforms\/kuaishou\/login/)
+  for (const id of ['xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
   assert.match(html, /必须选择官方AI生成声明/)
 })
 
@@ -148,7 +149,7 @@ test('only authorized Douyin renders login controls, even if another platform se
 test('Douyin package explains automatic delivery instead of asking the owner to upload again', () => {
   const html = render(ManualPackage, { pkg: { platform: 'douyin', status: 'prepared', automation: { enabled: true }, manual_handoff: handoff } })
   assert.match(html, /抖音按排期自动上传/)
-  assert.match(html, /内容由AI生成/)
+  assert.match(html, /官方AI生成声明/)
   assert.doesNotMatch(html, /上传完整成片（MP4），填写/)
   assert.match(html, /避免重复上传/)
 })

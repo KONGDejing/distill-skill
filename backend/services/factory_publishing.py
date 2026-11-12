@@ -208,14 +208,16 @@ def _begin_publication(db, item_id, action, platform):
     ensure_memory_available()
     payload = {"item_id": item.id}
     if action == "prepare":
-        if platform == "douyin" and not (variant.get("video_path") and variant.get("cover_path")):
-            raise ValueError("抖音必须上传含片头的最终交付成片与定稿封面，请先完成平台打包")
+        if platform in {"douyin", "kuaishou"} and not (variant.get("video_path") and variant.get("cover_path")):
+            raise ValueError(f"{platform_name}必须上传最终交付成片与定稿封面，请先完成平台打包")
         caption = variant.get("caption", "")
-        if platform == "douyin":
+        if platform in {"douyin", "kuaishou"}:
             caption = caption.rstrip() + "\n\n内容由AI生成（AI辅助文案、配音与剪辑；原始论文和演示来源见正文）。"
         payload.update(video_path=variant.get("video_path") or item.media["video_path"],
                        cover_path=variant.get("cover_path") or item.media["cover_path"],
                        title=variant["title"], caption=caption, tags=variant.get("tags", []), ai_generated=True)
+        if platform in {"douyin", "kuaishou"}:
+            payload["requested_publication_city"] = "北京"
     job = existing if reuse_job else FactoryPublication(item_id=item_id, platform=platform, action=action)
     if reuse_job and action == "publish":
         db.add(FactoryEvent(run_id=item.run_id, agent_id="publisher", stage="platform_retry",

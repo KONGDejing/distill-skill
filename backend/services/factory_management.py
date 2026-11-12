@@ -22,7 +22,7 @@ RHYTHM = [
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "收到用户提供的数据后", "owner": "小数", "task": "整理本人提供的官方统计，保留日期、周期与缺失字段；不自动浏览账号后台"},
-    {"time": "6个建议时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；每条只分配一个平台、每平台最多2条，抖音由服务自动上传并声明AI生成；快手、小红书由用户本人上传；评论由本人回复"},
+    {"time": "6个建议时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；每条只分配一个平台、每平台最多2条，抖音、快手保留各2条自动发布计划；按发布开关与通道状态执行，受阻时交付素材包，小红书由用户本人上传；评论由本人回复"},
     {"time": "每周三 / 周六 20:00（长视频规划）", "owner": "小麦 / 小影", "task": "B站保留每周2条6–10分钟专题规划；长视频制作流程就绪后也只交付人工发布包"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -67,8 +67,8 @@ def initialize(db):
     plan = FactoryGrowthPlan(id=1, baselines=baselines, policy={"weeks": 4, "weekly_min": .05, "weekly_stretch": .10,
         "shorts_per_day": DAILY_TARGET, "editor_quotas": dict(DAILY_EDITOR_QUOTAS),
         "max_short_submissions_per_day": DAILY_TARGET, "short_seconds": 150,
-        "delivery_mode": "mixed", "platform_delivery_modes": {"douyin": "automated", "kuaishou": "manual", "xiaohongshu": "manual", "bilibili": "manual"}, "single_platform_per_original": True, "max_per_platform_per_day": 2,
-        "account_automation_enabled": True, "automated_platforms": ["douyin"], "analytics_mode": "manual_or_historical",
+        "delivery_mode": "mixed", "platform_delivery_modes": {"douyin": "automated", "kuaishou": "automated", "xiaohongshu": "manual", "bilibili": "manual"}, "single_platform_per_original": True, "max_per_platform_per_day": 2,
+        "account_automation_enabled": True, "automated_platforms": ["douyin", "kuaishou"], "analytics_mode": "manual_or_historical",
         "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
         "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_long_video_manual_delivery"}})
     db.add(plan); db.commit()

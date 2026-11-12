@@ -36,7 +36,7 @@ PLATFORMS = {
     "bilibili": {"name": "哔哩哔哩", "hosts": {"member.bilibili.com", "passport.bilibili.com", "www.bilibili.com"}, "title_limit": 80, "caption_limit": 2000},
 }
 ACTIONS = {"login", "inspect", "prepare", "publish"}
-AUTOMATION_POLICY_VERSION = "douyin-ai-disclosure-v1"
+AUTOMATION_POLICY_VERSION = "beijing-ai-disclosure-v2"
 _STOP = False
 
 
@@ -310,6 +310,8 @@ def _payload(platform, action, payload):
         raise ValueError("正文与标签超过平台连接器长度上限")
     result = {"item_id": item_id, "title": title.strip(), "caption": body, "tags": clean_tags,
               "video_path": _media(payload.get("video_path"), {".mp4", ".mov"}), "ai_generated": True}
+    if automation_enabled(platform):
+        result["requested_publication_city"] = "北京"
     if payload.get("cover_path"):
         result["cover_path"] = _media(payload["cover_path"], {".png", ".jpg", ".jpeg"})
     return result

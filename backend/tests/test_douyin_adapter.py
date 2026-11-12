@@ -141,3 +141,55 @@ def test_publish_requires_both_ai_flag_and_official_declaration(declaration_visi
         with pytest.raises(ValueError, match='AI'):
             client.publication_control({}, {'title': '定稿标题', 'ai_generated': ai_generated})
     client.page.get_by_role.assert_not_called()
+
+
+@pytest.mark.parametrize('selection_confirmed', [True, False])
+def test_prepare_waits_for_ai_radio_and_never_confirms_an_unselected_declaration(selection_confirmed):
+    client = adapter()
+    client._dismiss_editor_tips = Mock()
+    client.set_publication_location = Mock(return_value=None)
+    client.publication_control = Mock()
+    payload = {'video_path': 'approved.mp4', 'title': '定稿标题', 'ai_generated': True}
+    with patch('services.creator_adapters.douyin.expect') as verify:
+        if not selection_confirmed:
+            verify.return_value.to_have_class.side_effect = AssertionError('timed out')
+            with pytest.raises(ValueError, match='AI生成声明未选中'):
+                client.prepare(payload)
+            client.page.get_by_role.assert_not_called()
+            client.publication_control.assert_not_called()
+        else:
+            assert client.prepare(payload)['ai_disclosure'] == '内容由AI生成'
+            client.page.get_by_role.assert_called_once_with('button', name='确定', exact=True)
+            client.publication_control.assert_called_once()
+        verify.return_value.to_have_class.assert_called_once()
+        assert verify.return_value.to_have_class.call_args.kwargs['timeout'] == 5000
+        selected_class = verify.return_value.to_have_class.call_args.args[0]
+        assert selected_class.search('semi-radio semi-radio-checked')
+        assert not selected_class.search('semi-radio semi-radio-unchecked')
+
+
+def test_beijing_proxy_does_not_imply_a_verified_work_location():
+    client = adapter()
+    client.page.url = 'https://creator.douyin.com/creator-micro/content/post/video'
+    with pytest.raises(ValueError, match='北京尚未在官方表单核验'):
+        client.publication_control({}, {'title': '定稿标题', 'ai_generated': True, 'requested_publication_city': '北京'})
+    client.page.get_by_role.assert_not_called()
+
+
+def test_city_selection_records_real_official_control_and_is_rechecked_before_submit():
+    client = adapter()
+    control = Mock()
+    control.get_attribute.return_value = 'semi-select-open'
+    control.locator.return_value.inner_text.return_value = '北京市'
+    option = client.page.get_by_role.return_value.filter.return_value
+    option.count.return_value = 1
+    option.is_visible.return_value = True
+    option.inner_text.return_value = '北京市\n中国北京市'
+    with patch.object(client, '_location_control', return_value=control):
+        evidence = client.set_publication_location({'requested_publication_city': '北京'})
+        assert evidence['city'] == '北京' and evidence['country'] == 'CN'
+        option.click.assert_called_once()
+        client.require_publication_location({'requested_publication_city': '北京'})
+        control.locator.return_value.inner_text.return_value = '洛杉矶'
+        with pytest.raises(ValueError, match='发生变化'):
+            client.require_publication_location({'requested_publication_city': '北京'})

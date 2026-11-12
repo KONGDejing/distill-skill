@@ -13,7 +13,7 @@ import pytest
 from services import creator_connector as connector, creator_verification as verification
 from services.factory_platform_policy import AutomationDisabled
 
-PLATFORMS = ("kuaishou", "bilibili")
+PLATFORMS = ("bilibili",)
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)

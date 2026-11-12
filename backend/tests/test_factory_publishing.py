@@ -531,7 +531,8 @@ def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(dist
     forbidden.assert_not_called()
 
 
-def test_douyin_uses_final_export_and_ai_disclosure_while_other_platforms_stay_manual(distribution_publishing, monkeypatch, tmp_path):
+@pytest.mark.parametrize('destination', ['douyin', 'kuaishou'])
+def test_automatic_platform_uses_final_export_and_ai_disclosure(distribution_publishing, monkeypatch, tmp_path, destination):
     from services.factory_platform_policy import AutomationDisabled, require_automation
     env = distribution_publishing
     monkeypatch.setattr(factory_publishing, 'require_automation', require_automation)
@@ -540,15 +541,17 @@ def test_douyin_uses_final_export_and_ai_disclosure_while_other_platforms_stay_m
         final, cover = tmp_path / 'complete.mp4', tmp_path / 'finished-cover.png'
         final.write_bytes(b'approved export with branded opening')
         cover.write_bytes(b'approved lettered cover')
-        item.packages = [{**p, 'video_path': str(final), 'cover_path': str(cover)} if p['platform'] == 'douyin' else p for p in item.packages]
+        item.packages = [{**p, 'video_path': str(final), 'cover_path': str(cover)} if p['platform'] == destination else p for p in item.packages]
         db.commit()
-        for platform in ('xiaohongshu', 'kuaishou', 'bilibili'):
+        for platform in ('xiaohongshu', 'bilibili'):
             with pytest.raises(AutomationDisabled):
                 factory_publishing.begin_publication(db, item.id, 'prepare', platform)
-        job = factory_publishing.begin_publication(db, item.id, 'prepare', 'douyin')
+        item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': destination}}
+        db.commit()
+        job = factory_publishing.begin_publication(db, item.id, 'prepare', destination)
         assert job.status == 'queued'
         platform, action, payload = env.creator_submit.call_args.args
-        assert (platform, action) == ('douyin', 'prepare')
+        assert (platform, action) == (destination, 'prepare')
         assert payload['video_path'] == str(final) and payload['cover_path'] == str(cover)
         assert payload['ai_generated'] is True and '内容由AI生成' in payload['caption']
     env.creator_submit.assert_called_once()

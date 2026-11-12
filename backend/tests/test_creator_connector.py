@@ -131,6 +131,7 @@ def test_payload_drops_credentials_and_rejects_media_outside_storage(monkeypatch
     cleaned = connector._payload("douyin", "prepare", payload)
     assert "password" not in cleaned and "cookies" not in cleaned
     assert cleaned["ai_generated"] is True
+    assert cleaned["requested_publication_city"] == "北京"
     (storage / "escape.mp4").symlink_to(tmp_path / "outside.mp4")
     (tmp_path / "outside.mp4").write_bytes(b"fixture")
     with pytest.raises(ValueError, match="storage"):
@@ -187,7 +188,7 @@ def test_refresh_requests_never_queue_or_mutate_cached_login(monkeypatch, tmp_pa
     monkeypatch.setattr(connector, "RUNTIME", tmp_path / "untouched")
     for _ in range(2):
         with pytest.raises(AutomationDisabled):
-            connector.submit_command("kuaishou", "login")
+            connector.submit_command("bilibili", "login")
     assert not connector.RUNTIME.exists()
 
 
@@ -195,7 +196,7 @@ def test_refresh_requests_never_queue_or_mutate_cached_login(monkeypatch, tmp_pa
 def test_retained_browser_object_cannot_operate_or_delete_cached_files(monkeypatch, tmp_path, action):
     monkeypatch.setattr(connector, "RUNTIME", tmp_path)
     browser = object.__new__(connector._Browser)
-    browser.platform, browser.directory = "kuaishou", connector._directories("kuaishou")
+    browser.platform, browser.directory = "bilibili", connector._directories("bilibili")
     browser.adapter = Mock()
     picture = browser.directory / "login.png"
     picture.write_bytes(b"retained-image")

@@ -22,6 +22,7 @@ def env(tmp_path, monkeypatch):
     # machine. The actual manual-only platform policy is tested separately.
     from services import factory_platform_policy
     monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: True)
+    monkeypatch.setattr(factory_platform_policy, "publication_transport_state", lambda platform: {'ready': True})
     engine = create_engine(f"sqlite:///{tmp_path / 'clock.db'}")
     Base.metadata.create_all(engine, tables=[m.__table__ for m in
         (FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun)])

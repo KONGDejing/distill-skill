@@ -220,8 +220,8 @@ def _manual_package_ready(package, platform, route):
 
 def step_platform(db, slot, item, platform, now, enabled, timezone_name="Asia/Shanghai"):
     """Advance at most one command per tick; never retry ambiguous submissions."""
-    from services.factory_platform_policy import automation_enabled
-    automated = automation_enabled(platform)
+    from services.factory_platform_policy import effective_automation_enabled
+    automated = effective_automation_enabled(platform)
     jobs = {job.action: publishing.refresh_job(db, job) if automated else job for job in
             db.query(FactoryPublication).filter_by(item_id=item.id, platform=platform).all()}
     submitted, prepared = jobs.get("publish"), jobs.get("prepare")
@@ -301,7 +301,7 @@ def step_platform(db, slot, item, platform, now, enabled, timezone_name="Asia/Sh
 
 
 def advance_slot(db, slot, config, now):
-    from services.factory_platform_policy import automation_enabled
+    from services.factory_platform_policy import effective_automation_enabled
     if not slot.item_id and slot.run_id:
         item = db.query(FactoryItem).filter_by(run_id=slot.run_id, position=slot.position).first()
         if item:
@@ -327,7 +327,7 @@ def advance_slot(db, slot, config, now):
         # An explicit memory pause stops new publishing even if other clips are ready.
         paused = db.query(FactoryRun).filter_by(status="paused_memory").first() is not None
         results = {p: step_platform(db, slot, item, p, now,
-                    (config.publish_enabled and not paused if automation_enabled(p) else config.manual_delivery_enabled)
+                    (config.publish_enabled and not paused if effective_automation_enabled(p) else config.manual_delivery_enabled)
                     and p in config.platforms, config.timezone) for p in slot.platforms}
         statuses = {r["status"] for r in results.values()}
         if statuses == {"submitted"}:

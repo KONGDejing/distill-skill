@@ -16,6 +16,35 @@ from services import factory_llm, factory_service, factory_resources
 
 
 PLATFORMS = ["douyin", "xiaohongshu", "kuaishou", "bilibili"]
+
+
+def test_long_paper_editing_keeps_cited_pages_and_original_text_without_full_pdf_prompt():
+    assets = [{'id': f'paper-{n}', 'kind': 'paper_page', 'paper_page': n,
+               'description': f'Original page {n} text ' * 200} for n in range(1, 41)]
+    demo = {'id': 'author-demo', 'kind': 'official_video', 'description': 'Verified author demonstration'}
+    assets.append(demo)
+    selected = factory_service._editing_assets({'paper_highlights': [{'page': 20}, {'page': 39}]}, assets)
+    pages = {a['paper_page'] for a in selected if a['kind'] == 'paper_page'}
+    assert {1, 20, 39} <= pages and 8 <= len(pages) <= 12
+    assert demo in selected
+    assert all(asset is assets[assets.index(asset)] for asset in selected)
+    assert len(json.dumps(selected)) < len(json.dumps(assets)) / 2
+
+
+def test_rewritten_paper_preserves_pages_from_scenes_and_spoken_page_references():
+    assets = [{'id': f'paper-{n}', 'kind': 'paper_page', 'paper_page': n} for n in range(1, 41)]
+    content = {'script': '第9页是实际结果。', 'scenes': [{'paper_page': 15}, {'asset_ids': ['paper-28']}]}
+    selected = factory_service._editing_assets(content, assets)
+    assert {1, 9, 15, 28} <= {a['paper_page'] for a in selected}
+
+
+def test_long_paper_writing_preserves_real_page_ids_and_includes_conclusion():
+    pages = [{'page': n, 'text': f'Page {n} original text'} for n in range(1, 41)]
+    pages[16]['text'] = '8 Limitations\nOriginal limitations'
+    selected = factory_service._narration_pages({'pages': pages})
+    assert len(selected) <= 12 and selected[:10] == pages[:10]
+    assert pages[16] in selected
+    assert len(pages) == 40
 SOURCE = {
     "id": "official-source", "title": "Official tutorial",
     "url": "https://huggingface.co/docs/transformers/en/pipeline_tutorial",

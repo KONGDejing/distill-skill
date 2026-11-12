@@ -64,17 +64,21 @@ def overview(db: Session = Depends(get_db)):
         employees.append({**agent, "status": "working" if event and event.status == "running" else "idle",
                           "current_task": event.message if event and event.status == "running" else None})
     platforms = [dict(platform) for platform in PLATFORMS]
-    from services.factory_platform_policy import automation_state
+    from services.factory_platform_policy import automation_state, publication_transport_state
     for platform in platforms:
         platform["enabled"] = platform["id"] in config["platforms"]
         state = automation_state(platform["id"])
+        transport = publication_transport_state(platform['id'])
         connection = {}
         if state["enabled"]:
             from services.creator_connector import connection_state
             connection = connection_state(platform["id"])
-        platform.update(automation=state, status=state["mode"], login_status=state["mode"],
+        publishing_enabled = bool(state["enabled"] and config["publish_enabled"] and transport.get('ready') is not False)
+        platform.update(automation=state, publishing_enabled=publishing_enabled,
+                        transport=transport,
+                        status="paused" if state["enabled"] and not publishing_enabled else state["mode"], login_status=state["mode"],
                         account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
-                        description=(("自动发布：每天最多2条，仅接收分配给抖音的作品，必须声明AI生成。" if state["enabled"]
+                        description=(("自动发布：每天最多2条，仅接收分配给本平台的作品，必须声明AI生成。" if state["enabled"]
                                       else "人工发布：每天最多2条，仅接收分配给本平台的作品。") if platform["enabled"]
                                      else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases

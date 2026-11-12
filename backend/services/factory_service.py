@@ -1,6 +1,7 @@
 """Factory application service and durable production workflow."""
 import json
 import os
+import re
 import threading
 import zipfile
 from datetime import datetime, timezone
@@ -82,6 +83,8 @@ def run_detail(db, run):
     result["report"] = run.report or {}
     result["plan"] = run.plan or {}
     result["items"] = []
+    current_config = db.get(FactoryConfig, 1)
+    publishing_enabled = bool(current_config and current_config.publish_enabled)
     items = db.query(FactoryItem).filter_by(run_id=run.id).order_by(FactoryItem.position).all()
     events = db.query(FactoryEvent).filter_by(run_id=run.id).order_by(FactoryEvent.id).all()
     usage = summarize_usage(events, [item.id for item in items])
@@ -89,9 +92,10 @@ def run_detail(db, run):
     for item in items:
         content, media = item.content or {}, item.media or {}
         preview = media.get("preview") or {}
-        from services.factory_platform_policy import automation_state
+        from services.factory_platform_policy import automation_state, effective_automation_enabled
         packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}",
                      "automation": automation_state(package['platform']),
+                     "publishing_enabled": publishing_enabled and effective_automation_enabled(package['platform']),
                      "copy_url": storage_url(package.get("copy_path"))} for package in item.packages or []]
         publication = db.query(FactoryPublication).filter_by(item_id=item.id, platform="xiaohongshu").order_by(FactoryPublication.created_at.desc()).first()
         from services.factory_publishing import job_dict
@@ -583,9 +587,11 @@ def _write_and_review(run_id, item_id):
         sources = _sources_for([*brief.get("source_ids", []), *brief.get("visual_source_ids", [])], run.sources)
         if brief.get("paper_document"):
             document = brief["paper_document"]
+            narration_pages = _narration_pages(document)
             sources = [*sources, {"id": "paper-fulltext", "title": "官方技术报告原文按页提取" if document.get("kind") == "technical_report" else "论文原文按页提取",
-                "url": document["url"], "kind": document.get("kind", "paper"), "pages": document["pages"],
-                "text": "\n".join(f"第{p['page']}页：{p['text']}" for p in document["pages"])[:65000]}]
+                "url": document["url"], "kind": document.get("kind", "paper"), "pages": narration_pages,
+                "page_selection_note": "本条只依据提供的原文页写口播，未提供页不得补造；完整PDF及所有页仍在缓存保留。",
+                "text": "\n".join(f"第{p['page']}页：{p['text']}" for p in narration_pages)[:65000]}]
         max_revisions, revisions = run.settings_snapshot.get("max_revisions", 1), item.revisions
         engagement_required = run.settings_snapshot.get("engagement_required", False)
         director_hook_required = run.settings_snapshot.get("director_hook_required", False)
@@ -626,7 +632,7 @@ def _write_and_review(run_id, item_id):
         minimum, maximum = round(calibrated_characters * .90), round(calibrated_characters * 1.10)
     for attempt in range(revisions, max_revisions + 1):
         check_cancel(run_id)
-        _save_item(item_id, status="writing", revisions=attempt)
+        _save_item(item_id, status="writing", revisions=attempt, error=None)
         emit(run_id, "writer", "writing", f"{'修改' if prior else '撰写'}脚本：{brief['title']}")
         content = call_agent(run_id, "writer", {"brief": brief, "sources": sources, "previous_script": prior,
             "review_feedback": feedback, "strategy": STRATEGY, "recent_follow_prompts": recent_prompts,
@@ -734,13 +740,62 @@ def _replace_rejected_topic(run_id, item_id):
     return True
 
 
+def _narration_pages(document):
+    pages = document['pages']
+    if len(pages) <= 12:
+        return pages
+    selected = list(pages[:10])
+    for page in pages[10:]:
+        if len(selected) >= 12:
+            break
+        if re.search(r'(?im)^\s*(?:\d+[.\s]+)?(?:limitations?|conclusions?|discussion|evaluation)\b', page['text']):
+            selected.append(page)
+    return selected
+
+
+def _editing_assets(content, assets):
+    """Bound long-PDF prompts around the pages cited by the approved script.
+
+    Keep original text and page IDs, all explicit evidence pages and all demos.
+    Adjacent pages provide enough continuous context for eight narrative scenes.
+    """
+    pages = {a['paper_page']: a for a in assets if a.get('kind') == 'paper_page'}
+    if len(pages) <= 12:
+        return assets
+    selected = {1} & pages.keys()
+    selected.update(h['page'] for h in content.get('paper_highlights', [])
+                    if isinstance(h, dict) and h.get('page') in pages)
+    for scene in content.get('scenes', []):
+        for key in ('paper_page', 'paper_evidence_page'):
+            if scene.get(key) in pages:
+                selected.add(scene[key])
+        for asset_id in scene.get('asset_ids', []):
+            match = re.fullmatch(r'paper-(\d+)', asset_id)
+            if match and int(match[1]) in pages:
+                selected.add(int(match[1]))
+    selected.update(int(n) for n in re.findall(r'第\s*(\d+)\s*页', content.get('script', '')) if int(n) in pages)
+    for number in sorted(selected):
+        for adjacent in (number - 1, number + 1):
+            if len(selected) >= 10:
+                break
+            if adjacent in pages:
+                selected.add(adjacent)
+    for number in sorted(pages):
+        if len(selected) >= 10:
+            break
+        selected.add(number)
+    return [a for a in assets if a.get('kind') != 'paper_page' or a['paper_page'] in selected]
+
+
 def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
-    available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page", "document_kind", "reference_source_url", "source_chain")} for a in assets]
+    editor_content = {k: v for k, v in content.items() if k != 'production_status'}
+    selected_assets = _editing_assets(content, assets)
+    available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page", "document_kind", "reference_source_url", "source_chain")} for a in selected_assets]
     feedback = {}
     prior_edit = bool(content.get("editorial_review"))
     for attempt in range(2):
         check_cancel(run_id)
-        arrangement = call_agent(run_id, owner, {"content": content, "visual_style": visual_style,
+        arrangement = call_agent(run_id, owner, {"content": editor_content, "visual_style": visual_style,
             "available_assets": available, "editorial_feedback": feedback}, max_tokens=6500,
             work_kind="rework" if feedback or prior_edit else "initial")
         scenes = arrangement.get("scenes", [])
@@ -764,10 +819,12 @@ def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
                             for highlight in scene["paper_highlights"]:
                                 highlight_rectangles(asset, highlight["text"], scene.get("paper_focus", [0, 0, 1, 1]))
                 review = call_agent(run_id, "reviewer", {"task_mode": "edit_review",
-                    "script": content, "arrangement": arrangement, "available_assets": available,
+                    "script": editor_content, "arrangement": arrangement, "available_assets": available,
                     "review_scope": "仅核对已提供素材描述与口播，未直接观看视频，不得声称成片视觉已验收"},
                     work_kind="rework" if feedback or prior_edit else "initial")
                 if review.get("approved") is not True or type(review.get("score")) not in (int, float) or review["score"] < 80:
+                    emit(run_id, "reviewer", "edit_review_rejected", "保留分镜与具体审核意见供修正", "rejected",
+                         {"review": review, "arrangement": arrangement})
                     feedback = review
                     raise ValueError("口播与画面搭配未通过审核：" + str(review.get("reason", ""))[:300])
                 arrangement["editorial_review"] = {**review, "scope": "source_description_alignment"}
@@ -787,6 +844,7 @@ def _render(run_id, item_id):
         item = db.get(FactoryItem, item_id)
         owner = editor_id(item)
         content, media = item.content, item.media or {}
+        content = {**content, "script_review": dict(item.review or {})}
         brief = item.brief
         run_sources = db.get(FactoryRun, run_id).sources
         visual_style = db.get(FactoryRun, run_id).settings_snapshot.get("visual_style", "cards")
@@ -801,7 +859,7 @@ def _render(run_id, item_id):
             return
     check_cancel(run_id)
     ensure_memory_available()
-    _save_item(item_id, status="rendering")
+    _save_item(item_id, status="rendering", error=None)
     directory = FACTORY_DIR / run_id / item_id
     if owner == "producer2":
         # A new voice gets a separate delivery directory. Keep the previous
@@ -814,7 +872,10 @@ def _render(run_id, item_id):
         from services.factory_visuals import collect_visuals
         document = brief["paper_document"]
         content = {**content, "paper_document": document, "background_visuals": False}
-        assets = paper_assets(document, directory / "paper-pages")
+        page_candidates = [{'kind': 'paper_page', 'paper_page': p['page']} for p in document['pages']]
+        selected_pages = {p['paper_page'] for p in _editing_assets(content, page_candidates)}
+        render_document = {**document, 'pages': [p for p in document['pages'] if p['page'] in selected_pages]}
+        assets = paper_assets(render_document, directory / "paper-pages")
         direct_sources = [s for s in run_sources if s["url"].rstrip("/") in document["verified_project_urls"]]
         if brief.get("verified_visual_manifest"):
             from services.factory_verified_materials import load_verified_assets
