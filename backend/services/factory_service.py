@@ -340,6 +340,12 @@ def _make_plan(run_id):
             db.commit()
         emit(run_id, "researcher", "researching", f"已采集 {len(sources)} 份官方资料", "completed", {
             "warnings": research.get("warnings", []), "large_model_search": research.get("large_model_search", {})})
+    from services.factory_research import is_major_event
+    major_events = [{"source_id": s['id'], "title": s.get('title'), "url": s['url'],
+                     "published_at": s.get('published_at')} for s in sources if is_major_event(s)]
+    if major_events:
+        emit(run_id, 'researcher3', 'major_event_watch', '已发现重大事件原始公告；事实核查与画面制作分开跟进',
+             'warning', {'events': major_events, 'instruction': '必须逐项交代选用、待核查或待补画面原因，不能因没有视频而静默漏报'})
     if not plan.get("candidates"):
         if visual_style == "tech_montage":
             from services.factory_visuals import collect_visuals
@@ -490,6 +496,8 @@ def _make_plan(run_id):
             "topic_coverage": source_coverage,
             "coverage_instruction": "每日必须主动检查通用大模型的新能力、推理、开源或成本进展，优先真实带日期的发布方原文。同时检查机器人、算力基础设施、端侧芯片、AI工具应用、论文、展会争议。单题可多标签；端侧应用不等于端侧芯片，不把机器人模型冒充通用大模型。不是每天强制凑齐七类：缺原文或对应视频就在coverage_gaps说明，并保留已核验候选，不编造参数或素材。",
             "source_id_contract": "source_ids和visual_source_ids都只能填写下面source_catalog的source_id（正文页面ID）；绝不能填asset_id（视频ID）。多页共同支持同一题时可联合引用，至少3条原片SHA去重的核验视频；辅助画面须写visual_support_reason说明具体关联及边界。不得拿无关视频补数。",
+            "major_events": major_events,
+            "major_event_instruction": "优先核对这些已采集的重大事件。每项必须在breaking_event_status列出source_id、已证实事实、未确认信息、是否推荐及缺画面原因。缺视频只影响制作就绪，不能把事件当作不存在；虚构反讽需另立创作任务，不冒充新闻实录。",
             "source_catalog": [{"source_id": s["id"], "title": s.get("title"), "kind": s.get("kind"),
                 "editor_hint": s.get("visual_preflight", {}).get("editor_id"),
                 "visual_status": s.get("visual_preflight", {}).get("status", "not_checked"),
@@ -508,17 +516,29 @@ def _make_plan(run_id):
                 "attempt": attempt + 1, "raw_candidates": raw_candidates, "diagnostics": diagnostics,
                 "accepted_candidates": candidates, "editor_counts": counts, "editor_quotas": quotas,
                 "target": target, "source_catalog": assignment["source_catalog"], "topic_coverage": candidate_coverage,
-                "model_reported_gaps": research.get("coverage_gaps") if isinstance(research, dict) else None})
+                "model_reported_gaps": research.get("coverage_gaps") if isinstance(research, dict) else None,
+                "breaking_event_status": research.get('breaking_event_status') if isinstance(research, dict) else None})
             if enough:
                 break
             rejection_codes = {reason["code"] for row in diagnostics for reason in row["reasons"]}
             material_only = bool(rejection_codes) and rejection_codes <= {"visual_sources_unavailable", "insufficient_verified_visuals"}
             if attempt or material_only:
-                raise ValueError(f"有效选题{len(candidates)}个，各岗位候选{counts}未满足配额{quotas}，保留资料等待补齐，不凑数生产")
+                ready = {key: min(counts[key], count) for key, count in (quotas or {}).items()}
+                if not candidates or (quotas and not sum(ready.values())):
+                    raise ValueError(f"有效选题{len(candidates)}个，各岗位候选{counts}未满足配额{quotas}，保留资料等待补齐，不凑数生产")
+                # Keep the six-item target and original per-editor caps. Only
+                # admitted candidates proceed; the final report stays partial.
+                plan = {**plan, 'production_quotas': ready} if quotas else plan
+                if quotas:
+                    plan['material_shortfall'] = {key: quotas[key] - ready[key] for key in quotas}
+                emit(run_id, 'director', 'material_shortfall', '已核验选题先制作，缺素材岗位继续保留缺口；不降低每日目标',
+                     'warning', {'requested_target': target, 'ready_quotas': ready,
+                                 'missing_quotas': plan.get('material_shortfall', {}), 'major_events': major_events})
+                break
             emit(run_id, "researcher", "candidate_revision", "仅再修正一次候选格式、来源ID或岗位配额；不会重试下载素材", "warning")
             assignment = {**assignment, "previous_candidates": raw_candidates, "candidate_feedback": diagnostics,
                 "format_feedback": "上次有效" + str(len(candidates)) + "条，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。按逐条拒因修正，source_ids填正文source_id而非视频asset_id。只用当前已核验且对应本题的来源；素材不足则明确交回，禁止编造或拿无关画面补数。"}
-        plan = {"candidates": candidates, "topic_coverage": candidate_coverage}
+        plan = {**plan, "candidates": candidates, "topic_coverage": candidate_coverage}
         with SessionLocal() as db:
             db.get(FactoryRun, run_id).plan = plan
             db.commit()
@@ -526,6 +546,9 @@ def _make_plan(run_id):
     with SessionLocal() as db:
         if db.query(FactoryItem).filter_by(run_id=run_id).count():
             return
+        from services.factory_team import production_quotas
+        quotas = production_quotas(db.get(FactoryRun, run_id))
+    target = min(target, sum(quotas.values()) if quotas else len(plan['candidates']))
     emit(run_id, "director", "planning", f"负责人正在选择 {target} 个选题并安排制作")
     decision = call_agent(run_id, "director", {"target": target, "candidates": plan["candidates"], "recent_titles": recent,
         "topic_coverage": plan.get("topic_coverage", {}),

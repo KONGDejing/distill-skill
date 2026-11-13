@@ -4,7 +4,7 @@ import { factoryApi } from '../api/factory'
 import PlatformConnection from '../components/PlatformConnection'
 import FactoryOperations from '../components/FactoryOperations'
 
-const VISUAL_STYLES = { tech_montage: '科技演示混剪', cards: '文字卡片（旧版）' }
+const VISUAL_STYLES = { tech_montage: '科技演示混剪', fictional_satire: '原创虚构讽刺动画', cards: '文字卡片（旧版）' }
 const VOICE_LABELS = { 'cosyvoice2-local-reference': '本地标准音色', 'edge-tts': '系统音色', edge: '系统音色' }
 const AUTOMATED_PLATFORMS = new Set(['douyin', 'kuaishou'])
 const PLATFORM_NAMES = { douyin: '抖音', xiaohongshu: '小红书', kuaishou: '快手', bilibili: '哔哩哔哩' }

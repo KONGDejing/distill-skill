@@ -98,6 +98,25 @@ def test_imbalanced_new_plan_is_rejected_before_any_assignment(db):
     with pytest.raises(ValueError, match="剪辑配额不匹配"):
         assign_editors(db, run.id)
     assert all("editor_id" not in item.brief for item in items)
+
+
+def test_documented_material_shortfall_admits_ready_roles_without_changing_day_target(db):
+    run, items = seed(db, [briefs()[0], briefs()[1], briefs()[4]])
+    run.plan = {'production_quotas': {'producer': 1, 'producer2': 2, 'producer3': 0},
+                'material_shortfall': {'producer': 1, 'producer2': 0, 'producer3': 2}}
+    db.commit()
+    assert assign_editors(db, run.id) == {'producer': 1, 'producer2': 2, 'producer3': 0}
+    assert run.target_count == 6 and run.settings_snapshot['editor_quotas'] == DAILY_EDITOR_QUOTAS
+    assert [item.brief['editor_id'] for item in items] == ['producer', 'producer2', 'producer2']
+
+
+@pytest.mark.parametrize('gap', [None, {'producer': 0, 'producer2': 0, 'producer3': 0}])
+def test_partial_quota_cannot_silently_hide_missing_work(db, gap):
+    run, _ = seed(db, [briefs()[0], briefs()[1], briefs()[4]])
+    run.plan = {'production_quotas': {'producer': 1, 'producer2': 2, 'producer3': 0}, 'material_shortfall': gap}
+    db.commit()
+    with pytest.raises(ValueError, match='保留真实岗位缺口'):
+        assign_editors(db, run.id)
     assert db.query(FactoryEvent).count() == 0
 
 

@@ -70,6 +70,14 @@ HF_OFFICIAL_ORGS = frozenset({"allenai", "nvidia", "google", "microsoft", "ibm",
                              "qwen", "meta-llama", "huggingface", "deepseek-ai", "zai-org"})
 
 
+def is_major_event(record):
+    """Prioritize an official news lead; keywords do not establish its claims."""
+    return record.get('kind') == 'news' and bool(record.get('published_at')) and bool(re.search(
+        r'CEO transition|resign(?:s|ed|ation)?|independent.*board|investigation|recall|sanctions?|'
+        r'export restrictions?|acquisition|lawsuit|辞职|卸任|调查|召回|制裁|收购|诉讼',
+        record.get('title', ''), re.I))
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -409,8 +417,10 @@ def collect_sources(limit: int = 12) -> dict:
     discovery_slots = content_slots - visual_count
     paper_count = min(len(papers), max(0, discovery_slots // 2))
     # Search model evolution actively each day, even when robot news is newer.
-    recent.sort(key=lambda row: not bool(model_pattern.search(row.get("title", ""))))
-    selected = papers[:paper_count]
+    recent.sort(key=lambda row: (not is_major_event(row), not bool(model_pattern.search(row.get("title", "")))))
+    # Major dated company events must not lose all slots to papers/models.
+    selected = [row for row in recent if is_major_event(row)][:min(2, discovery_slots)]
+    selected.extend(papers[:min(paper_count, discovery_slots - len(selected))])
     selected.extend(r for r in recent if r["url"] not in {p["url"] for p in selected})
     selected = selected[:discovery_slots]
     selected.extend(p for p in papers[paper_count:] if len(selected) < discovery_slots

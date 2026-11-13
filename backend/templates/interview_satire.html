@@ -1,0 +1,116 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>虚构面试动画预览</title>
+<style>html,body{margin:0;background:#101f2b}canvas{display:block;width:min(100vw,56.25vh);height:auto;margin:auto}</style>
+<canvas id="film" width="1080" height="1920"></canvas>
+<script>
+const STORY=__STORY_JSON__;
+const canvas=document.querySelector('canvas'),c=canvas.getContext('2d');
+const C={bg:'#101f2b',ink:'#0a1620',cream:'#f4efdf',muted:'#8da5af',gold:'#ffcc75',teal:'#7ad8cc',red:'#f17972'};
+function rr(x,y,w,h,r,fill,stroke){c.beginPath();c.roundRect(x,y,w,h,r);if(fill){c.fillStyle=fill;c.fill()}if(stroke){c.strokeStyle=stroke;c.lineWidth=4;c.stroke()}}
+function ellipse(x,y,rx,ry,fill,stroke){c.beginPath();c.ellipse(x,y,rx,ry,0,0,Math.PI*2);c.fillStyle=fill;c.fill();if(stroke){c.strokeStyle=stroke;c.lineWidth=4;c.stroke()}}
+function path(points,fill,stroke,width=4){c.beginPath();for(let i=0;i<points.length;i++){const p=points[i];i?c.lineTo(...p):c.moveTo(...p)}if(fill){c.closePath();c.fillStyle=fill;c.fill()}if(stroke){c.strokeStyle=stroke;c.lineWidth=width;c.lineCap='round';c.lineJoin='round';c.stroke()}}
+function text(s,x,y,size=40,color=C.cream,weight=700,align='left'){c.font=`${weight} ${size}px "Noto Sans CJK SC",sans-serif`;c.fillStyle=color;c.textAlign=align;c.textBaseline='middle';c.fillText(s,x,y)}
+function wrap(s,max,size,weight=700){c.font=`${weight} ${size}px "Noto Sans CJK SC",sans-serif`;let rows=[],line='';for(const ch of s){if(c.measureText(line+ch).width>max&&line){rows.push(line);line=ch}else line+=ch}if(line)rows.push(line);return rows}
+function lines(s,x,y,max,size,color,leading=1.4,align='left'){wrap(s,max,size).forEach((s,i)=>text(s,x,y+i*size*leading,size,color,700,align))}
+function line(x,y,x2,y2,col,width=4){path([[x,y],[x2,y2]],null,col,width)}
+function eye(x,y,t,glasses=false){const blink=Math.sin(t*1.71)>.995;c.strokeStyle=C.ink;c.lineWidth=4;if(blink){line(x-10,y,x+10,y,C.ink,4)}else{ellipse(x,y,4.5,7,C.ink)}if(glasses)rr(x-27,y-21,54,43,12,null,C.ink)}
+function mouth(x,y,amp,active){if(active&&amp>.05){ellipse(x,y,13+amp*5,3+amp*15,'#60332f');if(amp>.5)rr(x-10,y-9,20,5,1,'#fff4dd')}else{path([[x-15,y],[x,y+3],[x+13,y]],null,'#75493e',3)}}
+function character(kind,x,t,speaking,amp,gesture=0){
+ c.save();const hr=kind==='hr', bob=Math.sin(t*1.8+(hr?1:0))*(speaking?2.4:1.1);c.translate(x,835+bob);
+ // Tall padded office chair.
+ rr(-119,150,238,357,48,'#203b49',C.ink);line(0,474,0,540,'#0a1620',16);line(-93,541,93,541,'#0a1620',12);
+ // Shirt, jacket and collar; the leather jacket is a drawn caricature.
+ path([[-79,110],[-139,164],[-152,414],[154,414],[137,160],[80,110]],hr?'#4c8990':'#202a31',C.ink,5);
+ path([[-51,112],[0,181],[52,112],[64,405],[-63,405]],hr?'#e4e4d5':'#495258',C.ink,3);
+ path([[-68,112],[-88,157],[-44,213],[-72,236],[-18,369],[-18,171]],hr?'#68a7aa':'#303b44',C.ink,3);
+ path([[68,112],[90,157],[43,213],[69,236],[18,368],[18,172]],hr?'#68a7aa':'#303b44',C.ink,3);
+ line(0,202,0,405,'#aeb3ab',3);
+ if(!hr){line(-112,256,-55,264,'#6f7c81',3);line(57,279,113,270,'#6f7c81',3);rr(-11,322,7,25,2,'#d2d5c9')}
+ // Neck and ears.
+ rr(-30,64,60,73,16,'#d6a483',C.ink);ellipse(-85,-10,15,26,'#e1b497',C.ink);ellipse(85,-10,15,26,'#e1b497',C.ink);
+ if(hr){ellipse(63,-101,46,47,'#27323b',C.ink);ellipse(0,-37,94,114,'#27323b',C.ink)}
+ ellipse(0,-17,85,112,hr?'#f1c8a6':'#e6b293',C.ink);
+ // Hairline and expressive brows.
+ if(hr){path([[-83,-37],[-82,-101],[-36,-139],[32,-132],[83,-84],[78,-39],[42,-94],[-5,-89],[-53,-65]],'#27323b',C.ink)}
+ else{path([[-86,-12],[-91,-65],[-70,-109],[-40,-126],[-20,-122],[3,-135],[22,-124],[49,-122],[79,-93],[89,-39],[76,-8],[65,-55],[33,-78],[-9,-80],[-53,-61],[-74,-14]],'#c4c6bc',C.ink);for(let i=0;i<6;i++)line(-60+i*24,-98+Math.abs(i-2.5)*5,-50+i*23,-113+Math.abs(i-2.5)*5,'#e1e0d5',3)}
+ const raised=(!hr&&speaking&&gesture%3===0)?-6:0;
+ line(-54,-39+raised,-26,-43+raised,C.ink,4);line(24,-43+raised,53,-38+raised,C.ink,4);
+ eye(-39,-15,t,hr);eye(39,-15,t+.18,hr);if(hr)line(-11,-16,11,-16,C.ink,3);
+ path([[3,-2],[-3,15],[7,17]],null,'#bd8267',3);
+ mouth(0,48,amp,speaking);if(!hr){path([[-52,39],[-47,57]],null,'#bd8267',2);path([[50,38],[45,59]],null,'#bd8267',2);line(-29,73,30,73,'#c18e74',2)}
+ // A restrained hand gesture follows the active line, rather than looping footage.
+ const lift=speaking?(Math.sin(t*2.5)*.5+.5)*Math.min(.2,amp*.25):0;
+ c.save();c.translate(hr?-105:105,240);c.rotate((hr?-1:1)*(-.17-lift));rr(-24,-7,48,144,19,hr?'#4c8990':'#26333d',C.ink);ellipse(0,145,24,31,'#e9b997',C.ink);if(speaking)line(-7,124,-10,147,'#b98266',3);c.restore();
+ c.restore();
+}
+function office(t,turn,amp){
+ // Architectural background and moving city lights.
+ const sky=c.createLinearGradient(0,440,0,1270);sky.addColorStop(0,'#284758');sky.addColorStop(1,'#142d3b');rr(0,430,1080,970,0,sky);
+ rr(64,519,952,590,14,'#163140','#41606d');
+ for(let i=0;i<10;i++){let h=120+(i*67)%210;rr(100+i*92,1000-h,66,h,2,i%2?'#264a5b':'#214251');for(let j=0;j<4;j++)rr(110+i*92,1020-h+j*43,8,15,1,'#5d7d83')}
+ line(540,519,540,1108,'#45616b',8);line(66,859,1012,859,'#45616b',8);
+ // Light cone and overhead lamp.
+ path([[410,504],[267,1100],[830,1100],[669,504]],'#d9d5ac0c');line(540,415,540,466,'#6b7b7d',6);path([[465,470],[615,470],[655,513],[425,513]],'#17242a','#6d7977',3);
+ // Visible clock never pretends to be a real recorded meeting.
+ ellipse(921,617,41,41,'#203845','#8da2a4');line(921,617,921+Math.cos(t/30)*24,617+Math.sin(t/30)*24,C.cream,3);line(921,617,909,598,C.cream,3);
+ character('huang',283,t,turn.speaker==='huang',amp,STORY.timeline.indexOf(turn));
+ character('hr',797,t,turn.speaker==='hr',amp,STORY.timeline.indexOf(turn));
+ // Conference desk, mug, resume and HR laptop.
+ path([[67,1165],[1007,1165],[1075,1270],[12,1270]],'#9d8063',C.ink,6);rr(17,1270,1055,29,4,'#604e42',C.ink);path([[100,1299],[150,1435],[193,1435],[189,1299]],'#31404a',C.ink);path([[880,1299],[882,1435],[930,1435],[980,1299]],'#31404a',C.ink);
+ c.save();c.translate(308,1192);c.rotate(-.06);rr(-76,-47,156,98,4,'#eee9d9','#998c78');text('个人简历',-53,-23,21,'#38545c');for(let i=0;i<3;i++)line(-52,1+i*15,41-i*11,1+i*15,'#9da59c',3);c.restore();
+ rr(566,1060,283,174,13,'#506875',C.ink);rr(577,1071,261,147,8,'#244554');text('招聘流程',708,1114,25,C.teal,700,'center');text('请按模板填写',708,1154,19,'#a5b9bf',400,'center');rr(550,1230,314,13,5,'#77919c',C.ink);
+ rr(927,1148,48,70,9,'#f0e7cf',C.ink);ellipse(981,1177,14,21,'#997c60',C.ink);rr(927,1148,47,9,5,'#ab9273');
+ // Diegetic tabletop nameplates.
+ rr(138,1250,268,57,8,'#172b36',C.ink);text('老黄 · 虚构演绎',272,1278,22,C.gold,700,'center');
+ rr(697,1250,279,57,8,'#172b36',C.ink);text('字节HR · 虚构角色',836,1278,21,C.teal,700,'center');
+}
+function screen(turn,t){
+ const elapsed=t-turn.start, pop=Math.min(1,elapsed*4), offset=(1-pop)*45;
+ c.save();c.translate(0,offset);rr(102,597,876,570,24,'#091b27','#5f8291');rr(119,614,842,51,12,'#274552');
+ for(let i=0;i<3;i++)ellipse(146+i*24,640,6,6,[C.red,C.gold,C.teal][i]);text('候选人筛选 · 虚构界面',245,640,25,'#c0d7dc');
+ text('履历录入结果',153,722,47,C.cream);text('候选人：老黄',153,780,29,C.muted,400);
+ const index=STORY.timeline.indexOf(turn);
+ let entries=index<8?[['斯坦福硕士','非第一学历'],['实际项目经历','暂不读取'],['筛选字段','不匹配']]:index<14?[['芯片 / 计算 / 生态','输入内容'],['AI / 算力 / 平台','岗位关键词'],['同义词理解','功能未开启']]:index<19?[['项目做过什么','不计入测评分'],['图形处理器常识题','尚未完成'],['笔试优先级','高于履历']]:[['从零创办公司','已有经历'],['搭建成熟体系','已有经历'],['被成熟体系培养','路径不匹配']];
+ entries.forEach((e,i)=>{const y=855+i*88;rr(145,y-31,790,71,9,'#16313f');text(e[0],171,y,29,C.cream);text(e[1],909,y,27,i===2?C.red:C.gold,700,'right')});
+ text('界面与规则均为讽刺创作，不是字节系统截图',540,1131,23,C.muted,400,'center');c.restore();
+}
+function renderFrame(t){
+ const turn=STORY.timeline.find(s=>t<s.cut_end)||STORY.timeline.at(-1),index=STORY.timeline.indexOf(turn);
+ const amp=t<turn.end?(STORY.envelope[Math.floor(t*24)]||0):0;
+ c.fillStyle=C.bg;c.fillRect(0,0,1080,1920);
+ // Subtle paper-grain-like lines are procedural, not a recycled video loop.
+ for(let i=0;i<30;i++)line(48,390+i*46,1032,390+i*46,'#ffffff02',1);
+ c.save();c.beginPath();c.rect(0,420,1080,980);c.clip();
+ let zoom=1,focus=540;if(turn.shot==='huang'){zoom=1.63;focus=345}else if(turn.shot==='hr'){zoom=1.63;focus=745}else if(turn.shot==='stamp'){zoom=1.12;focus=655}
+ const drift=Math.sin(t*.19)*4;
+ c.translate(540+drift,968);c.scale(zoom+Math.min(.012,(t-turn.start)*.0013),zoom+Math.min(.012,(t-turn.start)*.0013));c.translate(-focus,-968);
+ office(t,turn,amp);c.restore();
+ if(turn.shot==='screen')screen(turn,t);
+ if(turn.shot==='stamp'){
+  const k=Math.min(1,(t-turn.start)*3);c.save();c.translate(540,1110);c.rotate(-.12);c.scale(1+.12*(1-k),1+.12*(1-k));rr(-352,-93,704,186,12,'#162735ed',C.red);text('不符合岗位要求',0,-12,69,C.red,900,'center');text('能力：优秀  /  模板：未通过',0,57,29,C.cream,500,'center');c.restore();
+ }
+ // Global labels are drawn outside camera transforms, and persist throughout.
+ rr(54,61,595,63,31,'#293b40');text(STORY.fiction_notice,80,92,29,C.gold);
+ text('科技圈 · 荒诞面试局',1024,95,25,C.muted,600,'right');
+ if(turn.shot==='opening'){
+  text('假如黄仁勋来面试',59,212,76,C.cream,900);text('简历先被模板刷掉？',59,309,72,C.gold,900);
+  rr(59,367,962,53,9,'#243b46');text('新闻背景：英伟达于11月12日宣布其卸任',82,394,29,'#bacdd1',500);
+ }else{
+  const label=turn.speaker==='hr'?'HR：按流程走':turn.speaker==='huang'?'老黄：先看我做过什么':'看见能力，也看见边界';
+  text(label,59,187,29,C.muted,500);lines(turn.headline,59,267,955,65,turn.speaker==='hr'?C.teal:C.gold,1.28);
+ }
+ const speaker=STORY.roles[turn.speaker];rr(58,1430,Math.min(650,70+speaker.length*29),52,26,turn.speaker==='hr'?'#204745':'#453d2f');text(speaker,83,1456,28,turn.speaker==='hr'?C.teal:C.gold);
+ let cue=turn.cues.find(s=>t>=s.start&&t<s.end);if(!cue&&t<turn.end&&t<turn.start+.3)cue=turn.cues[0];
+ const subtitle=cue?.text||'';
+ rr(50,1506,980,211,22,'#0a1620ed');const rows=wrap(subtitle,898,57);rows.forEach((r,i)=>text(r,540,1575+i*79,57,C.cream,700,'center'));
+ if(turn.shot==='ending'){
+  rr(59,1211,962,160,20,'#152b36ef','#69847f');
+  text(index===STORY.timeline.length-1?'关注科技，也关注真实问题':'不替私人行为开脱，不把模板当能力',540,1268,index===STORY.timeline.length-1?45:38,C.gold,700,'center');
+  text('所有面试规则与对话均为虚构 · 不代表字节真实政策',540,1326,26,C.muted,500,'center');
+ }
+ text('AI动画与普通合成配音 · 非本人影像或声音',59,1774,25,C.muted,400);
+ text('虚构情节不作新闻事实；背景来源见随附资料',59,1823,25,C.muted,400);
+ const progress=Math.min(1,t/STORY.duration);rr(58,1872,964,5,2,'#29404d');rr(58,1872,Math.max(1,964*progress),5,2,C.gold);
+ return canvas.toDataURL('image/jpeg',.9).split(',')[1];
+}
+window.renderFrame=renderFrame;renderFrame(0);
+</script></html>

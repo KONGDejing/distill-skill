@@ -7,6 +7,13 @@ from services import factory_research as research
 
 
 class ResearchTests(unittest.TestCase):
+    def test_dated_official_transition_is_a_priority_lead_not_a_confirmed_allegation(self):
+        lead = {'kind': 'news', 'title': 'NVIDIA Announces CEO Transition', 'published_at': '2026-11-12T00:00:00Z'}
+        self.assertTrue(research.is_major_event(lead))
+        self.assertFalse(research.is_major_event({**lead, 'published_at': None}))
+        self.assertFalse(research.is_major_event({**lead, 'kind': 'paper'}))
+        self.assertFalse(research.is_major_event({**lead, 'title': 'Introducing a new reasoning model'}))
+
     def test_only_recent_dated_official_news_is_selected(self):
         document = """<rss><channel>
         <item><title>Recent</title><link>https://openai.com/news/recent/</link>

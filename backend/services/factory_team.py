@@ -45,6 +45,24 @@ def _require_counts(counts, quotas):
         raise ValueError("剪辑配额不匹配：" + "；".join(differences) + "。请补充对应选题，不挪用其他岗位名额。")
 
 
+def production_quotas(run):
+    """A documented shortfall may reduce today's ready work, never its target."""
+    requested = (run.settings_snapshot or {}).get('editor_quotas')
+    if requested is None:
+        return None
+    requested = _validated_quotas(requested)
+    partial = (run.plan or {}).get('production_quotas')
+    if partial is None:
+        return requested
+    partial = _validated_quotas(partial)
+    shortfall = (run.plan or {}).get('material_shortfall')
+    if (not shortfall or any(partial[key] > requested[key] for key in requested)
+            or sum(partial.values()) >= run.target_count
+            or shortfall != {key: requested[key] - partial[key] for key in requested}):
+        raise ValueError('部分排产必须保留真实岗位缺口，不得提高配额或改写每日目标')
+    return partial
+
+
 def validate_editor_plan(briefs, sources, quotas):
     """Return editor IDs in input order, without mutations or model calls.
 
@@ -68,7 +86,7 @@ def assign_editors(db, run_id):
     run = db.get(FactoryRun, run_id)
     items = db.query(FactoryItem).filter(FactoryItem.run_id == run_id,
         FactoryItem.status != "deferred").order_by(FactoryItem.position).all()
-    quotas = (run.settings_snapshot or {}).get("editor_quotas") if run else None
+    quotas = production_quotas(run) if run else None
     if quotas is not None:
         quotas = _validated_quotas(quotas)
         counts, pending = Counter({key: 0 for key in EDITOR_IDS}), []

@@ -6,7 +6,7 @@ from urllib.parse import urljoin, urlsplit
 
 def collect_newsroom_sources():
     """Open real event articles, never promote a press index into event evidence."""
-    from services.factory_research import _fetch_url, _load_source, _load_feed, _utcnow
+    from services.factory_research import _fetch_url, _load_source, _load_feed, _utcnow, is_major_event
 
     class Links(HTMLParser):
         def __init__(self):
@@ -38,7 +38,8 @@ def collect_newsroom_sources():
     records, warning = _load_feed("https://nvidianews.nvidia.com/rss.xml", _utcnow())
     if warning:
         warnings.append(warning)
-    for record in records[:2]:
+    records.sort(key=lambda row: (is_major_event(row), row.get('published_at') or ''), reverse=True)
+    for record in records[:4]:
         source, warning = _load_source(record)
         if source:
             sources.append(source)

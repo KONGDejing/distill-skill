@@ -85,6 +85,45 @@ def isolated_factory(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_material_gap_keeps_valid_topics_running_and_final_report_partial(isolated_factory, monkeypatch):
+    from services.factory_team import assign_editors, editor_quotas
+    candidates = [{'title': title, 'category': category, 'source_ids': [SOURCE['id']]}
+                  for title, category in [('工具解释', '工具指南'), ('论文甲', '论文讲解'), ('论文乙', '论文讲解')]]
+    invalid = {'title': '没有来源的热点', 'category': '科技热点', 'source_ids': ['missing-source']}
+    with isolated_factory() as db:
+        run = FactoryRun(target_count=6, sources=[SOURCE], settings_snapshot={
+            'visual_style': 'cards', 'editor_quotas': editor_quotas(), 'max_llm_calls': 12})
+        db.add(run); db.commit(); run_id = run.id
+
+    def respond(_run, role, payload, **_):
+        if role == 'researcher':
+            return {'candidates': [*candidates, invalid]}
+        if role == 'director':
+            assert payload['target'] == 3
+            assert payload['editor_quotas'] == {'producer': 1, 'producer2': 2, 'producer3': 0}
+            return {'selected': [{'candidate_index': n} for n in range(3)]}
+        assert role == 'analyst'
+        return {'summary': '已完成可制作部分，缺口保留。'}
+
+    monkeypatch.setattr(factory_service, 'call_agent', respond)
+    factory_service._make_plan(run_id)
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        assert run.target_count == 6
+        assert run.plan['material_shortfall'] == {'producer': 1, 'producer2': 0, 'producer3': 2}
+        assert assign_editors(db, run_id) == {'producer': 1, 'producer2': 2, 'producer3': 0}
+        items = db.query(FactoryItem).filter_by(run_id=run_id).all()
+        assert len(items) == 3 and all(i.brief['title'] != invalid['title'] for i in items)
+        for item in items:
+            item.status = 'completed'
+        db.commit()
+    factory_service._finish_report(run_id)
+    with isolated_factory() as db:
+        run = db.get(FactoryRun, run_id)
+        assert run.status == 'partial' and run.completed_count == 3 and run.target_count == 6
+        assert run.report['production']['completed'] == 3 and run.report['production']['target'] == 6
+
+
 def _seed_item(sessions, **updates):
     with sessions() as db:
         run = FactoryRun(target_count=1, sources=[SOURCE], settings_snapshot={

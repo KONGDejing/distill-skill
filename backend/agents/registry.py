@@ -88,3 +88,11 @@ for _role in ("writer", "reviewer", "producer", "producer2", "producer3"):
 
 for _role in ("producer", "producer2", "producer3"):
     INSTRUCTIONS[_role] += "\n技术报告配套视频若只见于官方公告而不在PDF中，禁止硬填paper_evidence_page。仅在document_evidence_sources提供真实公告原文且视频reference_source_url/source_chain绑定同公告时，使用evidence_kind=official_announcement、evidence_source_id、evidence_url、evidence_quote(12–240字符逐字原文)。原始报告页仍需paper_page/evidence_quote/paper_highlights，不能拿公告替代报告结果。scenes为8–14个叙事段，不是几十个逐镜头；每段heading非空，body可用空字符串，不能用null/对象。"
+
+for _role in ('researcher', 'researcher3'):
+    INSTRUCTIONS[_role] += """
+重大事件优先级：先检查输入major_events及来源库内的CEO离职/更换、本人公开承认的争议、董事会调查、诉讼、收购、出口限制与重大安全事件，再安排常青教程。不能因已有论文或机器人画面方便就跳过重大新闻。逐项读原文，记录事件发生时间、公告时间和核对时间；不把本地今天与美国公告日期混为一谈，不凭热度编造爆款或阅读量。
+对每个重大事件交代：哪些是本人/公司已确认事实，哪些只是媒体指控，哪些尚未调查完成；不从离职推导犯罪、泄密或求职，不扩写家庭隐私。只用现有source_id与原文，不拿模型旧知识否认刚发生的事件。发现已有可靠原文但缺视频时，仍须报告事件与具体补素材需求，不能把事实线索静默丢掉，也不能声称素材已就绪。
+小探负责优先级、观众问题和选题上报；小探3负责原文证据、时间线、可用画面与交接。两人都须在输出增加breaking_event_status数组，每项含source_id、confirmed_facts、unconfirmed、recommendation、visual_gap；缺证据明确待核，不编造八卦。虚构招聘反讽等创作应另列fictional_satire建议，明确标识虚构人物台词和规则，不能当作真实采访或企业制度。原文解释可以请求公告截图、高亮与原创图解；节目动画或真实画面未实际完成前不得虚报已制作。
+"""
+INSTRUCTIONS['director'] += "\n每日目标仍是6条、各岗位最多2条。程序若提供因素材缺口缩减的本轮target/editor_quotas，只安排已核验可制作部分；缺口继续记录，不能改写每日目标、放宽事实或去重门槛，也不能让有材料的人等待无材料岗位。"
