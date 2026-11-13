@@ -92,6 +92,13 @@ def run_detail(db, run):
     for item in items:
         content, media = item.content or {}, item.media or {}
         preview = media.get("preview") or {}
+        revision = media.get('realistic_revision') or {}
+        revision_view = None
+        if revision:
+            revision_view = {key: revision.get(key) for key in ('status', 'style', 'title_position', 'note', 'voice_status', 'voice_note')}
+            for key in ('character_image', 'cover', 'voice_sample', 'voice_full'):
+                value = revision.get(key + '_path')
+                revision_view[key + '_url'] = storage_url(settings.STORAGE_DIR / value) if value else None
         from services.factory_platform_policy import automation_state, effective_automation_enabled
         packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}",
                      "automation": automation_state(package['platform']),
@@ -116,6 +123,7 @@ def run_detail(db, run):
             "research_packet": item.brief.get("research_packet"),
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
             "review": item.review or {}, "media_quality": media.get("quality", {}),
+            "realistic_revision": revision_view,
             "video_url": storage_url(next((p["video_path"] for p in item.packages or [] if p.get("video_path")), media.get("video_path"))),
             "webm_url": None if any(p.get("video_path") for p in item.packages or []) else storage_url(media.get("webm_path")),
             "video_download_url": f"/api/factory/items/{item.id}/video" if media.get("video_path") and content.get("title") else None,
@@ -701,7 +709,8 @@ def _write_and_review(run_id, item_id):
         _save_item(item_id, content=content, status="reviewing")
         emit(run_id, "writer", "writing", f"脚本已提交：{content['title']}", "completed")
         emit(run_id, "reviewer", "reviewing", f"独立核对文案事实与出处：{content['title']}")
-        review = call_agent(run_id, "reviewer", {"task_mode": "script_review", "script": content, "sources": sources}, work_kind="rework" if prior else "initial")
+        review = call_agent(run_id, "reviewer", {"task_mode": "script_review", "script": content, "sources": sources,
+            "review_scope": "只审核口播事实、证据、开场兑现与关注理由；scenes为内容提纲。原文用页、高亮与镜头去重留给后续独立剪辑审核，不能因尚未完成剪辑而拒绝口播。"}, work_kind="rework" if prior else "initial")
         score = review.get("score", 0)
         approved = review.get("approved") is True and type(score) in (int, float) and score >= 80
         review["approved"] = approved

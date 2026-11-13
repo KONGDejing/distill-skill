@@ -73,7 +73,7 @@ def isolated_factory(tmp_path, monkeypatch):
     monkeypatch.setattr("services.factory_cover.render_cover", fake_cover)
     def fake_frame_cover(source, title, target, platform):
         Path(target).write_bytes(title.encode())
-        return {"text_rendered": title, "version": 2, "frame_title_version": 1,
+        return {"text_rendered": title, "version": 2, "frame_title_version": 2,
                 "kind": "source_first_frame_with_title", "overlay_path": str(target)}
     monkeypatch.setattr("services.factory_cover.render_frame_cover", fake_frame_cover)
     def fake_complete(source, cover, target, **kwargs):
@@ -477,7 +477,7 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 if package["platform"] in {"xiaohongshu", "kuaishou"}:
                     assert handoff["cover_text"] == content["title"]
                     assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
-                    assert package["cover_design"]["frame_title_version"] == 1
+                    assert package["cover_design"]["frame_title_version"] == 2
                 else:
                     assert handoff["cover_text"] == f"{package['platform']} 封面文字"
                 assert archive.read("cover.png").decode() == handoff["cover_text"]

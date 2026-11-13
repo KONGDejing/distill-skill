@@ -6,14 +6,14 @@ import re
 from services.factory_media import WIDTH, HEIGHT, _font, _wrap
 
 COVER_DESIGN_VERSION = 2
-FRAME_TITLE_VERSION = 1
+FRAME_TITLE_VERSION = 2
 
 
 def render_frame_cover(source, title, target, platform):
     """Letter the actual first frame; export the same transparent title for motion.
 
-    The compact lower band leaves the original document/demo and its attribution
-    visible. It is an overlay, never a substitute illustration or a frozen clip.
+    The upper-middle headline avoids bottom captions and right-side controls.
+    It is an overlay, never a substitute illustration or a frozen clip.
     """
     from PIL import Image, ImageDraw
     import hashlib
@@ -36,21 +36,21 @@ def render_frame_cover(source, title, target, platform):
         raise ValueError("首帧缺少视频标题")
     for size in range(78 if platform == "kuaishou" else 70, 47, -2):
         font = _font(size, bold=True)
-        lines = _wrap(title, font, 884)
+        lines = _wrap(title, font, 800)
         if len(lines) > 1:
             # Prefer a real clause boundary to splitting words such as 离线边界.
             candidates = [(title[:m.end()], title[m.end():]) for m in re.finditer(r"[？?，,：:]", title)
                           if m.end() < len(title)]
-            candidates = [parts for parts in candidates if all(font.getlength(s) <= 884 for s in parts)]
+            candidates = [parts for parts in candidates if all(font.getlength(s) <= 800 for s in parts)]
             if candidates:
                 lines = list(min(candidates, key=lambda parts: abs(font.getlength(parts[0]) - font.getlength(parts[1]))))
         if len(lines) <= 2 and not any(len(s.strip()) == 1 for s in lines):
             break
     else:
         raise ValueError("首帧标题过长，请压缩标题")
-    top, bottom = 1630, 1840
+    top, bottom = 380, 650
     if platform == "xiaohongshu":
-        draw.rounded_rectangle((56, top, 1024, bottom), radius=24, fill=(255, 252, 249, 244))
+        draw.rounded_rectangle((56, top, 944, bottom), radius=24, fill=(255, 252, 249, 244))
         draw.rounded_rectangle((78, top + 30, 86, bottom - 30), radius=4, fill="#d94d76")
         x, fill, stroke = 114, "#202736", 0
     else:
@@ -70,7 +70,8 @@ def render_frame_cover(source, title, target, platform):
             "frame_title_version": FRAME_TITLE_VERSION, "platform": platform,
             "overlay_path": str(overlay_path), "source_frame_sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
             "text_rendered": title, "font_size": size, "lines": lines,
-            "title_bounds_normalized": [56 / WIDTH, top / HEIGHT, 1024 / WIDTH, bottom / HEIGHT]}
+            "title_position": "upper_middle",
+            "title_bounds_normalized": [56 / WIDTH, top / HEIGHT, 944 / WIDTH, bottom / HEIGHT]}
 
 
 def cover_layout(title):
@@ -122,4 +123,4 @@ def render_cover(content, target):
         finally:
             browser.close()
     return {"kind": "original_svg_title_design", "design_path": str(svg_path), "version": COVER_DESIGN_VERSION,
-            "font_size": size, "text_rendered": title, "lines": lines}
+            "font_size": size, "text_rendered": title, "lines": lines, "title_position": "upper_middle"}

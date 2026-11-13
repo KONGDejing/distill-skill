@@ -18,4 +18,7 @@ PLATFORM_STYLES = {
 
 
 def platform_style(platform):
-    return deepcopy(PLATFORM_STYLES.get(platform, {}))
+    style = deepcopy(PLATFORM_STYLES.get(platform, {}))
+    if style:
+        style['opening_brief'] += ' 封面大标题放中上部，避开底部文案及右侧按钮，保持大字号和清晰对比；不能把主标题放在底部。'
+    return style

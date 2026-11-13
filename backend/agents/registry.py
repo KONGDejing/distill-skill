@@ -65,7 +65,7 @@ INSTRUCTIONS["writer"] += "\n论文任务必须先阅读sources中的逐页原�
 INSTRUCTIONS["reviewer"] += "\n论文口播必须根据所提供原文页核对方法和实验条件，摘要不足以验证实验细节；不同论文或公司背景不能替代本篇证据。"
 INSTRUCTIONS["producer2"] = INSTRUCTIONS["producer"].replace("小影先", "小影2先") + "\n本岗位重点检查概念解释、论文方法与画面的对应关系，不能把示意演示写成论文实验。"
 INSTRUCTIONS["producer3"] = INSTRUCTIONS["producer"].replace("小影先", "小影3先") + "\n本岗位重点检查开场、转折与收尾的节奏；热点背景画面必须有出处，旧素材不冒充当日现场。"
-for _paper_role in ("producer", "producer2", "producer3", "reviewer"):
+for _paper_role in ("producer", "producer2", "producer3"):
     INSTRUCTIONS[_paper_role] += "\n论文任务的优先规则：真实PDF页、原文高亮和结果图表可以构成完整论文讲解，不强制三个动态视频或作者实验录像；没有作者演示时不得因此拒绝论文页讲解，更不能用无关视频填充。每个scene只选一个paper_page，全片至少三个不同原文页，每页仅用一段；这两条分别约束单段与全片，并不冲突。论文页推拉只作为原文阅读，不冒充动态实验。脚本是否已审以任务script_review的真实审核结果为准。"
 for _edit_role in ("producer", "producer2", "producer3"):
     INSTRUCTIONS[_edit_role] += "\n镜头可在逗号、冒号、分号之后的完整语义分句边界切换，不强制等到句号；narration_exact仍必须逐字连续、按顺序完整覆盖全文，不截断否定词、数字单位或专有名词。抖音品牌片头由交付后处理生成，不依赖available_assets，不得因未提供片头素材而拒绝正文分镜。"
@@ -96,3 +96,4 @@ for _role in ('researcher', 'researcher3'):
 小探负责优先级、观众问题和选题上报；小探3负责原文证据、时间线、可用画面与交接。两人都须在输出增加breaking_event_status数组，每项含source_id、confirmed_facts、unconfirmed、recommendation、visual_gap；缺证据明确待核，不编造八卦。虚构招聘反讽等创作应另列fictional_satire建议，明确标识虚构人物台词和规则，不能当作真实采访或企业制度。原文解释可以请求公告截图、高亮与原创图解；节目动画或真实画面未实际完成前不得虚报已制作。
 """
 INSTRUCTIONS['director'] += "\n每日目标仍是6条、各岗位最多2条。程序若提供因素材缺口缩减的本轮target/editor_quotas，只安排已核验可制作部分；缺口继续记录，不能改写每日目标、放宽事实或去重门槛，也不能让有材料的人等待无材料岗位。"
+INSTRUCTIONS['reviewer'] += "\n当前task_mode=script_review时只审核口播事实、证据、开场兑现与关注理由。writer的scenes是内容提纲，不是已完成剪辑；不能因提纲单段引用多页、同页多次提及、尚无asset_ids/paper_focus/paper_highlights或script_review自身尚不存在而拒绝事实正确的口播。真实用页、高亮、重复帧与分镜协议由后续独立task_mode=edit_review和渲染器严格检查；本阶段通过不等于成片通过。"

@@ -46,6 +46,9 @@ def test_real_first_frame_title_keeps_moving_footage_and_audio(tmp_path, monkeyp
     assert abs(quality['duration'] - 6) < .2
     assert design['text_rendered'] == title
     assert design['lines'] == ['AI断网能说话？', '三步判断离线边界']
+    assert design['title_position'] == 'upper_middle'
+    left, top, right, bottom = design['title_bounds_normalized']
+    assert 0 < left < right < .9 and .15 < top < .3 and bottom < .4
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before
 
     def frame(path, at):
@@ -54,11 +57,11 @@ def test_real_first_frame_title_keeps_moving_footage_and_audio(tmp_path, monkeyp
         return np.frombuffer(data, dtype=np.uint8).reshape(480, 270, 3).astype(float)
     first = frame(target, 0)
     assert np.array_equal(np.asarray(Image.open(cover)), first)
-    # The headline changes only the lower band. Content moves throughout the
+    # The headline changes only the upper-middle band. Content moves throughout the
     # opening, and is still the corresponding source frame, not a frozen poster.
     for at in (0, .5, 1.5):
         original, output = frame(source, at), frame(target, at)
-        assert abs(original[:395] - output[:395]).mean() < 5
-        assert abs(original[410:460] - output[410:460]).mean() > 5
-    assert abs(frame(target, .5)[:395] - first[:395]).mean() > 5
+        assert abs(original[180:] - output[180:]).mean() < 5
+        assert abs(original[96:162] - output[96:162]).mean() > 5
+    assert abs(frame(target, .5)[180:] - first[180:]).mean() > 5
     assert abs(frame(source, 3) - frame(target, 3)).mean() < 5

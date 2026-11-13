@@ -142,6 +142,7 @@ export function ContentCard({ item, index }) {
   const review = item.review || {}
   const issues = Array.isArray(review.issues) ? review.issues : []
   const preview = item.preview
+  const revision = item.realistic_revision
   const delivery = (
     <>
       <div className="flex flex-col gap-5 p-4 sm:flex-row sm:p-5">
@@ -175,6 +176,16 @@ export function ContentCard({ item, index }) {
   )
   return (
     <article className="overflow-hidden rounded-xl border border-white/[0.07] bg-[#0c141e]">
+      {revision && <section aria-label="写实新版制作进度" className="border-b border-amber-200/15 bg-amber-200/[0.04] p-5">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-100"><Sparkles size={16} />写实新版 · 角色与封面已就绪，动态视频待制作</div>
+        <div className="flex flex-col gap-4 sm:flex-row">
+          {revision.cover_url && <a href={safeLink(revision.cover_url)} target="_blank" rel="noreferrer" className="shrink-0"><img src={safeLink(revision.cover_url)} alt="写实新版中上标题封面，非已完成的视频" className="max-h-80 w-44 rounded-lg object-contain" /></a>}
+          <div className="min-w-0 flex-1 text-xs leading-6 text-slate-300"><p>{revision.note}</p><p className="mt-2">封面大标题位于中上部，避开底部文案与右侧按钮。</p>
+            {revision.voice_sample_url && <div className="mt-3"><p className="mb-2 text-amber-100">AI声线模拟试听 · 非本人录音</p><audio controls preload="none" src={safeLink(revision.voice_sample_url)} className="w-full max-w-md" /><p className="mt-2 text-slate-400">{revision.voice_note}</p></div>}
+            {revision.voice_full_url && <a href={safeLink(revision.voice_full_url)} target="_blank" rel="noreferrer" className="mt-3 inline-block text-sky-200 underline">收听新版完整对话配音（动态视频尚未制作）</a>}
+          </div>
+        </div>
+      </section>}
       {preview && <section aria-label="新版演示混剪样片" className="border-b border-sky-300/15 bg-gradient-to-br from-sky-300/[0.07] to-transparent p-4 sm:p-5">
         <div className="mb-4 flex flex-wrap items-center gap-2"><Sparkles size={15} className="text-sky-300" /><span className="text-xs font-semibold text-sky-200">{preview.quality?.paper_evidence ? '小影2 · 真实论文讲解样片' : '新版演示混剪样片'}{preview.published === false ? ' · 未发布' : ''}</span></div>
         <div className="flex flex-col gap-5 sm:flex-row">
@@ -184,7 +195,7 @@ export function ContentCard({ item, index }) {
           <div className="min-w-0 flex-1 py-1"><div className="mb-2 text-[10px] font-medium tracking-widest text-slate-500">PREVIEW {String(index + 1).padStart(2, '0')}</div><h4 className="text-base font-semibold leading-relaxed text-slate-100">{preview.title || item.title || '新版样片'}</h4>{(preview.hook || item.hook) && <p className="mt-3 text-xs leading-relaxed text-slate-400">{preview.hook || item.hook}</p>}<div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-400"><span className="flex items-center gap-1.5"><Film size={13} />{preview.quality?.paper_evidence ? '论文原文与成果演示' : VISUAL_STYLES[preview.style] || '视频样片'}</span>{preview.duration > 0 && <span className="flex items-center gap-1.5"><Clock3 size={13} />{Math.round(preview.duration)} 秒</span>}</div>{preview.quality?.paper_evidence && <p className="mt-3 text-xs leading-6 text-sky-200">展示真实论文第 {preview.quality.paper_evidence.pages.join('、')} 页，口播对应原文高亮。<a className="ml-2 underline" href={`https://arxiv.org/abs/${encodeURIComponent(preview.quality.paper_evidence.paper_id)}`} target="_blank" rel="noreferrer">查看原论文 ↗</a></p>}{preview.quality?.source_uniqueness_passed && <p className="mt-2 text-xs text-emerald-300">源片段无重复使用 · 已检查重复画面</p>}{preview.published === false && <p className="mt-4 rounded-lg border border-amber-300/10 bg-amber-300/[0.03] p-3 text-xs leading-relaxed text-amber-200/80">此版本供观看与验收，尚未提交平台。</p>}{preview.script_url && <a href={safeLink(preview.script_url)} target="_blank" rel="noreferrer" className="mt-3 block text-xs text-sky-200 underline">查看本版完整口播</a>}{preview.video_url && <a href={safeLink(preview.video_url)} download={`${preview.title || item.title}.mp4`} className="mt-4 inline-flex items-center gap-2 rounded-lg bg-sky-300/10 px-3 py-2.5 text-xs font-medium text-sky-200 hover:bg-sky-300/20"><ArrowDownToLine size={14} />下载新版样片</a>}</div>
         </div>
       </section>}
-      {preview ? <details className="group/delivery"><summary className="flex cursor-pointer list-none items-center gap-2 bg-white/[0.02] px-5 py-4 text-xs text-slate-400"><ChevronRight size={14} className="transition-transform group-open/delivery:rotate-90" /><span className="font-medium text-slate-300">当前交付版本</span><span className="ml-auto text-[10px] text-slate-500">原视频与平台记录</span></summary>{delivery}</details> : delivery}
+      {preview || revision ? <details className="group/delivery"><summary className="flex cursor-pointer list-none items-center gap-2 bg-white/[0.02] px-5 py-4 text-xs text-slate-400"><ChevronRight size={14} className="transition-transform group-open/delivery:rotate-90" /><span className="font-medium text-slate-300">{revision ? '历史交付版本（写实新版尚未完成）' : '当前交付版本'}</span><span className="ml-auto text-[10px] text-slate-500">原视频与平台记录</span></summary>{delivery}</details> : delivery}
     </article>
   )
 }
