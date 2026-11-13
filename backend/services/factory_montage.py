@@ -72,7 +72,7 @@ def _source_label(asset: dict) -> str:
         date = re.search(r"\d{4}-\d{2}-\d{2}", asset["date_label"])
         return "历史背景 · " + ("发布于" + date.group() if date else "非本次试点")
     if asset.get("kind") == "paper_page":
-        label = "官方技术报告" if asset.get("document_kind") == "technical_report" else "论文原文"
+        label = {'technical_report': '官方技术报告', 'official_document': '官方原文资料'}.get(asset.get('document_kind'), '论文原文')
         return f"{label} · 第{asset['paper_page']}页"
     if asset.get("asset_role") == "short_animated_preview_not_full_demo":
         return "官方预览片段 · 非完整演示"
@@ -709,7 +709,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     plan = build_shot_plan(content, cues, prepared, duration)
     quality = validate_shot_plan(plan, duration)
     if paper_evidence:
-        quality["paper_evidence"] = paper_evidence
+        quality['document_evidence' if paper_evidence.get('document_kind') == 'official_document' else 'paper_evidence'] = paper_evidence
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),

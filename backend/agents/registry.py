@@ -97,3 +97,5 @@ for _role in ('researcher', 'researcher3'):
 """
 INSTRUCTIONS['director'] += "\n每日目标仍是6条、各岗位最多2条。程序若提供因素材缺口缩减的本轮target/editor_quotas，只安排已核验可制作部分；缺口继续记录，不能改写每日目标、放宽事实或去重门槛，也不能让有材料的人等待无材料岗位。"
 INSTRUCTIONS['reviewer'] += "\n当前task_mode=script_review时只审核口播事实、证据、开场兑现与关注理由。writer的scenes是内容提纲，不是已完成剪辑；不能因提纲单段引用多页、同页多次提及、尚无asset_ids/paper_focus/paper_highlights或script_review自身尚不存在而拒绝事实正确的口播。真实用页、高亮、重复帧与分镜协议由后续独立task_mode=edit_review和渲染器严格检查；本阶段通过不等于成片通过。"
+for _role in ('writer', 'reviewer', 'producer', 'producer2', 'producer3'):
+    INSTRUCTIONS[_role] += '\n若paper_document.kind为official_document，素材是官方公告、声明、公司资料或明确标为阅读排版的原文摘录，不是论文或系统卡。仍逐页核对evidence_quote和高亮、同一页只用一次；按当前新闻或工具解读讲解，不称arXiv或科研成果。可用原文解释已确认事实、调查边界和产品条件，但不能冒充实测、现场采访或原公司网页截图。'

@@ -619,7 +619,8 @@ def _write_and_review(run_id, item_id):
         if brief.get("paper_document"):
             document = brief["paper_document"]
             narration_pages = _narration_pages(document)
-            sources = [*sources, {"id": "paper-fulltext", "title": "官方技术报告原文按页提取" if document.get("kind") == "technical_report" else "论文原文按页提取",
+            document_title = {'technical_report': '官方技术报告原文按页提取', 'official_document': '官方原文资料按页提取'}.get(document.get('kind'), '论文原文按页提取')
+            sources = [*sources, {"id": "paper-fulltext", "title": document_title,
                 "url": document["url"], "kind": document.get("kind", "paper"), "pages": narration_pages,
                 "page_selection_note": "本条只依据提供的原文页写口播，未提供页不得补造；完整PDF及所有页仍在缓存保留。",
                 "text": "\n".join(f"第{p['page']}页：{p['text']}" for p in narration_pages)[:65000]}]
@@ -698,7 +699,7 @@ def _write_and_review(run_id, item_id):
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
         if brief.get("paper_document"):
             content["paper_document"] = brief["paper_document"]
-            if brief["paper_document"].get("kind") == "technical_report":
+            if brief["paper_document"].get("kind") in {'technical_report', 'official_document'}:
                 allowed = set(brief["paper_document"].get("verified_project_urls", []))
                 content["document_evidence_sources"] = [{k: s.get(k) for k in ("id", "url", "text")}
                                                         for s in sources if s.get("url") in allowed]

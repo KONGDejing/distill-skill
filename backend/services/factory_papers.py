@@ -120,8 +120,13 @@ def paper_assets(document, directory):
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     assets = []
-    report = document.get("kind") == "technical_report"
-    label = ("官方技术报告 " + document.get("title", document["id"])) if report else f"论文原文 arXiv:{document['id']}"
+    document_kind = document.get('kind', 'paper')
+    if document_kind == 'official_document':
+        label = '官方原文资料 ' + document.get('title', document['id'])
+    elif document_kind == 'technical_report':
+        label = '官方技术报告 ' + document.get('title', document['id'])
+    else:
+        label = f"论文原文 arXiv:{document['id']}"
     with PDF_LOCK, pdfium.PdfDocument(document["path"]) as pdf:
         for entry in document["pages"]:
             ensure_memory_available()
@@ -135,7 +140,7 @@ def paper_assets(document, directory):
             assets.append({"id": f"paper-{index}", "kind": "paper_page", "path": str(path),
                 "paper_id": document["id"], "paper_page": index, "paper_path": document["path"],
                 "paper_sha256": document["sha256"], "page_sha256": _sha256(path),
-                "source_url": document["url"], "source_title": f"{label} · 第{index}页",
+                "source_url": entry.get('source_url') or document["url"], "source_title": f"{label} · 第{index}页",
                 "credit": f"{label} · 第{index}页", "document_kind": document.get("kind", "paper"),
                 "description": entry["text"][:7000], "page_text": entry["text"],
                 "clips": [{"start": 0, "end": 35}], "topic_tags": ["paper_original"]})
@@ -153,7 +158,7 @@ def validate_paper_scenes(scenes, assets, evidence_sources=None):
     if not pages:
         raise ValueError("论文视频缺少真实论文页面，不能用背景演示替代")
     by_id = {a["id"]: a for a in assets}
-    reports_only = all(a.get("document_kind") == "technical_report" for a in pages.values())
+    reports_only = all(a.get("document_kind") in {'technical_report', 'official_document'} for a in pages.values())
     seen, announcements = set(), []
     compact = lambda s: re.sub(r"\s+", "", s).lower()
     for scene_index, scene in enumerate(scenes):
@@ -162,7 +167,7 @@ def validate_paper_scenes(scenes, assets, evidence_sources=None):
             from services.factory_research import _validated_url
 
             if not reports_only:
-                raise ValueError("官方公告演示依据仅适用于全部原文页均为官方技术报告的内容")
+                raise ValueError("官方公告演示依据仅适用于全部原文页均为官方技术报告或官方原文资料的内容")
             identifiers = scene.get("asset_ids")
             if (selected or not isinstance(identifiers, list) or not identifiers
                     or any(not isinstance(i, str) or i not in by_id
@@ -225,6 +230,9 @@ def validate_paper_scenes(scenes, assets, evidence_sources=None):
         raise ValueError("论文视频应先展示标题作者页，并至少展示三页不同的原文证据")
     result = {"paper_id": next(iter(pages.values()))["paper_id"], "pages": sorted(seen),
               "scope": "original_pdf_and_page_quotes; semantic_alignment_requires_editorial_review"}
+    if all(a.get('document_kind') == 'official_document' for a in pages.values()):
+        result.update(document_kind='official_document',
+                      source_urls=list(dict.fromkeys(a['source_url'] for a in pages.values())))
     if announcements:
         result.update(official_announcement_evidence=announcements,
             announcement_evidence_scope="caller_supplied_original_source_exact_quote_and_video_provenance; not_semantic_review",
