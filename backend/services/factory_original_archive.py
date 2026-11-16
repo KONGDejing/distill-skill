@@ -29,8 +29,11 @@ def save_original_archive(content, packages, media, directory, route):
         selected = route.get('douyin_selected') is True
         archive.writestr('抖音排期说明.txt', ('交付时本条为抖音预选，最终选择与实际提交状态请在工厂查看；勿重复上传。' if selected
                                               else '交付时本条未预选抖音；最终选择以工厂为准，完整保存供本人手动选用。') + '\n')
+        archive.writestr('快手排期说明.txt', ('本条入选快手每日2条自动发布；请以工厂网络状态、排期和官方回执为准，避免手动重复上传。'
+                                               if route.get('kuaishou_selected') else '本条未入选快手自动发布，完整素材保留；请先核对工厂回执再决定手动上传。') + '\n')
         archive.writestr('交付记录.json', json.dumps({'policy': route['policy'], 'editor_id': route['editor_id'],
             'day': route['day'], 'douyin_selected': selected, 'manual_platforms': ['xiaohongshu', 'kuaishou'],
+            'kuaishou_selected': route.get('kuaishou_selected', False), 'kuaishou_auto_policy': route.get('kuaishou_auto_policy'),
             'sources': content.get('sources', []), 'note': '交付包就绪不代表任何平台已提交或公开发布。'}, ensure_ascii=False, indent=2))
     os.replace(temporary, target)
     return {'archive_path': str(target), 'manual_master_path': master['video_path'],

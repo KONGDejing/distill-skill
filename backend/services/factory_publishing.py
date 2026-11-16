@@ -10,6 +10,8 @@ from services.factory_resources import ensure_memory_available
 from services.factory_distribution import guard_publication, RESERVATION_KEY
 from services.factory_platform_policy import require_automation
 
+LOCK_DIRECTORY = Path(__file__).resolve().parents[2] / '.runtime'
+
 
 def _platform_name(platform):
     if platform == "xiaohongshu":
@@ -122,7 +124,7 @@ def refresh_job(db, job):
 
 def begin_publication(db, item_id, action, platform="xiaohongshu"):
     _platform_name(platform)
-    directory = Path(__file__).resolve().parents[2] / ".runtime"
+    directory = LOCK_DIRECTORY
     directory.mkdir(mode=0o700, exist_ok=True)
     with (directory / f"publication-{platform}.lock").open("a") as lock:
         try:

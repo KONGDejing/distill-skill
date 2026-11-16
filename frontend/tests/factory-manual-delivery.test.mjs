@@ -86,7 +86,7 @@ test('connection effects cannot poll even with legacy enabled account data', () 
     id, status: 'connected', automation: { enabled: !['douyin', 'kuaishou'].includes(id) },
   })) })
   assert.doesNotMatch(html, /扫码登录|刷新登录状态|\/login/)
-  assert.match(html, /小红书和快手由本人操作/)
+  assert.match(html, /小红书由本人操作/)
   assert.equal(effects.length, 4)
   for (const effect of effects) {
     const cleanup = effect()
@@ -136,11 +136,12 @@ test('legacy copy uses existing text and the cover is an optional archive', () =
 })
 
 
-test('only Douyin renders authorized login controls', () => {
+test('Douyin and Kuaishou render authorized login controls while other platforms stay manual', () => {
   const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({ id, automation: { enabled: true } })) })
   assert.match(html, /抖音自动|自动发布/)
   assert.match(html, /\/platforms\/douyin\/login/)
-  for (const id of ['kuaishou', 'xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
+  assert.match(html, /\/platforms\/kuaishou\/login/)
+  for (const id of ['xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
   assert.match(html, /必须选择官方AI生成声明/)
 })
 
@@ -151,4 +152,17 @@ test('Douyin package explains automatic delivery instead of asking the owner to 
   assert.match(html, /官方AI生成声明/)
   assert.doesNotMatch(html, /上传完整成片（MP4），填写/)
   assert.match(html, /避免重复上传/)
+})
+
+test('Kuaishou transport failure is visible and does not open a login poll', () => {
+  effects.length = 0
+  const html = render(ManualPlatformChannels, { platforms: [{ id: 'kuaishou',
+    automation: { enabled: true }, publishing_enabled: false,
+    transport: { ready: false, reason: '北京快手HTTPS连接中断' } }] })
+  assert.match(html, /北京快手HTTPS连接中断/)
+  assert.doesNotMatch(html, /仅支持手动发布|\/platforms\/kuaishou\/login/)
+  for (const effect of effects) {
+    const cleanup = effect()
+    if (cleanup) cleanup()
+  }
 })

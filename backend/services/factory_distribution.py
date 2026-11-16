@@ -79,10 +79,12 @@ def publication_usage(db, platform, day, *, include_prepares=False,
 
 
 def guard_publication(db, item, platform, action, *, timezone_name="Asia/Shanghai", now=None):
-    """Only a nominated daily Douyin original may create a NEW account command."""
+    """Only explicitly selected, disjoint daily originals create NEW account commands."""
     from services.factory_team import editor_id
-    if platform != 'douyin':
-        raise ValueError('小红书和快手由本人按需手动上传，禁止创建自动发布任务')
+    if platform not in {'douyin', 'kuaishou'}:
+        raise ValueError('小红书由本人按需手动上传，禁止创建自动发布任务')
+    db.execute(update(FactoryRun).where(FactoryRun.id == item.run_id).values(heartbeat_at=FactoryRun.heartbeat_at))
+    db.refresh(item, ['brief'])
     run = db.get(FactoryRun, item.run_id)
     route = (item.brief or {}).get('distribution') or {}
     if (not run or (run.settings_snapshot or {}).get('distribution_policy') != CURRENT_DISTRIBUTION_POLICY
@@ -92,18 +94,25 @@ def guard_publication(db, item, platform, action, *, timezone_name="Asia/Shangha
     owner = editor_id(item)
     if _day(route.get('day')) != today:
         raise ValueError('发行日期与今天不符，请显式重新排期后再操作')
-    if route.get('douyin_selected') is not True or route.get('platform') != 'douyin' or route.get('editor_id') != owner:
+    if platform == 'kuaishou':
+        from services.factory_kuaishou_policy import authorized, POLICY as K_POLICY
+        if (not authorized(run) or route.get('kuaishou_auto_policy') != K_POLICY
+                or route.get('kuaishou_selected') is not True or route.get('douyin_selected')
+                or route.get('platform') != platform or route.get('editor_id') != owner):
+            raise ValueError('未入选快手每日2条新规则，或与抖音预选冲突；旧任务不能自动恢复')
+    elif route.get('douyin_selected') is not True or route.get('platform') != 'douyin' or route.get('editor_id') != owner:
         raise ValueError('本条未入选该剪辑师当天的抖音作品；完整素材保留供本人手动上传')
     prior = db.query(FactoryPublication).filter_by(item_id=item.id).all()
-    if any(job.platform != 'douyin' for job in prior):
+    if any(job.platform != platform for job in prior):
         raise ValueError('作品有其他平台历史任务，须核对后显式重新排期')
-    occupied = reserved_item_ids(db, 'douyin', today, include_prepares=True,
+    occupied = reserved_item_ids(db, platform, today, include_prepares=True,
                                  timezone_name=timezone_name, exclude_item_id=item.id)
-    if len(occupied) >= DAILY_PLATFORM_LIMIT:
-        raise ValueError('抖音当天已预留或提交3条作品；未知结果也占额度，请改日安排')
+    limit = 2 if platform == 'kuaishou' else DAILY_PLATFORM_LIMIT
+    if len(occupied) >= limit:
+        raise ValueError(f'{"快手" if platform == "kuaishou" else "抖音"}当天已预留或提交{limit}条作品；未知结果也占额度，请改日安排')
     for identifier in occupied:
         other = db.get(FactoryItem, identifier)
-        if other and editor_id(other) == owner:
+        if platform == 'douyin' and other and editor_id(other) == owner:
             raise ValueError('这位剪辑师当天已有一条抖音任务，禁止用同岗作品占用其他方向名额')
     timestamp = now or datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
@@ -183,4 +192,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
     for key, route in output.items():
         by_id[key].brief = {**(by_id[key].brief or {}), 'distribution': route}
     db.flush()
+    from services.factory_kuaishou_policy import assign_kuaishou
+    for planned in sorted(set(requested.values())):
+        output.update(assign_kuaishou(db, run, planned))
     return output

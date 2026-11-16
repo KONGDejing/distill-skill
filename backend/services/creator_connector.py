@@ -179,6 +179,16 @@ def connection_state(platform) -> dict:
                 "authenticated": False, "session_active": False, "qr_ready": False, "qr_version": None,
                 "login_command": None, "verification": None, "prepared_item_id": state.get("prepared_item_id"),
                 "capabilities": {name: False for name in ("login", "inspect", "prepare", "publish", "analytics", "verification")}}
+    from services.factory_platform_policy import publication_transport_state
+    transport = publication_transport_state(platform)
+    if transport.get('ready') is False:
+        return {'platform': platform, 'automation': automation_state(platform), 'automation_enabled': True,
+                'status': '自动上传等待网络恢复', 'state_code': 'network_error',
+                'error': transport.get('reason'), 'transport': transport,
+                'authenticated': False, 'session_active': False, 'qr_ready': False, 'qr_version': None,
+                'display_name': state.get('display_name'), 'updated_at': transport.get('checked_at'),
+                'prepared_item_id': state.get('prepared_item_id'), 'login_command': None, 'verification': None,
+                'capabilities': {'login': False, 'prepare': False, 'publish': False}}
     active = _alive(platform)
     # A read-only snapshot lets API updates classify a newly observed checkpoint
     # without restarting an in-progress browser confirmation session.
@@ -320,6 +330,10 @@ def _payload(platform, action, payload):
 def submit_command(platform, action, payload=None) -> dict:
     require_automation(platform)
     _platform(platform)
+    from services.factory_platform_policy import publication_transport_state
+    transport = publication_transport_state(platform)
+    if transport.get('ready') is False:
+        raise ValueError(transport.get('reason') or '已启用自动上传，但平台网络连接尚未恢复')
     if action not in ACTIONS:
         raise ValueError("不支持的平台操作")
     clean = _payload(platform, action, payload)

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from secrets import randbelow
+from math import ceil
 from sqlalchemy import func
 from agents.registry import DAILY_TARGET
 
@@ -128,8 +129,8 @@ def plan_slots(db, config, now):
     for offset in (0, 1):
         day = now.date() + timedelta(days=offset)
         start = utc(datetime.fromisoformat(day.isoformat()).replace(tzinfo=now.tzinfo))
-        existing = db.query(FactoryRelease).filter(nominal_time() >= start,
-            nominal_time() < start + timedelta(days=1)).all()
+        existing = [slot for slot in db.query(FactoryRelease).filter(nominal_time() >= start,
+            nominal_time() < start + timedelta(days=1)).all() if slot.platforms != ['kuaishou']]
         for slot in existing:
             _set_jitter(db, slot, config, now_utc)
             db.flush()
@@ -154,6 +155,42 @@ def plan_slots(db, config, now):
             elif not slot.run_id and slot.status not in FINAL:
                 slot.platforms = ['douyin']
     db.commit()
+    plan_kuaishou_slots(db, config, now)
+
+
+def plan_kuaishou_slots(db, config, now):
+    from services.factory_kuaishou_policy import PUBLISH_TIMES
+    if 'kuaishou' not in config.platforms:
+        return
+    for offset in (0, 1):
+        day = now.date() + timedelta(days=offset)
+        for clock in PUBLISH_TIMES:
+            nominal = utc(datetime.fromisoformat(f'{day.isoformat()}T{clock}').replace(tzinfo=now.tzinfo))
+            if nominal < utc(now) or (config.publish_start_at and nominal < config.publish_start_at):
+                continue
+            for _ in range(10):
+                existing = db.query(FactoryRelease).filter(nominal_time() == nominal).first()
+                if existing is None or existing.platforms == ['kuaishou']:
+                    break
+                nominal += timedelta(minutes=1)
+            else:
+                raise ValueError('快手时段与现有排期冲突，保留原排期')
+            if existing is None:
+                # At first creation, sample only future instants inside the
+                # owner's ±15-minute window. Persisted draws are never moved.
+                span = config.publish_jitter_seconds
+                earliest = max(-span, ceil((max(utc(now), config.publish_start_at or utc(now)) - nominal).total_seconds()))
+                for _ in range(32):
+                    delta = earliest + randbelow(span - earliest + 1) if span > earliest else earliest
+                    due = nominal + timedelta(seconds=delta)
+                    if not db.query(FactoryRelease.id).filter_by(due_at=due).first():
+                        break
+                else:
+                    raise ValueError('快手随机排期冲突，保留已有时段')
+                slot = FactoryRelease(due_at=due, nominal_at=nominal, jitter_seconds=delta,
+                                      platforms=['kuaishou'], status='scheduled')
+                db.add(slot); db.flush()
+    db.commit()
 
 
 def bind_editor_releases(db, run, routes=None):
@@ -170,6 +207,25 @@ def bind_editor_releases(db, run, routes=None):
         if owner in chosen:
             item = chosen[owner]
             slot.item_id, slot.position = item.id, item.position
+    from services.factory_kuaishou_policy import authorized, content_score
+    if authorized(run):
+        from services.factory_distribution import reserves_quota
+        chosen_k = sorted([item for item in items if
+            (routes or {}).get(item.id, item.brief.get('distribution', {})).get('kuaishou_selected')], key=content_score, reverse=True)
+        pinned = {slot.item_id for slot in db.query(FactoryRelease).filter(
+            FactoryRelease.run_id == run.id).all() if slot.platforms == ['kuaishou'] and slot.item_id
+            and any(reserves_quota(job, True) for job in db.query(FactoryPublication).filter_by(
+                item_id=slot.item_id, platform='kuaishou').all())}
+        remaining = [item for item in chosen_k if item.id not in pinned]
+        for slot_id in run.settings_snapshot.get('kuaishou_release_slot_ids', []):
+            slot = db.get(FactoryRelease, slot_id)
+            if slot is None or slot.item_id in pinned or slot.status in {'submitted', 'cancelled'}:
+                continue
+            slot.run_id = run.id; slot.platforms = ['kuaishou']
+            if remaining:
+                item = remaining.pop(0);slot.item_id, slot.position = item.id, item.position
+            else:
+                slot.item_id, slot.position = None, None
 
 
 def reconcile_editor_picks(db, run):
@@ -183,7 +239,7 @@ def reconcile_editor_picks(db, run):
     from services.factory_team import editor_id
     from services.factory_editorial_policy import EDITOR_IDS
     from services.factory_distribution import reserves_quota
-    lock_path = Path(__file__).resolve().parents[2] / '.runtime/publication-douyin.lock'
+    lock_path = publishing.LOCK_DIRECTORY / 'publication-douyin.lock'
     lock_path.parent.mkdir(mode=0o700, exist_ok=True)
     with lock_path.open('a') as lock:
         try:
@@ -197,7 +253,7 @@ def reconcile_editor_picks(db, run):
             if not group:
                 continue
             jobs = db.query(FactoryPublication).filter(FactoryPublication.item_id.in_([i.id for i in group]),
-                FactoryPublication.platform == 'douyin').all()
+                FactoryPublication.platform.in_(['douyin', 'kuaishou'])).all()
             if any(reserves_quota(job, True) for job in jobs):
                 continue
             ready = [i for i in group if i.status == 'completed' and (i.review or {}).get('approved') is True
@@ -214,6 +270,9 @@ def reconcile_editor_picks(db, run):
                     route.update(douyin_selected=selected, platform='douyin' if selected else None,
                         reason='同岗位两条作品中按已通过审核与完整交付结果择一；账号任务一旦预留即固定。其余作品完整保存供本人手动选用。')
                     item.brief = {**item.brief, 'distribution': route}
+        from services.factory_kuaishou_policy import assign_kuaishou
+        for day in {i.brief.get('distribution', {}).get('day') for i in items} - {None}:
+            assign_kuaishou(db, run, day)
         bind_editor_releases(db, run)
         db.commit()
 
@@ -225,8 +284,9 @@ def plan_production(db, config, now):
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
     key = f'three-tracks-v2:{now.date().isoformat()}'
     run = db.query(FactoryRun).filter_by(schedule_key=key).first()
-    slots = db.query(FactoryRelease).filter(nominal_time() >= start,
+    today_slots = db.query(FactoryRelease).filter(nominal_time() >= start,
         nominal_time() < start + timedelta(days=1), FactoryRelease.status != 'cancelled').order_by(nominal_time()).all()
+    slots = [slot for slot in today_slots if slot.platforms != ['kuaishou']]
     if run and (run.settings_snapshot or {}).get('release_slot_ids'):
         by_id = {slot.id: slot for slot in slots}
         slots = [by_id[key] for key in run.settings_snapshot['release_slot_ids'] if key in by_id]
@@ -254,6 +314,14 @@ def plan_production(db, config, now):
     for slot in slots:
         if not slot.run_id:
             slot.run_id = run.id;slot.position = None;slot.platforms = ['douyin']
+    from services.factory_kuaishou_policy import authorized
+    if authorized(run):
+        k_slots = [slot for slot in today_slots if slot.platforms == ['kuaishou']]
+        run.settings_snapshot = {**run.settings_snapshot, 'kuaishou_release_slot_ids': [slot.id for slot in k_slots]}
+        for slot in k_slots:
+            if slot.run_id not in {None, run.id}:
+                raise ValueError('快手时段已属于其他批次，不能覆盖')
+            slot.run_id = run.id
     db.commit()
     reconcile_editor_picks(db, run)
     return {'run_id': run.id, 'status': run.status}
@@ -303,6 +371,11 @@ def step_platform(db, slot, item, platform, now, enabled, timezone_name="Asia/Sh
         if item.media.get("publication_hold") and "旧版已停发" not in detail:
             detail += "；此旧版已停发，保留历史提交记录"
         return _result("blocked", detail, submitted)
+    from services.factory_platform_policy import automation_enabled, publication_transport_state
+    if automation_enabled(platform) and publication_transport_state(platform).get('ready') is False:
+        if not enabled:
+            return _result('paused', '当前自动发布计划已暂停')
+        return _result('blocked', publication_transport_state(platform).get('reason') or '已允许自动上传，但平台网络连接尚未恢复')
     if not automated:
         if not enabled:
             return _result("paused", "人工交付排期已暂停")
@@ -362,7 +435,7 @@ def step_platform(db, slot, item, platform, now, enabled, timezone_name="Asia/Sh
 
 
 def advance_slot(db, slot, config, now):
-    from services.factory_platform_policy import effective_automation_enabled
+    from services.factory_platform_policy import automation_enabled
     if slot.run_id:
         run = db.get(FactoryRun, slot.run_id)
         if run and (run.settings_snapshot or {}).get('distribution_policy') != CURRENT_DISTRIBUTION_POLICY:
@@ -395,7 +468,7 @@ def advance_slot(db, slot, config, now):
         # An explicit memory pause stops new publishing even if other clips are ready.
         paused = db.query(FactoryRun).filter_by(status="paused_memory").first() is not None
         results = {p: step_platform(db, slot, item, p, now,
-                    (config.publish_enabled and not paused if effective_automation_enabled(p) else config.manual_delivery_enabled)
+                    (config.publish_enabled and not paused if automation_enabled(p) else config.manual_delivery_enabled)
                     and p in config.platforms, config.timezone) for p in slot.platforms}
         statuses = {r["status"] for r in results.values()}
         if statuses == {"submitted"}:
@@ -415,6 +488,14 @@ def advance_slot(db, slot, config, now):
 
 
 def tick(db, config, now=None):
+    if config.publish_enabled and 'kuaishou' in config.platforms:
+        from services.factory_transport_health import refresh_kuaishou_transport, restore_saved_session
+        try:
+            restore_saved_session(refresh_kuaishou_transport())
+        except Exception:
+            # One platform's health check must never stop Douyin's release clock.
+            import logging
+            logging.getLogger(__name__).warning('Kuaishou connectivity check failed; continuing other scheduled releases')
     now = now or datetime.now(ZoneInfo(config.timezone))
     if config.manual_delivery_enabled or config.publish_enabled:
         plan_slots(db, config, now)

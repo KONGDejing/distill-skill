@@ -23,7 +23,7 @@ RHYTHM = [
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "收到用户提供的数据后", "owner": "小数", "task": "整理本人提供的官方统计，保留日期、周期与缺失字段；不自动浏览账号后台"},
-    {"time": "3个抖音时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；抖音每天3条、三位剪辑师各1条，全部6条完整保存，小红书与快手仅供本人手动上传；按发布开关与通道状态执行，受阻时交付素材包，小红书由用户本人上传；评论由本人回复"},
+    {"time": "抖音3个＋快手2个时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；抖音每天3条、三位剪辑师各1条，全部6条完整保存，快手每日自动2条，选择未上抖音的内容；小红书由本人手动上传；按发布开关与通道状态执行，受阻时交付素材包，小红书由用户本人上传；评论由本人回复"},
     {"time": "每周三 / 周六 20:00（长视频规划）", "owner": "小麦 / 小影", "task": "B站保留每周2条6–10分钟专题规划；长视频制作流程就绪后也只交付人工发布包"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -43,14 +43,14 @@ UPGRADES["producer3"] = "为自己负责的视频打磨开场、转折和结尾�
 
 def _delivery_policy():
     return {"distribution_policy": POLICY, "shorts_per_day": DAILY_TARGET,
-        "editor_quotas": dict(DAILY_EDITOR_QUOTAS), "max_short_submissions_per_day": 3,
+        "editor_quotas": dict(DAILY_EDITOR_QUOTAS), "max_short_submissions_per_day": 5,
         "short_seconds": 150, "delivery_mode": "mixed",
-        "platform_delivery_modes": {"douyin": "automated", "kuaishou": "manual", "xiaohongshu": "manual", "bilibili": "manual"},
+        "platform_delivery_modes": {"douyin": "automated", "kuaishou": "automated", "xiaohongshu": "manual", "bilibili": "manual"},
         "single_platform_per_original": False, "max_per_platform_per_day": 3, "platform_daily_limit": 3,
         "delivery_format": "one-zip-per-original", "daily_zip_target": DAILY_TARGET,
-        "manual_platforms": ["xiaohongshu", "kuaishou"],
+        "manual_platforms": ["xiaohongshu"], "kuaishou_daily_limit": 2,
         "douyin_per_editor": 1, "manual_originals_per_day": DAILY_TARGET,
-        "account_automation_enabled": True, "automated_platforms": ["douyin"],
+        "account_automation_enabled": True, "automated_platforms": ["douyin", "kuaishou"],
         "analytics_mode": "manual_or_historical"}
 
 
@@ -155,7 +155,7 @@ def sync_work_orders(db, state, analytics, now):
         ("researcher3", "05:15", "给小影3交接海外人物及公司事件素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
-        ("publisher", "22:15", "交付6套完整人工发布包", "抖音每天3条、三位剪辑师各1条；全部6条保留完整包；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，抖音由服务自动上传并声明AI生成；其他平台由用户本人上传，不以素材包冒充已发布", delivered, target),
+        ("publisher", "22:15", "交付6套完整人工发布包", "抖音每天3条、三位剪辑师各1条；全部6条保留完整包；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，抖音每日3条、快手每日2条由服务自动上传并声明AI生成；小红书由用户本人上传，不以素材包冒充已发布", delivered, target),
         ("analyst", "22:25", "整理人工提供的经营数据", "只用用户提供的官方统计或留存历史数据，标明数据日期、周期和缺失；不自动读取账号，等待人工数据时不编造增长", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]

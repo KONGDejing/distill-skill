@@ -518,11 +518,11 @@
     "douyin_daily_total": 3,
     "douyin_per_editor": 1,
     "automatic_platforms": [
-      "douyin"
+      "douyin",
+      "kuaishou"
     ],
     "manual_platforms": [
-      "xiaohongshu",
-      "kuaishou"
+      "xiaohongshu"
     ],
     "save_every_original": true,
     "manual_cross_platform_allowed": true,
@@ -531,7 +531,18 @@
       "20:00",
       "22:00"
     ],
-    "publish_jitter_seconds": 900
+    "publish_jitter_seconds": 900,
+    "kuaishou_daily_total": 2,
+    "kuaishou_auto_policy": "kuaishou-two-exclusive-v1",
+    "archive_copy_platforms": [
+      "xiaohongshu",
+      "kuaishou"
+    ],
+    "kuaishou_publish_times": [
+      "19:00",
+      "21:00"
+    ],
+    "automatic_cross_platform_reuse": false
   },
   "notes": [
     "海外/国内指观察池所属产业生态，不是对个人国籍作认定。",
@@ -540,11 +551,12 @@
     "国内公司及人物新闻严格限于指定七家；其他国内公司负责人不纳入本观察池。",
     "同一家公司的内容按核心问题分工：论文由小影2，前沿科技成果与AI真实落地场景由小影，公司人物发生什么由小影3。",
     "三个剪辑师分别固定内容方向和叙事风格，各自独立口播与对应镜头。",
-    "每日6条全部保存中文标题MP4及完整发布包，小红书、快手均由用户按需人工上传。",
+    "每日6条全部保存中文标题MP4及完整发布包，小红书由用户按需人工上传；快手每日自动上传2条，完整文案保留。",
     "抖音每天最多自动发布3条，每位剪辑师各选1条；保留AI声明、官方验证与防重复提交检查。",
-    "最新分发规则替换旧的单平台独占、各平台每天2条以及快手自动上传规则；历史回执保留。"
+    "最新规则：抖音每日3条，三位剪辑师各1条；快手每日2条，从当天未上抖音的作品中按内容选择，两个平台不自动重复上传。历史回执保留。"
   ],
-  "version": 2,
+  "version": 3,
   "approved_on": "2026-11-16",
-  "distribution_policy": "douyin-three-tracks-v2"
+  "distribution_policy": "douyin-three-tracks-v2",
+  "kuaishou_auto_policy": "kuaishou-two-exclusive-v1"
 }

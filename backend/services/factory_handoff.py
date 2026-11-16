@@ -58,7 +58,7 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
         raise ValueError("平台定稿必须包含 platform、title、caption 和 tags，不能凭空补写发布事实")
     if distribution is not None and not isinstance(distribution, dict):
         raise ValueError("发行分配必须是包含唯一 platform 的对象")
-    route = {key: deepcopy(distribution[key]) for key in ("platform", "day", "timezone", "reason", "policy", "manual_platforms", "douyin_selected", "editor_id")
+    route = {key: deepcopy(distribution[key]) for key in ("platform", "day", "timezone", "reason", "policy", "manual_platforms", "douyin_selected", "kuaishou_selected", "kuaishou_auto_policy", "editor_id")
              if distribution and distribution.get(key) is not None}
     from services.factory_editorial_policy import POLICY
     new_policy = route.get('policy') == POLICY

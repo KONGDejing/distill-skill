@@ -33,11 +33,13 @@ def iso(value):
 
 def config_dict(config):
     from services.factory_platform_policy import automation_state
+    from services.factory_kuaishou_policy import POLICY as K_POLICY, PUBLISH_TIMES
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
             "editor_quotas": editor_quotas(min(config.daily_target, 6)),
             "distribution_policy": POLICY, "platform_daily_limit": 3,
-            "douyin_per_editor": 1, "manual_platforms": ["xiaohongshu", "kuaishou"], "editorial_policy_version": 2,
+            "douyin_per_editor": 1, "manual_platforms": ["xiaohongshu"], "editorial_policy_version": 2,
+            "kuaishou_auto_policy": K_POLICY, "kuaishou_daily_limit": 2, "kuaishou_publish_times": list(PUBLISH_TIMES),
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
 
@@ -109,6 +111,8 @@ def run_detail(db, run):
             state = automation_state(package['platform'])
             if package['platform'] == 'douyin' and not selected:
                 state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '历史或未入选的抖音文案，仅保留归档，不创建自动上传任务。'}
+            if package['platform'] == 'kuaishou' and not route.get('kuaishou_selected'):
+                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '未入选快手当天2条自动发布作品；保留完整素材供本人按需选择。'}
             packages.append({**package, 'download_url': f"/api/factory/items/{item.id}/packages/{package['platform']}",
                 'automation': state, 'publishing_enabled': bool(publishing_enabled and state['enabled']
                     and effective_automation_enabled(package['platform'])), 'copy_url': storage_url(package.get('copy_path'))})
@@ -1251,6 +1255,7 @@ def _finish_report(run_id):
         production = {"completed": completed, "target": run.target_count, "packages": packages,
                       "original_archives": sum(bool(i.media.get('archive_path')) for i in items),
                       "douyin_selected": sum((i.brief or {}).get('distribution', {}).get('douyin_selected') is True for i in items),
+                      "kuaishou_selected": sum((i.brief or {}).get('distribution', {}).get('kuaishou_selected') is True for i in items),
                       "published": 0, "submitted": sum(p.get("status") == "submitted" for i in items for p in i.packages or []),
                       "failed": sum(item.status == "failed" for item in items)}
         stats = {"production": production, "llm_calls": run.llm_calls,

@@ -504,7 +504,7 @@ def test_new_operations_require_the_assigned_platform(distribution_publishing):
     env = distribution_publishing
     with env.sessions() as db:
         for action in ('prepare', 'publish'):
-            with pytest.raises(ValueError, match='手动'):
+            with pytest.raises(ValueError, match='未入选'):
                 factory_publishing.begin_publication(db, env.item_id, action, 'kuaishou')
         assert db.query(FactoryPublication).count() == 0
     env.creator_submit.assert_not_called()
@@ -545,7 +545,7 @@ def test_automatic_platform_uses_final_export_and_ai_disclosure(distribution_pub
         cover.write_bytes(b'approved lettered cover')
         item.packages = [{**p, 'video_path': str(final), 'cover_path': str(cover)} if p['platform'] == destination else p for p in item.packages]
         db.commit()
-        for platform in ('xiaohongshu', 'kuaishou', 'bilibili'):
+        for platform in ('xiaohongshu', 'bilibili'):
             with pytest.raises(AutomationDisabled):
                 factory_publishing.begin_publication(db, item.id, 'prepare', platform)
         item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': destination}}
@@ -636,7 +636,7 @@ def test_legacy_multiplatform_item_cannot_create_another_operation(distribution_
         db.add(FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish', status='submitted'))
         db.commit()
         assert factory_publishing.begin_publication(db, item.id, 'publish', 'douyin').id == first.id
-        with pytest.raises(ValueError, match='手动'):
+        with pytest.raises(ValueError, match='旧发行规则'):
             factory_publishing.begin_publication(db, item.id, 'prepare', 'kuaishou')
     env.creator_submit.assert_not_called()
 
@@ -652,3 +652,26 @@ def test_new_route_wrong_day_never_creates_a_job(distribution_publishing):
                 factory_publishing.begin_publication(db, item.id, action, 'douyin')
         assert db.query(FactoryPublication).count() == 0
     env.creator_submit.assert_not_called()
+
+
+def test_kuaishou_selected_original_uses_final_export_and_ai_disclosure(distribution_publishing,tmp_path):
+    from services.factory_kuaishou_policy import POLICY as K_POLICY
+    env=distribution_publishing
+    with env.sessions() as db:
+        run=db.get(FactoryRun,env.run_id);run.settings_snapshot={**run.settings_snapshot,'kuaishou_auto_policy':K_POLICY}
+        item=db.get(FactoryItem,env.item_id)
+        route={**item.brief['distribution'],'platform':'kuaishou','douyin_selected':False,
+               'kuaishou_selected':True,'kuaishou_auto_policy':K_POLICY}
+        item.brief={**item.brief,'distribution':route}
+        final,cover=tmp_path/'final-kuaishou.mp4',tmp_path/'cover-kuaishou.png'
+        final.write_bytes(b'approved final video');cover.write_bytes(b'approved first frame title')
+        item.packages=[{**p,'video_path':str(final),'cover_path':str(cover)} if p['platform']=='kuaishou' else p for p in item.packages]
+        db.commit()
+        job=factory_publishing.begin_publication(db,item.id,'prepare','kuaishou')
+        assert job.status=='queued'
+        args=env.creator_submit.call_args.args
+        assert args[:2]==('kuaishou','prepare')
+        payload=args[2]
+        assert payload['video_path']==str(final) and payload['cover_path']==str(cover)
+        assert payload['ai_generated'] is True and '内容由AI生成' in payload['caption']
+        assert payload['requested_publication_city']=='北京'

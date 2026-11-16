@@ -81,9 +81,9 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
     policy = db.get(FactoryGrowthPlan, 1).policy
-    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 3
-    assert policy["automated_platforms"] == ["douyin"]
-    assert policy["platform_delivery_modes"]["kuaishou"] == "manual"
+    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 5
+    assert policy["automated_platforms"] == ["douyin", "kuaishou"]
+    assert policy["platform_delivery_modes"]["kuaishou"] == "automated"
     assert policy["editor_quotas"] == {"producer": 2, "producer2": 2, "producer3": 2}
     assert all(order.evidence["required"] == 2 for order in daily if order.owner in policy["editor_quotas"])
 
@@ -96,8 +96,8 @@ def test_existing_growth_plan_replaces_old_distribution_without_losing_baselines
     db.commit()
     updated = manager.initialize(db)
     assert updated.baselines == baseline
-    assert updated.policy["automated_platforms"] == ["douyin"]
-    assert updated.policy["max_short_submissions_per_day"] == 3
+    assert updated.policy["automated_platforms"] == ["douyin", "kuaishou"]
+    assert updated.policy["max_short_submissions_per_day"] == 5
     assert updated.policy["single_platform_per_original"] is False
 
 

@@ -49,7 +49,7 @@ def test_saved_policy_covers_three_distinct_genres_and_exact_owner_watch_scope()
     assert '论文PPT' in editor_profile('producer2')['visual']
     assert '新闻' in editor_profile('producer3')['direction']
     p['people'].clear();assert len(editorial_policy()['people'])==50
-    assert automation_enabled('douyin') and not automation_enabled('kuaishou')
+    assert automation_enabled('douyin') and automation_enabled('kuaishou')
     assert not automation_enabled('xiaohongshu')
 
 
@@ -75,8 +75,8 @@ def test_all_six_saved_for_both_manual_platforms_but_only_one_per_editor_nominat
 
 def test_old_rules_and_manual_platforms_cannot_create_new_account_commands(db):
     r,items=batch(db);assign_distribution(db,r.id,DAY)
-    for platform in ['kuaishou','xiaohongshu']:
-        with pytest.raises(ValueError,match='手动'):guard_publication(db,items[0],platform,'prepare',now=NOW)
+    with pytest.raises(ValueError,match='手动'):guard_publication(db,items[0],'xiaohongshu','prepare',now=NOW)
+    with pytest.raises(ValueError,match='未入选'):guard_publication(db,items[0],'kuaishou','prepare',now=NOW)
     with pytest.raises(ValueError,match='未入选'):guard_publication(db,items[3],'douyin','prepare',now=NOW)
     r.settings_snapshot={'distribution_policy':'single-platform-v1'}
     with pytest.raises(ValueError,match='旧发行规则'):guard_publication(db,items[0],'douyin','prepare',now=NOW)
@@ -142,7 +142,7 @@ def test_daily_production_uses_six_even_though_calendar_has_three_slots(db, monk
         session.add(r);session.commit();return r
     start=Mock(side_effect=create);monkeypatch.setattr(factory_service,'start_run',start)
     scheduler.plan_slots(db,cfg,now);scheduler.plan_slots(db,cfg,now)
-    assert db.query(FactoryRelease).count()==6  # Three today and three tomorrow.
+    assert db.query(FactoryRelease).count()==10  # Douyin 3 + Kuaishou 2, today and tomorrow.
     scheduler.plan_production(db,cfg,now);scheduler.plan_production(db,cfg,now)
     start.assert_called_once();assert start.call_args.kwargs['target_count']==6
     assert len(start.call_args.kwargs['release_slot_ids'])==3
