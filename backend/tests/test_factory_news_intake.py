@@ -88,3 +88,26 @@ def test_google_keeps_multiple_research_and_product_leads(monkeypatch):
     assert warning is None and len(rows) == 6
     assert sum('deepmind.google' in row['url'] for row in rows) == 3
     assert sum('blog.google' in row['url'] for row in rows) == 3
+
+
+def test_news_taxonomy_does_not_displace_actual_company_events():
+    parser = intake.ArticleLinks('https://www.anthropic.com/news')
+    parser.feed('<a href="/news/announcements">Announcements</a>'
+                '<a href="/news/partnerships">Partnerships</a>'
+                '<a href="/news/roadshow-launch">Anthropic launches roadshow for proposed initial public offering</a>')
+    assert [r['url'] for r in parser.rows] == ['https://www.anthropic.com/news/roadshow-launch']
+
+
+def test_undated_major_headline_is_checked_first_but_never_accepted_without_body(monkeypatch):
+    monkeypatch.setattr(intake, 'COMPANY_SOURCES', [('one', 'index', 'https://example.org')])
+    rows = [{'url': f'https://example.org/{i}', 'title': title, 'kind': 'news'}
+            for i, title in enumerate(['Company update', 'Company IPO roadshow', 'Real dated news'])]
+    monkeypatch.setattr(intake, '_candidates', lambda entry, now: ('one', rows, None))
+    checked = []
+    def article(row, now):
+        checked.append(row['title'])
+        return (None, 'Missing original body') if 'IPO' in row['title'] else ({**row, 'text': 'Actual original report'}, None)
+    monkeypatch.setattr(intake, '_article', article)
+    result = intake.collect_company_news(limit=1)
+    assert checked[0] == 'Company IPO roadshow'
+    assert len(result['sources']) == 1 and 'IPO' not in result['sources'][0]['title']

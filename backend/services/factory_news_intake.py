@@ -26,6 +26,7 @@ COMPANY_SOURCES = (
 )
 MAX_LEADS_PER_COMPANY = 6
 MAX_ARTICLE_CHECKS = 42
+EVENT_LEAD = re.compile(r'\bIPO\b|initial public offering|roadshow|resign|acquisition|lawsuit|上市|路演|辞职|收购|诉讼', re.I)
 
 
 class ArticleLinks(HTMLParser):
@@ -48,6 +49,10 @@ class ArticleLinks(HTMLParser):
             if len(title) < 10 and self.label:
                 title = self.label
             address = urlsplit(url)
+            if (address.hostname in {'anthropic.com', 'www.anthropic.com'}
+                    and address.path.rstrip('/') in {'/news/announcements', '/news/partnerships', '/news/safeguards'}):
+                self.href = None
+                return
             if (address.hostname == urlsplit(self.base).hostname and url.rstrip('/') != self.base.rstrip('/')
                     and any(term in address.path for term in ('news/', 'newsroom/', 'press-release', '/press/', '/article/', '/blog/'))
                     and len(title) >= 10 and url not in {r['url'] for r in self.rows}):
@@ -141,7 +146,10 @@ def collect_company_news(limit=18):
             candidates.extend({**record, 'watch_company': company} for record in records)
     # At most one first choice per company before second choices. Major events
     # remain high priority without allowing one company to occupy the whole pool.
-    candidates.sort(key=lambda row: (is_major_event(row), row.get('published_at') or ''), reverse=True)
+    # An undated headline can prioritize retrieval, never establish an event.
+    # _article still requires the original body and a recent publication date.
+    candidates.sort(key=lambda row: (is_major_event(row) or bool(EVENT_LEAD.search(row.get('title', ''))),
+                                     row.get('published_at') or ''), reverse=True)
     seen = set(); first = []; rest = []
     for row in candidates:
         (rest if row['watch_company'] in seen else first).append(row); seen.add(row['watch_company'])
