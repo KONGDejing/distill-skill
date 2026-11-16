@@ -14,6 +14,8 @@ PROJECTS = {"sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io",
 
 
 def is_paper_story(brief, sources):
+    if brief.get('editor_track') in {'technology_scenes', 'people_news'}:
+        return False
     return ("论文" in str(brief.get("category", "")) or any(
         s.get("kind") == "paper" or urlsplit(s.get("url", "")).hostname == "arxiv.org"
         or urlsplit(s.get("url", "")).hostname in PROJECTS for s in sources))

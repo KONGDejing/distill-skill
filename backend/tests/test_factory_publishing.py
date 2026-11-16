@@ -484,13 +484,15 @@ def distribution_publishing(creator_publishing, monkeypatch):
         item = db.get(FactoryItem, env.item_id)
         item.brief = {**item.brief, 'distribution': {
             'platform': 'douyin', 'day': factory_distribution.local_day(), 'reason': 'test',
-            'policy': factory_distribution.CURRENT_DISTRIBUTION_POLICY}}
+            'policy': factory_distribution.CURRENT_DISTRIBUTION_POLICY, 'editor_id': 'producer',
+            'douyin_selected': True, 'manual_platforms': ['xiaohongshu','kuaishou']}}
         db.commit()
     return env
 
 
 def _other_reserved(env, db, index, *, action='publish', status='submitted', result=None):
-    item = FactoryItem(run_id=env.run_id, position=index, status='completed')
+    item = FactoryItem(run_id=env.run_id, position=index, status='completed',
+                       brief={'editor_id': ('producer2','producer3','producer')[(index-1)%3]})
     db.add(item); db.flush()
     entry = FactoryPublication(item_id=item.id, platform='douyin', action=action,
                                status=status, result=result or {})
@@ -502,7 +504,7 @@ def test_new_operations_require_the_assigned_platform(distribution_publishing):
     env = distribution_publishing
     with env.sessions() as db:
         for action in ('prepare', 'publish'):
-            with pytest.raises(ValueError, match='其他平台'):
+            with pytest.raises(ValueError, match='手动'):
                 factory_publishing.begin_publication(db, env.item_id, action, 'kuaishou')
         assert db.query(FactoryPublication).count() == 0
     env.creator_submit.assert_not_called()
@@ -531,7 +533,7 @@ def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(dist
     forbidden.assert_not_called()
 
 
-@pytest.mark.parametrize('destination', ['douyin', 'kuaishou'])
+@pytest.mark.parametrize('destination', ['douyin'])
 def test_automatic_platform_uses_final_export_and_ai_disclosure(distribution_publishing, monkeypatch, tmp_path, destination):
     from services.factory_platform_policy import AutomationDisabled, require_automation
     env = distribution_publishing
@@ -543,7 +545,7 @@ def test_automatic_platform_uses_final_export_and_ai_disclosure(distribution_pub
         cover.write_bytes(b'approved lettered cover')
         item.packages = [{**p, 'video_path': str(final), 'cover_path': str(cover)} if p['platform'] == destination else p for p in item.packages]
         db.commit()
-        for platform in ('xiaohongshu', 'bilibili'):
+        for platform in ('xiaohongshu', 'kuaishou', 'bilibili'):
             with pytest.raises(AutomationDisabled):
                 factory_publishing.begin_publication(db, item.id, 'prepare', platform)
         item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': destination}}
@@ -569,11 +571,12 @@ def test_douyin_missing_final_export_does_not_silently_upload_source_montage(dis
 
 
 @pytest.mark.parametrize('action', ['prepare', 'publish'])
-def test_two_publish_reservations_block_new_upload_and_publish(distribution_publishing, action):
+def test_three_publish_reservations_block_new_upload_and_publish(distribution_publishing, action):
     env = distribution_publishing
     with env.sessions() as db:
         _other_reserved(env, db, 1)
         _other_reserved(env, db, 2, status='failed', result={'submission_uncertain': True})
+        _other_reserved(env, db, 3)
         if action == 'publish':
             db.add(FactoryPublication(item_id=env.item_id, platform='douyin', action='prepare', status='prepared'))
             db.commit()
@@ -588,6 +591,7 @@ def test_prepare_also_has_bounded_daily_admission(distribution_publishing):
     with env.sessions() as db:
         _other_reserved(env, db, 1, action='prepare', status='prepared')
         _other_reserved(env, db, 2, action='prepare', status='prepared')
+        _other_reserved(env, db, 3, action='prepare', status='prepared')
         with pytest.raises(ValueError, match='当天已预留或提交'):
             factory_publishing.begin_publication(db, env.item_id, 'prepare', 'douyin')
     env.creator_submit.assert_not_called()
@@ -632,7 +636,7 @@ def test_legacy_multiplatform_item_cannot_create_another_operation(distribution_
         db.add(FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish', status='submitted'))
         db.commit()
         assert factory_publishing.begin_publication(db, item.id, 'publish', 'douyin').id == first.id
-        with pytest.raises(ValueError, match='旧作品已有多平台'):
+        with pytest.raises(ValueError, match='手动'):
             factory_publishing.begin_publication(db, item.id, 'prepare', 'kuaishou')
     env.creator_submit.assert_not_called()
 

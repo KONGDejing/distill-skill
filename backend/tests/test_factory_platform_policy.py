@@ -20,13 +20,13 @@ from services import xiaohongshu_connector as connector
 from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
 
 
-def test_douyin_and_kuaishou_upload_are_authorized_and_analytics_stays_manual():
+def test_only_douyin_upload_is_authorized_and_all_account_analytics_stays_manual():
     from services.factory_platform_policy import analytics_enabled
     assert automation_enabled(" DOUYIN ")
     assert automation_state("douyin")["mode"] == "automated"
     require_automation("douyin")
-    require_automation("kuaishou")
-    assert automation_enabled(" KUAISHOU ")
+    with pytest.raises(AutomationDisabled): require_automation("kuaishou")
+    assert not automation_enabled(" KUAISHOU ")
     assert "AI生成" in automation_state("douyin")["reason"]
     assert not any(analytics_enabled(p) for p in ["douyin", "kuaishou", "xiaohongshu", "bilibili"])
 
@@ -36,7 +36,7 @@ def test_failed_beijing_transport_falls_back_without_revoking_owner_scope(tmp_pa
     path = tmp_path / 'transport.json'
     path.write_text(json.dumps({'kuaishou': {'ready': False, 'reason': 'Beijing TLS unavailable', 'password': 'fixture-never-expose'}}))
     monkeypatch.setattr(policy, 'TRANSPORT_STATE', path)
-    assert policy.automation_enabled('kuaishou')
+    assert not policy.automation_enabled('kuaishou')
     assert not policy.effective_automation_enabled('kuaishou')
     assert policy.effective_automation_enabled('douyin')
     assert 'password' not in policy.publication_transport_state('kuaishou')
@@ -48,7 +48,7 @@ def test_policy_cannot_be_enabled_by_environment_or_cached_login(monkeypatch, pl
     assert not automation_enabled(platform)
     assert not automation_enabled(" " + platform.upper() + " ")
     assert automation_state(platform)["mode"] == "manual"
-    with pytest.raises(AutomationDisabled, match="本人手动"):
+    with pytest.raises(AutomationDisabled, match="本人按需手动"):
         require_automation(platform)
     assert issubclass(AutomationDisabled, ValueError)
 
@@ -119,7 +119,7 @@ def test_settings_enable_only_douyin_without_enabling_other_accounts(sessions):
         result = update_settings(SettingsUpdate(publish_enabled=True, manual_delivery_enabled=True), db)
         assert result['publish_enabled'] and result['manual_delivery_enabled']
         assert result['platform_automation']['douyin']['enabled']
-        assert result['platform_automation']['kuaishou']['enabled']
+        assert not result['platform_automation']['kuaishou']['enabled']
         assert not result['auto_publish_xiaohongshu']
         assert all(not result['platform_automation'][p]['enabled'] for p in ['xiaohongshu'])
 

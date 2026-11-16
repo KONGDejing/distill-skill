@@ -25,17 +25,17 @@ def db():
 
 def briefs():
     return [{"title": f"Topic {index}", "category": category, "source_ids": []}
-            for index, category in enumerate(["工具指南", "论文讲解", "科技展会", "概念科普", "论文讲解", "硬件热点"])]
+            for index, category in enumerate(["科技成果", "论文讲解", "人物新闻", "智能硬件", "论文讲解", "公司争议"])]
 
 
 def test_persisted_defaults_are_six_and_three_editors_have_two_each(db):
     config, run = FactoryConfig(), FactoryRun()
     db.add_all([config, run]); db.commit()
     assert config.daily_target == run.target_count == 6
-    assert config.publish_times == list(DEFAULT_PUBLISH_TIMES) == ["06:00", "08:00", "10:30", "17:00", "20:00", "22:00"]
+    assert config.publish_times == list(DEFAULT_PUBLISH_TIMES) == ["17:00", "20:00", "22:00"]
     assert config.publish_jitter_seconds == 900
     assert config.platforms == ["douyin", "xiaohongshu", "kuaishou"]
-    assert len(config.publish_times) * len(config.platforms) == 18
+    assert len(config.publish_times) * len(config.platforms) == 9
     assert all(AGENT_MAP[owner]["daily_quota"] == 2 for owner in DAILY_EDITOR_QUOTAS)
 
 

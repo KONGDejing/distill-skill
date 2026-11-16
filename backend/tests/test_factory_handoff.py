@@ -21,7 +21,7 @@ def test_missing_extras_produce_complete_copyable_handoff_without_new_facts():
     content, variant = inputs()
     before = deepcopy((content, variant))
     handoff = build_handoff(content, variant)
-    assert handoff["version"] == HANDOFF_VERSION == 4
+    assert handoff["version"] == HANDOFF_VERSION == 5
     assert handoff["title"] == variant["title"] and handoff["caption"] == variant["caption"]
     assert handoff["tags"] == ["AI论文", "研究条件"]
     assert handoff["cover_text"] == variant["title"]
@@ -39,7 +39,7 @@ def test_missing_extras_produce_complete_copyable_handoff_without_new_facts():
     assert handoff["sources"] == content["sources"]
     assert content["sources"][0]["url"] in files["资料来源.txt"]
     assert "2026-11-10" in files["资料来源.txt"]
-    assert "先确认" in files["手动发布说明.txt"]
+    assert "全部6条" in files["手动发布说明.txt"]
     assert (content, variant) == before
 
 
@@ -63,10 +63,10 @@ def test_reviewed_overrides_and_partial_replies_are_preserved_and_completed():
     assert handoff["reply_templates"][0] == variant["manual_handoff"]["reply_templates"][0]
     assert len(handoff["reply_templates"]) >= 3
     text = handoff_files(handoff)["手动发布说明.txt"]
-    assert "2026-11-12" in text and "本包仅供抖音" in text
+    assert "2026-11-12" in text and "本包提供抖音专用文案" in text
     assert "历史提交结果未明" in text and "确认之前不要再次上传" in text
-    assert "不跨平台重复发布" in text and "不代表已提交" in text
-    assert "最多2条原创" in text
+    assert "本人按需手动上传" in text and "不代表已提交" in text
+    assert "抖音每天最多3条" in text
 
 
 def test_absent_approved_hook_and_follow_prompt_use_generic_nonfactual_prompts():
@@ -89,5 +89,5 @@ def test_missing_approved_copy_or_sources_and_cross_platform_route_are_not_inven
             build_handoff(content, incomplete)
     with pytest.raises(ValueError, match="真实来源"):
         build_handoff({**content, "sources": []}, variant)
-    with pytest.raises(ValueError, match="唯一分配平台"):
+    with pytest.raises(ValueError, match="历史发布包跨平台"):
         build_handoff(content, variant, {"platform": "xiaohongshu", "day": "2026-11-12"})

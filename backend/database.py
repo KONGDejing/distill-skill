@@ -43,13 +43,13 @@ def _ensure_factory_columns():
         if "auto_publish_xiaohongshu" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN auto_publish_xiaohongshu BOOLEAN NOT NULL DEFAULT 0")
         if "visual_style" not in existing:
-            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN visual_style VARCHAR(30) NOT NULL DEFAULT 'cards'")
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN visual_style VARCHAR(30) NOT NULL DEFAULT 'tech_montage'")
         if "publish_enabled" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_enabled BOOLEAN NOT NULL DEFAULT 0")
         if "manual_delivery_enabled" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN manual_delivery_enabled BOOLEAN NOT NULL DEFAULT 1")
         if "publish_times" not in existing:
-            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_times JSON NOT NULL DEFAULT '[\"06:00\",\"07:00\",\"08:00\",\"09:10\",\"10:30\",\"17:00\",\"19:00\",\"20:00\",\"21:00\",\"22:00\"]'")
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_times JSON NOT NULL DEFAULT '[\"17:00\",\"20:00\",\"22:00\"]'")
         if "publish_start_at" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_start_at DATETIME")
         if "publish_jitter_seconds" not in existing:

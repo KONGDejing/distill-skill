@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 
-HANDOFF_VERSION = 4
+HANDOFF_VERSION = 5
 _PLATFORM_NAMES = {"douyin": "抖音", "xiaohongshu": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩"}
 _AI_DISCLOSURE = "AI辅助整理文案、配音和剪辑；参考来源见正文及随附资料"
 _REPLY_TEMPLATES = (
@@ -58,10 +58,16 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
         raise ValueError("平台定稿必须包含 platform、title、caption 和 tags，不能凭空补写发布事实")
     if distribution is not None and not isinstance(distribution, dict):
         raise ValueError("发行分配必须是包含唯一 platform 的对象")
-    route = {key: deepcopy(distribution[key]) for key in ("platform", "day", "timezone", "reason", "policy")
+    route = {key: deepcopy(distribution[key]) for key in ("platform", "day", "timezone", "reason", "policy", "manual_platforms", "douyin_selected", "editor_id")
              if distribution and distribution.get(key) is not None}
-    if route and route.get("platform") != platform:
-        raise ValueError("发布包平台与唯一分配平台不一致，不能跨平台重复发布")
+    from services.factory_editorial_policy import POLICY
+    new_policy = route.get('policy') == POLICY
+    if new_policy:
+        allowed = set(route.get('manual_platforms', [])) | {'douyin'}  # A copy is not publication authorization.
+        if platform not in allowed:
+            raise ValueError('平台不在本条人工交付或抖音预选范围内')
+    elif route and route.get('platform') != platform:
+        raise ValueError('历史发布包跨平台分配不一致')
     if publication_warning is not None and not isinstance(publication_warning, str):
         raise ValueError("历史发布提醒必须是可供本人阅读的文字")
 
@@ -92,15 +98,14 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
 
     name = _PLATFORM_NAMES.get(platform, platform)
     steps = [
-        (f"核对唯一分配平台为{name}，计划日期为{route['day']}；按该日期安排人工上传。"
-         if route.get("day") else f"先确认本条只分配给{name}以及具体发布日期，再安排人工上传。"),
-        "当天每个平台最多2条原创；将历史已提交和结果未明的作品也计入核对，额度用完则改日安排。",
-        "如本条有历史提交、审核或结果未明，请本人先在平台确认是否已存在；确认之前不要再次上传，也不要改投其他平台。",
-        "本人使用官方应用或官方创作后台，上传本包完整MP4；封面已融入视频开头，钩子与关注提醒由工厂完成。只上传到唯一分配平台。",
-        "填写本包发布标题和完整正文即可；正文已合并话题及AI制作说明。",
-        "按平台要求如实填写AI制作声明，检查正文、画面、声音及可见范围，由本人确认提交。",
-        "提交后由本人记录作品链接、作品ID、时间及平台实际状态；package_ready只表示素材包就绪，不代表已发布。",
-        "发布后可由账号本人使用置顶评论；仅在收到相应真实留言后，核对语境和来源再采用回复模板。",
+        f'使用本条完整MP4和{name}专用标题、正文，按需手动选用小红书或快手；两平台均不启用自动化。',
+        '全部6条原创均保存；每位剪辑师各1条预选抖音，抖音每天最多3条。查看工厂实际回执，避免对同一平台重复上传。',
+        '如本条有历史提交、审核或结果未明，请本人先在对应平台确认是否已存在；确认之前不要再次上传。',
+        '本人使用官方应用或创作后台上传完整MP4；大标题已放中上部，口播与关注提醒已写入成片。',
+        '填写本包发布标题和正文，正文已合并相关话题与真实AI制作说明。',
+        '按官方要求如实填写AI制作声明，并由本人核对后提交。',
+        '本人记录作品链接和实际发布状态；package_ready只表示素材齐全，不代表平台已接收。',
+        '互动模板仅用于本人置顶或回复收到的真实留言。',
     ]
     return {
         "version": HANDOFF_VERSION, "platform": platform, "title": title, "caption": caption, "tags": tags,
@@ -133,7 +138,7 @@ def handoff_files(handoff):
             sources.append("来源日期：" + str(source["published_at"]))
         if source.get("fetched_at"):
             sources.append("资料采集时间：" + str(source["fetched_at"]))
-    instructions = ["手动发布说明", f"本包仅供{name}人工发布，不跨平台重复发布。",
+    instructions = ["手动发布说明", f"本包提供{name}专用文案，完整成片由本人按需手动上传。",
                     "素材包就绪（package_ready）不代表已提交、已通过审核或已发布。"]
     if route.get("day"):
         instructions.append("计划日期：" + str(route["day"]))

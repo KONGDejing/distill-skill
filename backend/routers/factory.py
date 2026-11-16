@@ -11,6 +11,7 @@ from config import settings
 from agents.registry import AGENTS, PLATFORMS, DAILY_TARGET
 from models.factory import FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
 from services.factory_service import get_config, config_dict, run_dict, run_detail, start_run, queue_available, FACTORY_DIR, TERMINAL
+from services.factory_editorial_policy import editorial_policy
 from services.factory_resources import MemoryPressure, ensure_memory_available, memory_state
 
 router = APIRouter()
@@ -33,10 +34,10 @@ class SettingsUpdate(BaseModel):
     schedule_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     auto_publish_xiaohongshu: bool | None = None
     platforms: list[Literal["douyin", "xiaohongshu", "kuaishou"]] | None = Field(default=None, min_length=1, max_length=3)
-    visual_style: Literal["tech_montage", "cards"] | None = None
+    visual_style: Literal["tech_montage"] | None = None
     publish_enabled: bool | None = None
     manual_delivery_enabled: bool | None = None
-    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=DAILY_TARGET)
+    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=3)
 
     @field_validator("publish_times", "platforms")
     @classmethod
@@ -78,8 +79,8 @@ def overview(db: Session = Depends(get_db)):
                         transport=transport,
                         status="paused" if state["enabled"] and not publishing_enabled else state["mode"], login_status=state["mode"],
                         account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
-                        description=(("自动发布：每天最多2条，仅接收分配给本平台的作品，必须声明AI生成。" if state["enabled"]
-                                      else "人工发布：每天最多2条，仅接收分配给本平台的作品。") if platform["enabled"]
+                        description=(("抖音自动发布：每天3条、三位剪辑师各1条，必须声明AI生成。" if state["enabled"]
+                                      else "全部6条成片和文案均保留，由本人按需手动上传。") if platform["enabled"]
                                      else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases
     from services.factory_editorial import STRATEGY
@@ -89,9 +90,15 @@ def overview(db: Session = Depends(get_db)):
     from services.factory_llm import model_runtime
     return {"settings": config, "agents": employees, "runs": [run_dict(run) for run in runs],
             "analytics": analytics_overview(db), "operations": operations_overview(db),
-            "strategy": STRATEGY, "asset_library": library_summary(),
+            "strategy": STRATEGY, "editorial_policy": editorial_policy(), "asset_library": library_summary(),
             "releases": upcoming_releases(db, get_config(db)),
             "platforms": platforms, "runtime": {**model_runtime(), "queue_available": queue_available(), "memory": memory_state()}}
+
+
+@router.get('/editorial-policy', response_class=HTMLResponse)
+def saved_editorial_policy():
+    from services.factory_policy_document import render_policy_document
+    return HTMLResponse(render_policy_document())
 
 
 @router.patch("/settings")
@@ -101,10 +108,8 @@ def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     if updates.get("auto_publish_xiaohongshu"):
         raise HTTPException(409, "小红书由本人手动发布，不能启用自动上传或自动发布")
     merged = {**config_dict(config), **updates}
-    if merged["daily_target"] > 2 * len(merged["platforms"]):
-        raise HTTPException(422, "每个平台每天最多2条，原创目标不能超过启用平台的总分发名额")
-    if merged["manual_delivery_enabled"] and len(merged["publish_times"]) != merged["daily_target"]:
-        raise HTTPException(422, "每个交付时间对应一条原创视频，时间数量应等于每日原创目标")
+    if len(merged['publish_times']) != 3:
+        raise HTTPException(422, '抖音每天三个时段，分别对应三位剪辑师；每日6条生产目标独立于发布时段数量')
     if merged["manual_delivery_enabled"]:
         if not config.manual_delivery_enabled:
             config.publish_start_at = datetime.utcnow()
@@ -235,12 +240,24 @@ def download_package(item_id: str, platform: str, db: Session = Depends(get_db))
     return FileResponse(path, media_type="application/zip", filename=safe_filename(f"{name}—{title}", ".zip"))
 
 
+@router.get('/items/{item_id}/archive')
+def download_original_archive(item_id: str, db: Session = Depends(get_db)):
+    item = db.get(FactoryItem, item_id)
+    if not item or not item.media.get('archive_path'):
+        raise HTTPException(404, '完整交付包尚未就绪')
+    path = Path(item.media['archive_path']).resolve()
+    if not path.is_relative_to(FACTORY_DIR.resolve()) or not path.is_file():
+        raise HTTPException(404, '交付包不存在')
+    from services.factory_filenames import safe_filename
+    return FileResponse(path, media_type='application/zip', filename=safe_filename(item.content['title'] + '—完整交付包', '.zip'))
+
+
 @router.get("/items/{item_id}/video")
 def download_video(item_id: str, db: Session = Depends(get_db)):
     item = db.get(FactoryItem, item_id)
     if not item or not item.media.get("video_path") or not item.content.get("title"):
         raise HTTPException(404, "成片尚未就绪")
-    path = Path(next((p["video_path"] for p in item.packages or [] if p.get("video_path")), item.media["video_path"])).resolve()
+    path = Path(item.media.get("manual_master_path") or next((p["video_path"] for p in item.packages or [] if p.get("video_path")), item.media["video_path"])).resolve()
     if not path.is_relative_to(FACTORY_DIR.resolve()) or not path.is_file():
         raise HTTPException(404, "成片文件不存在")
     from services.factory_filenames import safe_filename

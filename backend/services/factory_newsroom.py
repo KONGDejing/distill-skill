@@ -5,51 +5,21 @@ from urllib.parse import urljoin, urlsplit
 
 
 def collect_newsroom_sources():
-    """Open real event articles, never promote a press index into event evidence."""
-    from services.factory_research import _fetch_url, _load_source, _load_feed, _utcnow, is_major_event
-
-    class Links(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.urls = []
-
-        def handle_starttag(self, tag, attrs):
-            if tag != "a":
-                return
-            href = dict(attrs).get("href", "")
-            url = urljoin("https://www.ces.tech/press-releases/", href)
-            address = urlsplit(url)
-            if address.hostname == "www.ces.tech" and address.path.startswith("/press-releases/") and address.path.strip("/").count("/") == 1 and url not in self.urls:
-                self.urls.append(url)
-
-    sources, warnings = [], []
-    try:
-        document, _ = _fetch_url("https://www.ces.tech/press-releases/")
-        parser = Links(); parser.feed(document)
-        for url in parser.urls[:2]:
-            source, warning = _load_source({"title": "", "url": url, "kind": "official_reference", "published_at": None})
-            if source:
-                source["evidence_scope"] = "活动原始公告；日期须按正文核对，未确认前不称今天现场"
-                sources.append(source)
-            if warning:
-                warnings.append(warning)
-    except Exception as exc:
-        warnings.append(f"CES公告采集未完成（{type(exc).__name__}）")
-    records, warning = _load_feed("https://nvidianews.nvidia.com/rss.xml", _utcnow())
-    if warning:
-        warnings.append(warning)
-    records.sort(key=lambda row: (is_major_event(row), row.get('published_at') or ''), reverse=True)
-    for record in records[:4]:
-        source, warning = _load_source(record)
-        if source:
-            sources.append(source)
-        if warning:
-            warnings.append(warning)
-    return {"sources": sources, "warnings": warnings, "downloaded_video_count": 0}
+    """Check overseas company news; the person roster is discovery context only."""
+    from services.factory_news_intake import collect_company_news
+    from services.factory_editorial_policy import people_context
+    result = collect_company_news()
+    return {**result, 'people_watchlist': people_context(), 'downloaded_video_count': 0}
 
 
 def is_newsroom_story(brief):
-    return any(word in str(brief.get("category", "")) for word in ("热点", "争议", "展会", "硬件", "峰会", "贸易"))
+    track = brief.get('editor_track')
+    if track in {'technology_scenes', 'paper_explainer'}:
+        return False
+    if track == 'people_news':
+        return True
+    category = str(brief.get('category', ''))
+    return any(word in category for word in ('人物', '公司新闻', '热点', '争议', '言论', '人事', '贸易'))
 
 
 def validate_packet(packet, sources):

@@ -609,7 +609,7 @@ def test_existing_archive_upgrade_reuses_video_and_preserves_uncertain_publicati
         package = item.packages[0]
         assert package["platform"] == "douyin" and Path(package["path"]) != old_zip
         assert package["published"] is False
-        assert package["handoff_version"] == HANDOFF_VERSION == 4
+        assert package["handoff_version"] == HANDOFF_VERSION == 5
         assert package["video_filename"] == "已有定稿.mp4"
         with zipfile.ZipFile(package["path"]) as archive:
             assert "video.mp4" not in archive.namelist()
@@ -1025,3 +1025,35 @@ def test_same_day_duplicate_narration_is_not_packaged_for_another_platform(isola
         db.commit()
     with pytest.raises(ValueError, match='相同口播'):
         factory_service._package(run_id, item_id)
+
+
+def test_new_policy_saves_one_original_archive_with_both_manual_copies(isolated_factory, monkeypatch):
+    from services.factory_distribution import assign_distribution, CURRENT_DISTRIBUTION_POLICY
+    from services.factory_handoff import HANDOFF_VERSION
+    with isolated_factory() as db:
+        run=FactoryRun(settings_snapshot={'platforms':['douyin','xiaohongshu','kuaishou'],
+            'distribution_policy':CURRENT_DISTRIBUTION_POLICY,'engagement_required':False})
+        db.add(run);db.flush()
+        directory=factory_service.FACTORY_DIR/run.id;directory.mkdir(parents=True)
+        video=directory/'original.mp4';video.write_bytes(b'verified original media')
+        audio=directory/'voice.mp3';audio.write_bytes(b'verified audio')
+        subtitles=directory/'subtitle.ass';subtitles.write_text('subtitles')
+        item=FactoryItem(run_id=run.id,position=0,brief={'editor_id':'producer'},
+            content={'title':'无人船的新成果','script':'已经审核的完整口播。','sources':[SOURCE]},
+            media={'video_path':str(video),'audio_path':str(audio),'subtitle_path':str(subtitles),'fingerprint':'approved-source'},
+            review={'approved':True,'score':90})
+        db.add(item);db.flush();assign_distribution(db,run.id,'2026-11-16');db.commit();rid,iid=run.id,item.id
+    publisher=Mock(return_value={'platforms':[{'platform':p,'title':'无人船的新成果','caption':'已审核事实的介绍','tags':['科技']} for p in ['douyin','kuaishou','xiaohongshu']]})
+    monkeypatch.setattr(factory_service,'call_agent',publisher)
+    factory_service._package(rid,iid)
+    with isolated_factory() as db:
+        item=db.get(FactoryItem,iid);assert item.status=='completed'
+        assert {p['platform'] for p in item.packages}=={'douyin','xiaohongshu','kuaishou'}
+        assert all(p['handoff_version']==HANDOFF_VERSION for p in item.packages)
+        manual=[p for p in item.packages if p['platform']!='douyin']
+        assert manual[0]['video_path']==manual[1]['video_path']==item.media['manual_master_path']
+        with zipfile.ZipFile(item.media['archive_path']) as archive:
+            assert archive.testzip() is None
+            assert [n for n in archive.namelist() if n.endswith('.mp4')]==['无人船的新成果.mp4']
+            assert '小红书/正文描述.txt' in archive.namelist() and '快手/正文描述.txt' in archive.namelist()
+    factory_service._package(rid,iid);publisher.assert_called_once()

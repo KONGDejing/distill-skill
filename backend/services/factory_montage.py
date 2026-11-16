@@ -708,6 +708,9 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     cues = read_subtitle_cues(subtitle_path)
     plan = build_shot_plan(content, cues, prepared, duration)
     quality = validate_shot_plan(plan, duration)
+    if content.get('editorial_policy_version', 1) >= 2 and content.get('editor_id') != 'producer2':
+        from services.factory_editorial_policy import validate_track_picture_coverage
+        validate_track_picture_coverage(content.get('editor_id'), quality)
     if paper_evidence:
         quality['document_evidence' if paper_evidence.get('document_kind') == 'official_document' else 'paper_evidence'] = paper_evidence
     target = Path(output_dir).resolve() / item_id

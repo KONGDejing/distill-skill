@@ -10,7 +10,7 @@ from sqlalchemy import or_
 
 from database import SessionLocal, init_db
 from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
-from agents.registry import AGENTS
+from agents.registry import AGENTS, DAILY_TARGET
 from services import factory_analytics
 from services.factory_resources import memory_state
 from services.factory_platform_policy import analytics_enabled
@@ -19,13 +19,13 @@ PRIVATE = Path(__file__).resolve().parents[2] / ".runtime/operations"
 ASSIGNMENTS = {
     "director": "检查产量、质量、平台回执与阻塞；安排返工并在22:30汇报",
     "researcher": "每日主动追踪通用大模型，覆盖机器人、算力、端侧芯片、应用、论文与产业动态的一手证据，明确题材和素材缺口",
-    "researcher3": "专门为小影3核对科技热点、公开争议、硬件与展会原文；交接日期、证据、画面需求与实际素材",
+    "researcher3": "专门为小影3核对海外AI人物及公司重大新闻、公开言论和争议；按50人观察池及国内七家范围交接日期、证据与真实画面",
     "writer": "围绕一个问题写约150秒讲解；兑现开场承诺，结尾自然提醒关注",
-    "producer": "按口播制作分镜，整理可复用素材，检查镜头、字幕与音频对齐",
-    "producer2": "独立完成分配的视频，重点讲清论文原理与技术演示，记录自己的素材和返工",
+    "producer": "讲解最新科技成果与AI真实落地、试验场景，以对应动态实拍为主配必要动画与AI示意，科技感强，口播与镜头对齐",
+    "producer2": "专门做真实论文PPT讲解，保留原PDF、方法与结果高亮，配沉稳男声，记录来源与返工",
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
-    "publisher": "按内容分配三平台各2条，交付6个完整ZIP和标题正文；抖音自动上传并声明AI生成，快手、小红书由本人上传；评论由本人回复",
+    "publisher": "抖音每天3条、每位剪辑师各选1条，自动上传并声明AI生成；全部6条保存中文MP4及完整发布包，快手、小红书由本人按需上传和回复评论",
     "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
 }
 
@@ -94,7 +94,8 @@ def overview(db, now=None):
     completed = sum(i.status == "completed" for i in items)
     result = {"day": now.date().isoformat(), "assignments": assignments, "alerts": alerts, "resolved_issues": resolved_issues,
               "improvements": improvements, "report_time": "22:30", "timezone": "Asia/Shanghai",
-              "summary": {"completed": completed, "target": len(slots), "ready_150_seconds": long_ready,
+              "summary": {"completed": completed, "target": DAILY_TARGET, "publish_target": 3,
+                          "scheduled_slots": len(slots), "ready_150_seconds": long_ready,
                           "fully_submitted_slots": sum(s.status == "submitted" for s in slots),
                           "failed_items": sum(i.status == "failed" for i in items)},
               "monitoring": {"interval_seconds": 30, "last_patrol_at": None},

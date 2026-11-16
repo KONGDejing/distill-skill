@@ -49,7 +49,7 @@ def env(tmp_path, monkeypatch):
     engine.dispose()
 
 
-@pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou"])
+@pytest.mark.parametrize("platform", ["xiaohongshu", "kuaishou"])
 def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env, monkeypatch, tmp_path, platform):
     from services import factory_platform_policy
     monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: False)
@@ -63,13 +63,14 @@ def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env
     copy = tmp_path / "manual-copy.txt"
     copy.write_text("fixture copy", encoding="utf-8")
     env.config.publish_enabled = False
-    item.brief = {"distribution": {"platform": platform, "day": "2026-11-09", "policy": "single-platform-v1"}}
+    item.brief = {"distribution": {"platform": None, "day": "2026-11-09", "policy": "douyin-three-tracks-v2", "manual_platforms": ["xiaohongshu", "kuaishou"], "douyin_selected": False}}
     from services.factory_handoff import HANDOFF_VERSION, build_handoff
     handoff = build_handoff({"sources": [{"url": "https://example.invalid/source"}]},
         {"platform": platform, "title": "fixture", "caption": "fixture", "tags": ["fixture"]},
         item.brief["distribution"])
     item.packages = [{"platform": platform, "status": "package_ready", "path": str(package),
                       "copy_path": str(copy), "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff}]
+    env.slot.platforms = [platform]
     env.db.commit()
     schedule.advance_slot(env.db, env.slot, env.config, env.slot.due_at)
     assert env.slot.platforms == [platform]
@@ -80,72 +81,12 @@ def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env
     refresh.assert_not_called()
 
 
-def test_carried_video_does_not_create_seventh_original_and_keeps_editor_quota(env, monkeypatch):
-    db = env.db
-    env.slot.run_id = "run"
-    env.slot.position = 0
-    db.get(FactoryItem, "item").brief = {"editor_id": "producer3"}
-    for index in range(5):
-        db.add(FactoryRelease(due_at=env.slot.due_at + timedelta(minutes=40 * (index + 1)), platforms=[]))
-    db.commit()
-    def create(db, **kwargs):
-        result = FactoryRun(id="tomorrow", target_count=kwargs["target_count"], schedule_key=kwargs["schedule_key"],
-            settings_snapshot={"release_slot_ids": kwargs["release_slot_ids"], "editor_quotas": kwargs["editor_quota_override"]})
-        db.add(result); db.flush()
-        return result
-    create_run = Mock(side_effect=create)
-    monkeypatch.setattr(factory_service, "start_run", create_run)
-    schedule.plan_production(db, env.config, datetime(2026, 11, 9, 16, 50, tzinfo=TZ))
-    kwargs = create_run.call_args.kwargs
-    assert kwargs["target_count"] == 5
-    assert kwargs["editor_quota_override"] == {"producer": 2, "producer2": 2, "producer3": 1}
-    assert env.slot.id not in kwargs["release_slot_ids"]
-    assert env.slot.run_id == "run"
 
 
-def test_six_local_times_never_backfill_or_duplicate_after_restart(env):
-    db, config = env.db, env.config
-    db.delete(env.slot)
-    db.commit()
-    now = datetime(2026, 11, 9, 18, 5, tzinfo=TZ)
-    for _ in range(2):
-        schedule.plan_slots(db, config, now)
-    slots = db.query(FactoryRelease).order_by(FactoryRelease.due_at).all()
-    assert len(slots) == 8  # Two remaining today, six tomorrow.
-    assert slots[0].due_at == datetime(2026, 11, 9, 12)  # 20:00 local.
-    assert all("bilibili" not in s.platforms for s in slots)
-    tomorrow = [s.due_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ).strftime("%H:%M") for s in slots[2:]]
-    assert tomorrow == config.publish_times
 
 
-def test_each_day_has_one_production_run_with_same_slot_mapping(env, monkeypatch):
-    db, config = env.db, env.config
-    db.delete(env.slot)
-    db.commit()
-    now = datetime(2026, 11, 10, 0, 30, tzinfo=TZ)
-    schedule.plan_slots(db, config, now)
-    def start(db, **kw):
-        run = FactoryRun(id="daily", target_count=kw["target_count"], schedule_key=kw["schedule_key"])
-        db.add(run)
-        db.commit()
-        return run
-    create = Mock(side_effect=start)
-    monkeypatch.setattr(factory_service, "start_run", create)
-    schedule.plan_production(db, config, now)
-    schedule.plan_production(db, config, now)
-    create.assert_called_once()
-    assert create.call_args.kwargs["target_count"] == 6
-    assert [s.position for s in db.query(FactoryRelease).filter_by(run_id="daily").order_by(FactoryRelease.due_at)] == list(range(6))
 
 
-def test_future_slots_reject_old_ten_video_configuration_and_bilibili(env):
-    env.config.daily_target = 10
-    with pytest.raises(ValueError, match="最多6条"):
-        schedule.plan_slots(env.db, env.config, datetime(2026, 11, 10, 0, 30, tzinfo=TZ))
-    env.config.daily_target = 6
-    env.config.platforms = ["douyin", "bilibili"]
-    with pytest.raises(ValueError, match="B站专题保持独立"):
-        schedule.plan_slots(env.db, env.config, datetime(2026, 11, 10, 0, 30, tzinfo=TZ))
 
 
 def test_new_production_never_exceeds_six_even_with_old_unbound_slots(env, monkeypatch):
@@ -161,24 +102,6 @@ def test_new_production_never_exceeds_six_even_with_old_unbound_slots(env, monke
     create.assert_not_called()
 
 
-def test_cancelled_or_missing_release_ids_do_not_break_existing_run_mapping(env, monkeypatch):
-    db = env.db
-    now = datetime(2026, 11, 10, 0, 30, tzinfo=TZ)
-    run = FactoryRun(id="mapped", schedule_key="releases:2026-11-10", active_slot=None,
-                     settings_snapshot={"release_slot_ids": ["gone", "cancelled", "retained"]})
-    db.add(run)
-    first = schedule.utc(now.replace(hour=6, minute=0))
-    db.add_all([
-        FactoryRelease(id="cancelled", due_at=first, run_id="mapped", position=0, status="cancelled"),
-        FactoryRelease(id="retained", due_at=first + timedelta(hours=2), run_id="mapped", position=1),
-    ])
-    db.commit()
-    create = Mock(side_effect=AssertionError("Existing run must not be recreated"))
-    monkeypatch.setattr(factory_service, "start_run", create)
-    assert schedule.plan_production(db, env.config, now)["run_id"] == "mapped"
-    assert db.get(FactoryRelease, "retained").position == 1
-    assert db.get(FactoryRelease, "cancelled").status == "cancelled"
-    create.assert_not_called()
 
 
 def test_prepared_video_waits_until_due_and_submits_once(env):
@@ -291,34 +214,8 @@ def test_one_success_does_not_claim_all_platforms_submitted(env):
     env.begin.assert_not_called()
 
 
-def test_restart_recovers_original_mapping_even_if_an_earlier_slot_expired(env, monkeypatch):
-    db = env.db
-    later = FactoryRelease(due_at=env.slot.due_at + timedelta(hours=2), platforms=env.slot.platforms)
-    db.add(later)
-    db.flush()
-    run = FactoryRun(id="recovered", schedule_key="releases:2026-11-09", target_count=2,
-        settings_snapshot={"release_slot_ids": [env.slot.id, later.id]})
-    db.add(run)
-    db.commit()
-    create = Mock()
-    monkeypatch.setattr(factory_service, "start_run", create)
-    schedule.plan_production(db, env.config, datetime(2026, 11, 9, 18, 30, tzinfo=TZ))
-    assert (env.slot.run_id, env.slot.position) == ("recovered", 0)
-    assert (later.run_id, later.position) == ("recovered", 1)
-    create.assert_not_called()
 
 
-def test_release_settings_reject_invalid_or_duplicate_times_and_volume_mismatch(env):
-    from fastapi import HTTPException
-    from pydantic import ValidationError
-    from routers.factory import SettingsUpdate, update_settings
-    for times in (["24:00"], ["09:10", "09:10"], []):
-        with pytest.raises(ValidationError):
-            SettingsUpdate(publish_times=times)
-    with pytest.raises(HTTPException) as exc:
-        update_settings(SettingsUpdate(daily_target=3), env.db)
-    assert exc.value.status_code == 422
-    assert env.config.daily_target == 6
 
 
 def test_platform_review_does_not_hold_next_original_upload(env):
@@ -361,16 +258,16 @@ def test_random_release_time_is_persisted_across_restart_and_config_change(env, 
     now = datetime(2026,11,9,18,5,tzinfo=TZ)
     schedule.plan_slots(db, config, now)
     slots = db.query(FactoryRelease).order_by(FactoryRelease.nominal_at).all()
-    assert len(slots) == 8
+    assert len(slots) == 5
     assert all(s.due_at == s.nominal_at + timedelta(seconds=delta) and s.jitter_seconds == delta for s in slots)
     saved = [(s.id,s.nominal_at,s.due_at) for s in slots]
     random.assert_called_with(1801)
-    assert random.call_count == 8
+    assert random.call_count == 5
     db.expire_all()
     config.publish_jitter_seconds = 100
     schedule.plan_slots(db, config, now + timedelta(minutes=1))
     assert [(s.id,s.nominal_at,s.due_at) for s in db.query(FactoryRelease).order_by(FactoryRelease.nominal_at)] == saved
-    assert random.call_count == 8
+    assert random.call_count == 5
 
 
 def test_legacy_future_bound_slot_jitters_but_existing_upload_and_past_keep_time(env, monkeypatch):

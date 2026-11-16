@@ -33,8 +33,10 @@ def candidate_editor(brief, sources):
     from services.factory_papers import is_paper_story
     from services.factory_newsroom import is_newsroom_story
     cited = [source for source in sources if source.get("id") in brief.get("source_ids", [])]
-    if is_paper_story(brief, cited):
-        return "producer2"
+    if brief.get('editor_track') == 'technology_scenes':
+        return 'producer'
+    if is_paper_story(brief, cited) or brief.get('editor_track') == 'paper_explainer':
+        return 'producer2'
     return "producer3" if is_newsroom_story(brief) else "producer"
 
 
@@ -75,7 +77,7 @@ def validate_editor_plan(briefs, sources, quotas):
     owners = [candidate_editor(brief, sources) for brief in briefs]
     for brief, owner in zip(briefs, owners):
         if brief.get("editor_id") and brief["editor_id"] != owner:
-            raise ValueError("选题负责人不符合岗位：论文归小影2，热点展会归小影3，其余科技内容归小影")
+            raise ValueError("选题负责人不符合岗位：论文归小影2，人物/公司新闻归小影3，科技成果、硬件及现场展示归小影")
     _require_counts(Counter(owners), quotas)
     return owners
 

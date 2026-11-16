@@ -81,9 +81,24 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
     policy = db.get(FactoryGrowthPlan, 1).policy
-    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 6
+    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 3
+    assert policy["automated_platforms"] == ["douyin"]
+    assert policy["platform_delivery_modes"]["kuaishou"] == "manual"
     assert policy["editor_quotas"] == {"producer": 2, "producer2": 2, "producer3": 2}
     assert all(order.evidence["required"] == 2 for order in daily if order.owner in policy["editor_quotas"])
+
+
+def test_existing_growth_plan_replaces_old_distribution_without_losing_baselines(db):
+    plan = manager.initialize(db)
+    baseline = dict(plan.baselines)
+    plan.policy = {**plan.policy, "automated_platforms": ["douyin", "kuaishou"],
+                   "max_short_submissions_per_day": 6, "single_platform_per_original": True}
+    db.commit()
+    updated = manager.initialize(db)
+    assert updated.baselines == baseline
+    assert updated.policy["automated_platforms"] == ["douyin"]
+    assert updated.policy["max_short_submissions_per_day"] == 3
+    assert updated.policy["single_platform_per_original"] is False
 
 
 def test_scorecards_do_not_invent_full_scores_when_evidence_is_missing(db):
@@ -176,6 +191,7 @@ def test_today_assignments_include_carried_delivery_and_exclude_cancelled_slots(
     analytics={'platforms':[]}
     monkeypatch.setattr(operations.factory_analytics,'overview',lambda _:analytics)
     state=operations.overview(db,now=now)
-    assert state['summary']['completed']==1 and state['summary']['target']==1
+    assert state['summary']['completed']==1 and state['summary']['target']==6
+    assert state['summary']['publish_target']==3 and state['summary']['scheduled_slots']==1
     manager.sync_work_orders(db,{'summary':{'target':6,'fully_submitted_slots':0}},analytics,now)
     assert db.get(FactoryWorkOrder,'daily:2026-11-11:producer3').evidence['done']==1

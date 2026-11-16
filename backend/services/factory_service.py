@@ -16,6 +16,7 @@ from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailab
 from services.factory_resources import MemoryPressure, ensure_memory_available
 from services.factory_editorial import STRATEGY, validate_editorial_scenes, validate_follow_prompt
 from services.factory_team import assign_editors, editor_id, editor_quotas, validate_editor_plan, candidate_editor
+from services.factory_editorial_policy import POLICY, editor_profile, editorial_policy, people_context
 from services.factory_usage import item_usage, batch_usage, usage_context, summarize_usage
 
 TERMINAL = {"completed", "partial", "failed", "cancelled", "paused_memory"}
@@ -35,7 +36,8 @@ def config_dict(config):
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
             "editor_quotas": editor_quotas(min(config.daily_target, 6)),
-            "distribution_policy": "single-platform-v1", "platform_daily_limit": 2,
+            "distribution_policy": POLICY, "platform_daily_limit": 3,
+            "douyin_per_editor": 1, "manual_platforms": ["xiaohongshu", "kuaishou"], "editorial_policy_version": 2,
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
 
@@ -100,10 +102,16 @@ def run_detail(db, run):
                 value = revision.get(key + '_path')
                 revision_view[key + '_url'] = storage_url(settings.STORAGE_DIR / value) if value else None
         from services.factory_platform_policy import automation_state, effective_automation_enabled
-        packages = [{**package, "download_url": f"/api/factory/items/{item.id}/packages/{package['platform']}",
-                     "automation": automation_state(package['platform']),
-                     "publishing_enabled": publishing_enabled and effective_automation_enabled(package['platform']),
-                     "copy_url": storage_url(package.get("copy_path"))} for package in item.packages or []]
+        route = (item.brief or {}).get('distribution') or {}
+        selected = route.get('policy') == POLICY and route.get('douyin_selected') is True
+        packages = []
+        for package in item.packages or []:
+            state = automation_state(package['platform'])
+            if package['platform'] == 'douyin' and not selected:
+                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '历史或未入选的抖音文案，仅保留归档，不创建自动上传任务。'}
+            packages.append({**package, 'download_url': f"/api/factory/items/{item.id}/packages/{package['platform']}",
+                'automation': state, 'publishing_enabled': bool(publishing_enabled and state['enabled']
+                    and effective_automation_enabled(package['platform'])), 'copy_url': storage_url(package.get('copy_path'))})
         publication = db.query(FactoryPublication).filter_by(item_id=item.id, platform="xiaohongshu").order_by(FactoryPublication.created_at.desc()).first()
         from services.factory_publishing import job_dict
         publications = db.query(FactoryPublication).filter_by(item_id=item.id).order_by(
@@ -124,7 +132,8 @@ def run_detail(db, run):
             "scenes": content.get("scenes", []), "sources": content.get("sources", []),
             "review": item.review or {}, "media_quality": media.get("quality", {}),
             "realistic_revision": revision_view,
-            "video_url": storage_url(next((p["video_path"] for p in item.packages or [] if p.get("video_path")), media.get("video_path"))),
+            "archive_download_url": f"/api/factory/items/{item.id}/archive" if media.get("archive_path") else None,
+            "video_url": storage_url(media.get("manual_master_path") or next((p["video_path"] for p in item.packages or [] if p.get("video_path")), media.get("video_path"))),
             "webm_url": None if any(p.get("video_path") for p in item.packages or []) else storage_url(media.get("webm_path")),
             "video_download_url": f"/api/factory/items/{item.id}/video" if media.get("video_path") and content.get("title") else None,
             "video_filename": safe_filename(content["title"], ".mp4") if content.get("title") else None,
@@ -188,6 +197,8 @@ def queue_available():
 def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None, editor_quota_override=None):
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
+    if config['visual_style'] != 'tech_montage':
+        raise ValueError('新的三方向制作不使用统一文字卡片；请选择科技成果/论文/新闻对应的真实素材模式')
     if not 1 <= target <= 6:
         raise ValueError("每轮产量应为 1–6 条")
     config["editor_quotas"] = editor_quotas(target)
@@ -211,6 +222,23 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
         raise ValueError("存在因内存暂停的批次，请先恢复或取消该批次")
     if db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None)).first():
         raise ValueError("已有生产任务在运行，请等待完成或先取消")
+    from services.factory_distribution import local_day
+    production_day = local_day(timezone_name=config['timezone'])
+    used_target = 0
+    for previous in db.query(FactoryRun).all():
+        snapshot = previous.settings_snapshot or {}
+        if snapshot.get('distribution_policy') != POLICY:
+            continue
+        previous_day = snapshot.get('production_day') or local_day(previous.created_at, config['timezone'])
+        if previous_day != production_day:
+            continue
+        if previous.status == 'cancelled':
+            used_target += db.query(FactoryItem).filter_by(run_id=previous.id, status='completed').count()
+        else:
+            used_target += previous.target_count
+    if used_target + target > 6:
+        raise ValueError('当天6条原创生产名额已预留；请恢复原批次或显式调整未开工计划，避免自动加产')
+    config['production_day'] = production_day
     pressure = None
     try:
         ensure_memory_available()
@@ -337,7 +365,7 @@ def _make_plan(run_id):
         research = collect_sources(limit=min(24, max(10, target * 3)))
         sources = research["sources"]
         from services.factory_newsroom import collect_newsroom_sources
-        emit(run_id, "researcher3", "newsroom_intake", "小探3正在采集展会原始公告与科技硬件新闻，给小影3建立选题来源")
+        emit(run_id, "researcher3", "newsroom_intake", "小探3正在核对海外人物及14家核心科技公司的新闻原文，按40位海外/10位国内观察池找事件")
         newsroom = collect_newsroom_sources()
         sources = list({s["url"]: s for s in [*sources, *newsroom["sources"]]}.values())
         emit(run_id, "researcher3", "newsroom_intake", f"取得{len(newsroom['sources'])}份原始资料；视频素材仍需另行获取与核对", "completed" if newsroom["sources"] else "warning", newsroom)
@@ -499,9 +527,11 @@ def _make_plan(run_id):
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
         assignment = {"target": target + 2, "sources": usable,
             "editor_quotas": quotas,
-            "editor_specialties": "小影：AI产品与实操；小影2：真实论文；小影3：科技热点、展会与公开争议。候选需满足每岗配额，不能全为论文。",
+            "editor_specialties": "小影：前沿科技成果、AI落地与实验场景；小影2：真实论文PPT讲解；小影3：海外人物/公司新闻。候选需满足每岗配额，不能全为论文。",
             "recent_titles": recent, "strategy": STRATEGY,
             "topic_coverage": source_coverage,
+            "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")},
+            "people_watchlist": people_context(),
             "coverage_instruction": "每日必须主动检查通用大模型的新能力、推理、开源或成本进展，优先真实带日期的发布方原文。同时检查机器人、算力基础设施、端侧芯片、AI工具应用、论文、展会争议。单题可多标签；端侧应用不等于端侧芯片，不把机器人模型冒充通用大模型。不是每天强制凑齐七类：缺原文或对应视频就在coverage_gaps说明，并保留已核验候选，不编造参数或素材。",
             "source_id_contract": "source_ids和visual_source_ids都只能填写下面source_catalog的source_id（正文页面ID）；绝不能填asset_id（视频ID）。多页共同支持同一题时可联合引用，至少3条原片SHA去重的核验视频；辅助画面须写visual_support_reason说明具体关联及边界。不得拿无关视频补数。",
             "major_events": major_events,
@@ -560,7 +590,8 @@ def _make_plan(run_id):
     emit(run_id, "director", "planning", f"负责人正在选择 {target} 个选题并安排制作")
     decision = call_agent(run_id, "director", {"target": target, "candidates": plan["candidates"], "recent_titles": recent,
         "topic_coverage": plan.get("topic_coverage", {}),
-        "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、科技热点展会归小影3、其余AI产品实操归小影。"})
+        "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")}, "people_watchlist": people_context(),
+        "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、人物/公司事件归小影3、前沿科技成果与AI场景归小影。"})
     selected = decision.get("selected", [])
     indices = [entry.get("candidate_index") for entry in selected if isinstance(entry, dict)]
     if len(indices) != target or len(set(indices)) != target or any(type(i) is not int or i < 0 or i >= len(plan["candidates"]) for i in indices):
@@ -575,16 +606,19 @@ def _make_plan(run_id):
                 brief["editor_id"] = owners[position]
             db.add(FactoryItem(run_id=run_id, position=position, brief=brief))
         db.flush()
-        if db.get(FactoryRun, run_id).settings_snapshot.get("distribution_policy") == "single-platform-v1":
+        if db.get(FactoryRun, run_id).settings_snapshot.get("distribution_policy") == POLICY:
             from services.factory_distribution import assign_distribution, local_day
             run = db.get(FactoryRun, run_id)
             slot_ids = run.settings_snapshot.get("release_slot_ids", [])
             timezone_name = run.settings_snapshot.get("timezone", "Asia/Shanghai")
             dates = {}
+            day_slot = db.get(FactoryRelease, slot_ids[0]) if slot_ids else None
+            planned_day = local_day((day_slot.nominal_at or day_slot.due_at) if day_slot else run.created_at, timezone_name)
             for item in db.query(FactoryItem).filter_by(run_id=run_id).all():
-                slot = db.get(FactoryRelease, slot_ids[item.position]) if item.position < len(slot_ids) else None
-                dates[item.id] = local_day((slot.nominal_at or slot.due_at) if slot else run.created_at, timezone_name)
-            assign_distribution(db, run_id, slots=dates)
+                dates[item.id] = planned_day
+            routes = assign_distribution(db, run_id, slots=dates)
+            from services.factory_schedule import bind_editor_releases
+            bind_editor_releases(db, run, routes)
         db.commit()
     emit(run_id, "director", "planning", decision.get("reason", "生产计划已下达"), "completed")
 
@@ -667,7 +701,7 @@ def _write_and_review(run_id, item_id):
         _save_item(item_id, status="writing", revisions=attempt, error=None)
         emit(run_id, "writer", "writing", f"{'修改' if prior else '撰写'}脚本：{brief['title']}")
         content = call_agent(run_id, "writer", {"brief": brief, "sources": sources, "previous_script": prior,
-            "review_feedback": feedback, "strategy": STRATEGY, "recent_follow_prompts": recent_prompts,
+            "review_feedback": feedback, "strategy": STRATEGY, "editor_profile": editor_profile(owner), "recent_follow_prompts": recent_prompts,
             "target_duration_seconds": target_duration,
             "script_characters_range": [minimum, maximum],
             "length_instruction": "script必须是完整字符串，每个汉字、标点、英文字母均算一个字符；写足背景、具体例子、原理和局限，不能只给提纲。",
@@ -696,6 +730,7 @@ def _write_and_review(run_id, item_id):
             raise ReviewRejected(str(exc)) from None
         if style:
             content["platform_style"] = style
+        content["editorial_policy_version"] = run.settings_snapshot.get("editorial_policy_version", 1)
         content["sources"] = [{k: s.get(k) for k in ("id", "title", "url", "published_at", "fetched_at", "kind")} for s in sources]
         if brief.get("paper_document"):
             content["paper_document"] = brief["paper_document"]
@@ -942,6 +977,9 @@ def _render(run_id, item_id):
              {"item_id": item_id, "manifest_path": str(visuals.get("manifest_path", "")), "warnings": visuals.get("warnings", [])})
     elif visual_style != "cards":
         raise ValueError("不支持的画面风格")
+    if content.get('editorial_policy_version', 1) >= 2:
+        from services.factory_editorial_policy import validate_track_assets
+        validate_track_assets(owner, assets)
     if assets:
         from services.factory_montage import validate_assets, require_footage_budget
         assets = validate_assets(assets)
@@ -1027,11 +1065,17 @@ def _package(run_id, item_id):
                 if (signature and (other.brief.get("distribution") or {}).get("day") == route["day"]
                         and signature == "".join(c.casefold() for c in other.content.get("script", "") if c.isalnum())):
                     raise ValueError("同日作品出现相同口播，需重写独立内容，不能换标题或跨平台重复交付")
-        if run.settings_snapshot.get("distribution_policy") == "single-platform-v1" or route:
-            if route.get("platform") not in platforms:
-                raise ValueError("尚未确定唯一分发平台，保留成片等待排期")
-            platforms = [route["platform"]]
-            existing = [p for p in existing if p["platform"] in platforms]
+        new_distribution = run.settings_snapshot.get('distribution_policy') == POLICY
+        if new_distribution:
+            if route.get('policy') != POLICY:
+                raise ValueError('本条尚未确定三方向抖音预选与全量人工交付计划')
+            platforms = ['xiaohongshu', 'kuaishou', 'douyin']
+            existing = [p for p in existing if p['platform'] in platforms]
+        elif route:
+            if route.get('platform') not in platforms:
+                raise ValueError('历史归档的分发平台无效')
+            platforms = [route['platform']]
+            existing = [p for p in existing if p['platform'] in platforms]
         reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
         if reuse_variants and all((p.get("cover_design") or {}).get("version") == COVER_DESIGN_VERSION
                                   and (platform_style(p["platform"]).get("opening_mode") != "first_frame_title"
@@ -1044,8 +1088,9 @@ def _package(run_id, item_id):
                                   and p.get("cover_path") and Path(p["cover_path"]).is_file()
                                   and p.get("video_path") and Path(p["video_path"]).is_file()
                                   and p.get("video_filename") == video_filename for p in existing):
-            _save_item(item_id, status="completed", error=None)
-            return
+            if not new_distribution or (media.get('archive_path') and Path(media['archive_path']).is_file()):
+                _save_item(item_id, status="completed", error=None)
+                return
         publications = db.query(FactoryPublication).filter_by(item_id=item_id, action="publish").all()
         warnings = {}
         for job in publications:
@@ -1063,7 +1108,7 @@ def _package(run_id, item_id):
         publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan", "platform_style") if k in content}
         adapted = call_agent(run_id, "publisher", {"content": publication_content, "platforms": platforms,
             "platform_styles": {p: platform_style(p) for p in platforms},
-            "delivery_mode": "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=3000,
+            "delivery_mode": "douyin_auto_with_full_manual_archive" if new_distribution else "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=6000 if new_distribution else 3000,
                              work_kind="rework" if existing else "initial")
         variants = adapted.get("platforms", [])
     if not isinstance(variants, list) or len(variants) != len(platforms) or {p.get("platform") for p in variants} != set(platforms):
@@ -1075,6 +1120,7 @@ def _package(run_id, item_id):
     directory = FACTORY_DIR / run_id / item_id
     directory.mkdir(parents=True, exist_ok=True)
     previous = {p["platform"]: p for p in existing}
+    manual_finish = None
     for variant in variants:
         platform = variant["platform"]
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
@@ -1083,18 +1129,23 @@ def _package(run_id, item_id):
         style = platform_style(platform)
         frame_title = style.get("opening_mode") == "first_frame_title"
         design_suffix = f"design{COVER_DESIGN_VERSION}" + (f"-firstframe{FRAME_TITLE_VERSION}" if frame_title else "")
-        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
-        if frame_title:
-            from services.factory_cover import render_frame_cover
-            handoff["cover_text"] = content["title"]
-            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
+        if new_distribution and platform in {'xiaohongshu', 'kuaishou'} and manual_finish:
+            cover_path, cover_design, delivery_video, delivery_quality = manual_finish
         else:
-            from services.factory_cover import render_cover
-            cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
-        from services.factory_delivery_video import render_delivery_video
-        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-{design_suffix}.mp4"
-        finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
-        delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
+            cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
+            if frame_title:
+                from services.factory_cover import render_frame_cover
+                handoff["cover_text"] = content["title"]
+                cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
+            else:
+                from services.factory_cover import render_cover
+                cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
+            from services.factory_delivery_video import render_delivery_video
+            delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-{design_suffix}.mp4"
+            finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
+            delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
+            if new_distribution and platform in {'xiaohongshu', 'kuaishou'}:
+                manual_finish = (cover_path, cover_design, delivery_video, delivery_quality)
         manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
                     "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
                     "delivery_quality": delivery_quality, "platform_style": style,
@@ -1140,7 +1191,11 @@ def _package(run_id, item_id):
                          "copy_path": str(copy_path), "cover_path": str(cover_path), "cover_design": cover_design,
                          "video_path": str(delivery_video), "delivery_quality": delivery_quality, "platform_style": style,
                          "source_media_fingerprint": media.get("fingerprint")})
-    _save_item(item_id, packages=packages, status="completed", error=None)
+    _save_item(item_id, packages=packages, status='adapting' if new_distribution else 'completed', error=None)
+    if new_distribution:
+        from services.factory_original_archive import save_original_archive
+        saved = save_original_archive(content, packages, media, directory, route)
+        _save_item(item_id, media={**media, **saved}, status='completed', error=None)
     emit(run_id, "publisher", "adapting", f"已交付 {len(packages)} 份完整人工发布包，等待用户在官方客户端发布", "completed")
 
 
@@ -1152,6 +1207,8 @@ def _finish_report(run_id):
         completed = sum(item.status == "completed" for item in items)
         packages = sum(len(item.packages or []) for item in items if item.status == "completed")
         production = {"completed": completed, "target": run.target_count, "packages": packages,
+                      "original_archives": sum(bool(i.media.get('archive_path')) for i in items),
+                      "douyin_selected": sum((i.brief or {}).get('distribution', {}).get('douyin_selected') is True for i in items),
                       "published": 0, "submitted": sum(p.get("status") == "submitted" for i in items for p in i.packages or []),
                       "failed": sum(item.status == "failed" for item in items)}
         stats = {"production": production, "llm_calls": run.llm_calls,

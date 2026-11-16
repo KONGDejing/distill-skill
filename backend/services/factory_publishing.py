@@ -212,7 +212,7 @@ def _begin_publication(db, item_id, action, platform):
             raise ValueError(f"{platform_name}必须上传最终交付成片与定稿封面，请先完成平台打包")
         caption = variant.get("caption", "")
         if platform in {"douyin", "kuaishou"}:
-            caption = caption.rstrip() + "\n\n内容由AI生成（AI辅助文案、配音与剪辑；原始论文和演示来源见正文）。"
+            caption = caption.rstrip() + "\n\n内容由AI生成（AI辅助文案、配音与剪辑；原始资料与演示来源见正文）。"
         payload.update(video_path=variant.get("video_path") or item.media["video_path"],
                        cover_path=variant.get("cover_path") or item.media["cover_path"],
                        title=variant["title"], caption=caption, tags=variant.get("tags", []), ai_generated=True)

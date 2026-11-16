@@ -1,0 +1,550 @@
+{
+  "status": "active",
+  "people_count": 50,
+  "overseas_count": 40,
+  "domestic_count": 10,
+  "people": [
+    {
+      "number": 1,
+      "name": "Sam Altman",
+      "chinese_name": "萨姆·奥尔特曼",
+      "region": "海外",
+      "background": "OpenAI",
+      "watch_topics": "模型产品、战略、算力投入",
+      "source_url": "https://openai.com/index/built-to-benefit-everyone-our-plan/"
+    },
+    {
+      "number": 2,
+      "name": "Greg Brockman",
+      "chinese_name": "格雷格·布罗克曼",
+      "region": "海外",
+      "background": "OpenAI",
+      "watch_topics": "工程路线、组织与产品",
+      "source_url": "https://openai.com/index/review-completed-altman-brockman-to-continue-to-lead-openai/"
+    },
+    {
+      "number": 3,
+      "name": "Ilya Sutskever",
+      "chinese_name": "伊利亚·苏茨克维",
+      "region": "海外",
+      "background": "SSI",
+      "watch_topics": "超级智能、研究路线、创业",
+      "source_url": "https://ssi.inc/updates"
+    },
+    {
+      "number": 4,
+      "name": "Mira Murati",
+      "chinese_name": "米拉·穆拉蒂",
+      "region": "海外",
+      "background": "Thinking Machines Lab",
+      "watch_topics": "模型创业、产品与算力合作",
+      "source_url": "https://thinkingmachines.ai/news/nvidia-partnership/"
+    },
+    {
+      "number": 5,
+      "name": "Jakub Pachocki",
+      "chinese_name": "雅库布·帕乔茨基",
+      "region": "海外",
+      "background": "OpenAI",
+      "watch_topics": "前沿模型研究与能力",
+      "source_url": "https://openai.com/index/built-to-benefit-everyone-our-plan/"
+    },
+    {
+      "number": 6,
+      "name": "Dario Amodei",
+      "chinese_name": "达里奥·阿莫代伊",
+      "region": "海外",
+      "background": "Anthropic",
+      "watch_topics": "Claude、竞争与AI发展判断",
+      "source_url": "https://www.anthropic.com/company/leadership"
+    },
+    {
+      "number": 7,
+      "name": "Daniela Amodei",
+      "chinese_name": "丹妮拉·阿莫代伊",
+      "region": "海外",
+      "background": "Anthropic",
+      "watch_topics": "公司运营、商业化与组织",
+      "source_url": "https://www.anthropic.com/company/leadership"
+    },
+    {
+      "number": 8,
+      "name": "Chris Olah",
+      "chinese_name": "克里斯·奥拉",
+      "region": "海外",
+      "background": "Anthropic",
+      "watch_topics": "可解释性与AI研究观点",
+      "source_url": "https://www.anthropic.com/company/leadership"
+    },
+    {
+      "number": 9,
+      "name": "Jared Kaplan",
+      "chinese_name": "贾里德·卡普兰",
+      "region": "海外",
+      "background": "Anthropic",
+      "watch_topics": "模型能力、扩展规律与研究",
+      "source_url": "https://www.anthropic.com/company/leadership"
+    },
+    {
+      "number": 10,
+      "name": "Demis Hassabis",
+      "chinese_name": "德米斯·哈萨比斯",
+      "region": "海外",
+      "background": "Google DeepMind",
+      "watch_topics": "Gemini、科学AI、AGI",
+      "source_url": "https://deepmind.google/about/"
+    },
+    {
+      "number": 11,
+      "name": "Jeff Dean",
+      "chinese_name": "杰夫·迪恩",
+      "region": "海外",
+      "background": "Google",
+      "watch_topics": "模型工程、训练与算力",
+      "source_url": "https://deepmind.google/blog/gemini-achieves-gold-medal-level-at-the-international-collegiate-programming-contest-world-finals/"
+    },
+    {
+      "number": 12,
+      "name": "Shane Legg",
+      "chinese_name": "谢恩·莱格",
+      "region": "海外",
+      "background": "Google DeepMind",
+      "watch_topics": "AGI与研究判断",
+      "source_url": "https://deepmind.google/blog/from-unlikely-start-up-to-major-scientific-organisation-entering-our-tenth-year-at-deepmind/"
+    },
+    {
+      "number": 13,
+      "name": "Noam Shazeer",
+      "chinese_name": "诺姆·沙泽尔",
+      "region": "海外",
+      "background": "Google／模型研究",
+      "watch_topics": "模型架构与产品化",
+      "source_url": "https://deepmind.google/blog/gemini-achieves-gold-medal-level-at-the-international-collegiate-programming-contest-world-finals/"
+    },
+    {
+      "number": 14,
+      "name": "Sundar Pichai",
+      "chinese_name": "桑达尔·皮查伊",
+      "region": "海外",
+      "background": "Alphabet／Google",
+      "watch_topics": "搜索、Gemini、资本开支与战略",
+      "source_url": "https://blog.google/authors/sundar-pichai/"
+    },
+    {
+      "number": 15,
+      "name": "Mark Zuckerberg",
+      "chinese_name": "马克·扎克伯格",
+      "region": "海外",
+      "background": "Meta",
+      "watch_topics": "开源模型、超级智能、AI眼镜",
+      "source_url": "https://about.fb.com/news/2025/07/personal-superintelligence-for-everyone/"
+    },
+    {
+      "number": 16,
+      "name": "Alexandr Wang",
+      "chinese_name": "亚历山大·王",
+      "region": "海外",
+      "background": "Meta／AI产业",
+      "watch_topics": "模型战略、数据与组织变化",
+      "source_url": "https://about.fb.com/news/2025/10/teen-ai-safety-approach/amp/"
+    },
+    {
+      "number": 17,
+      "name": "Satya Nadella",
+      "chinese_name": "萨提亚·纳德拉",
+      "region": "海外",
+      "background": "Microsoft",
+      "watch_topics": "Copilot、云与模型合作",
+      "source_url": "https://news.microsoft.com/source/exec/satya-nadella/"
+    },
+    {
+      "number": 18,
+      "name": "Kevin Scott",
+      "chinese_name": "凯文·斯科特",
+      "region": "海外",
+      "background": "Microsoft",
+      "watch_topics": "AI基础设施与技术战略",
+      "source_url": "https://www.microsoft.com/en-us/Investor/events/FY-2025/FY25Q1_GoldmanSachs_Conference"
+    },
+    {
+      "number": 19,
+      "name": "Mustafa Suleyman",
+      "chinese_name": "穆斯塔法·苏莱曼",
+      "region": "海外",
+      "background": "Microsoft AI",
+      "watch_topics": "消费AI、模型与智能体",
+      "source_url": "https://microsoft.ai/news/building-a-hillclimbing-machine-launching-seven-new-mai-models/"
+    },
+    {
+      "number": 20,
+      "name": "Elon Musk",
+      "chinese_name": "埃隆·马斯克",
+      "region": "海外",
+      "background": "Tesla／xAI／SpaceX",
+      "watch_topics": "AI、机器人、算力与航天大事件",
+      "source_url": "https://ir.spacex.com/leadership/default.aspx"
+    },
+    {
+      "number": 21,
+      "name": "Gwynne Shotwell",
+      "chinese_name": "格温·肖特韦尔",
+      "region": "海外",
+      "background": "SpaceX",
+      "watch_topics": "航天商业、运营与重大合作",
+      "source_url": "https://ir.spacex.com/leadership/default.aspx"
+    },
+    {
+      "number": 22,
+      "name": "Jensen Huang",
+      "chinese_name": "黄仁勋",
+      "region": "海外",
+      "background": "NVIDIA创业与产业背景",
+      "watch_topics": "AI算力、公开言论与公司事件",
+      "source_url": "https://nvidianews.nvidia.com/bios/jensen-huang"
+    },
+    {
+      "number": 23,
+      "name": "Colette Kress",
+      "chinese_name": "科莱特·克雷斯",
+      "region": "海外",
+      "background": "NVIDIA",
+      "watch_topics": "公司战略、财报与组织变化",
+      "source_url": "https://nvidianews.nvidia.com/bios/colette-kress"
+    },
+    {
+      "number": 24,
+      "name": "Lisa Su",
+      "chinese_name": "苏姿丰",
+      "region": "海外",
+      "background": "AMD",
+      "watch_topics": "AI加速器、算力竞争与合作",
+      "source_url": "https://www.amd.com/en/corporate/leadership/lisa-su.html"
+    },
+    {
+      "number": 25,
+      "name": "David Goeckeler",
+      "chinese_name": "戴维·戈克勒",
+      "region": "海外",
+      "background": "SanDisk／闪迪",
+      "watch_topics": "NAND、企业SSD与AI存储",
+      "source_url": "https://investor.sandisk.com/management/david-goeckeler"
+    },
+    {
+      "number": 26,
+      "name": "Sanjay Mehrotra",
+      "chinese_name": "桑杰·梅赫罗特拉",
+      "region": "海外",
+      "background": "Micron／美光",
+      "watch_topics": "HBM、DRAM、AI服务器需求",
+      "source_url": "https://in.micron.com/about/company/leadership/sanjay-mehrotra"
+    },
+    {
+      "number": 27,
+      "name": "John Ternus",
+      "chinese_name": "约翰·特努斯",
+      "region": "海外",
+      "background": "Apple",
+      "watch_topics": "设备、端侧AI与产品路线",
+      "source_url": "https://www.apple.com/leadership/"
+    },
+    {
+      "number": 28,
+      "name": "Tim Cook",
+      "chinese_name": "蒂姆·库克",
+      "region": "海外",
+      "background": "Apple",
+      "watch_topics": "公司战略、治理与产业合作",
+      "source_url": "https://www.apple.com/leadership/tim-cook/"
+    },
+    {
+      "number": 29,
+      "name": "Andy Jassy",
+      "chinese_name": "安迪·贾西",
+      "region": "海外",
+      "background": "Amazon",
+      "watch_topics": "AWS、Bedrock、AI芯片与投入",
+      "source_url": "https://ir.aboutamazon.com/officers-and-directors/person-details/default.aspx?ItemId=be0a9875-4456-4f84-b4d9-ec2e4b97d1d8"
+    },
+    {
+      "number": 30,
+      "name": "Arthur Mensch",
+      "chinese_name": "阿瑟·门施",
+      "region": "海外",
+      "background": "Mistral AI",
+      "watch_topics": "欧洲AI、开源模型与企业合作",
+      "source_url": "https://mistral.ai/about/"
+    },
+    {
+      "number": 31,
+      "name": "Clément Delangue",
+      "chinese_name": "克莱芒·德朗格",
+      "region": "海外",
+      "background": "Hugging Face",
+      "watch_topics": "开源生态、模型与创业",
+      "source_url": "https://huggingface.co/clem"
+    },
+    {
+      "number": 32,
+      "name": "Thomas Wolf",
+      "chinese_name": "托马斯·沃尔夫",
+      "region": "海外",
+      "background": "Hugging Face",
+      "watch_topics": "开源研究、模型与开发者生态",
+      "source_url": "https://huggingface.co/thomwolf"
+    },
+    {
+      "number": 33,
+      "name": "Aidan Gomez",
+      "chinese_name": "艾丹·戈麦斯",
+      "region": "海外",
+      "background": "Cohere",
+      "watch_topics": "企业模型、主权AI与商业化",
+      "source_url": "https://cohere.com/blog/who-gets-to-define-the-rules-for-ai"
+    },
+    {
+      "number": 34,
+      "name": "Aravind Srinivas",
+      "chinese_name": "阿拉文德·斯里尼瓦斯",
+      "region": "海外",
+      "background": "Perplexity",
+      "watch_topics": "AI搜索、浏览器与产品竞争",
+      "source_url": "https://www.perplexity.ai/en-GB/hub/legal/korea-billing-consumer-information"
+    },
+    {
+      "number": 35,
+      "name": "David Holz",
+      "chinese_name": "戴维·霍尔兹",
+      "region": "海外",
+      "background": "Midjourney",
+      "watch_topics": "图像与视频生成、创作工具",
+      "source_url": "https://www.midjourney.com/home"
+    },
+    {
+      "number": 36,
+      "name": "Geoffrey Hinton",
+      "chinese_name": "杰弗里·辛顿",
+      "region": "海外",
+      "background": "AI研究",
+      "watch_topics": "深度学习、AI能力与风险观点",
+      "source_url": "https://www.cs.utoronto.ca/~hinton/pages/publications.html"
+    },
+    {
+      "number": 37,
+      "name": "Yann LeCun",
+      "chinese_name": "杨立昆",
+      "region": "海外",
+      "background": "AI研究",
+      "watch_topics": "世界模型、自监督与研究争论",
+      "source_url": "https://cds.nyu.edu/team/yann-lecun/"
+    },
+    {
+      "number": 38,
+      "name": "Yoshua Bengio",
+      "chinese_name": "约书亚·本吉奥",
+      "region": "海外",
+      "background": "LawZero／AI研究",
+      "watch_topics": "安全、能力与研究路线",
+      "source_url": "https://lawzero.org/en/team/yoshua-bengio"
+    },
+    {
+      "number": 39,
+      "name": "Fei-Fei Li",
+      "chinese_name": "李飞飞",
+      "region": "海外",
+      "background": "空间智能／World Labs创业背景",
+      "watch_topics": "世界模型、空间智能与产业合作",
+      "source_url": "https://worldlabs.ai/blog/amd-announcement"
+    },
+    {
+      "number": 40,
+      "name": "Andrej Karpathy",
+      "chinese_name": "安德烈·卡帕西",
+      "region": "海外",
+      "background": "AI研究与教育",
+      "watch_topics": "编程智能体、开发方式与模型观点",
+      "source_url": "https://karpathy.ai/"
+    },
+    {
+      "number": 41,
+      "name": "杨植麟",
+      "region": "国内",
+      "background": "Kimi／月之暗面",
+      "watch_topics": "模型、Agent与产品动态",
+      "source_url": "https://www.tsinghua.edu.cn/info/1182/124486.htm"
+    },
+    {
+      "number": 42,
+      "name": "梁文锋",
+      "region": "国内",
+      "background": "DeepSeek",
+      "watch_topics": "开源模型、推理与成本",
+      "source_url": "https://www.nsfc.gov.cn/p1/3381/2825/95698.html"
+    },
+    {
+      "number": 43,
+      "name": "唐杰",
+      "region": "国内",
+      "background": "智谱",
+      "watch_topics": "模型、研究路线与公司事件",
+      "source_url": "https://www.cs.tsinghua.edu.cn/info/1088/5402.htm"
+    },
+    {
+      "number": 44,
+      "name": "张鹏",
+      "region": "国内",
+      "background": "智谱",
+      "watch_topics": "模型产品、商业化与公开言论",
+      "source_url": "https://www.tsinghua.edu.cn/info/1182/118854.htm"
+    },
+    {
+      "number": 45,
+      "name": "吴泳铭",
+      "region": "国内",
+      "background": "千问／阿里",
+      "watch_topics": "AI战略、算力与公司动态",
+      "source_url": "https://www.alibabagroup.com/zh-CN/document-2039431633571938304"
+    },
+    {
+      "number": 46,
+      "name": "周靖人",
+      "region": "国内",
+      "background": "千问／阿里",
+      "watch_topics": "模型研发、开源与云服务",
+      "source_url": "https://developer.aliyun.com/live/254999"
+    },
+    {
+      "number": 47,
+      "name": "李彦宏",
+      "region": "国内",
+      "background": "文心一言／百度",
+      "watch_topics": "模型、应用、战略与公开言论",
+      "source_url": "https://home.baidu.com/about/management.html"
+    },
+    {
+      "number": 48,
+      "name": "王海峰",
+      "region": "国内",
+      "background": "文心一言／百度",
+      "watch_topics": "模型研发、技术与产品",
+      "source_url": "https://home.baidu.com/about/management.html"
+    },
+    {
+      "number": 49,
+      "name": "马化腾",
+      "region": "国内",
+      "background": "腾讯",
+      "watch_topics": "混元、AI产品与公司战略",
+      "source_url": "https://www.tencent.com/zh-cn/team/ma-huateng-pony-ma/"
+    },
+    {
+      "number": 50,
+      "name": "张一鸣",
+      "region": "国内",
+      "background": "豆包／字节跳动",
+      "watch_topics": "AI方向与公司重大公开事件",
+      "source_url": "https://www.bytedance.com/about?locale=zh"
+    }
+  ],
+  "overseas_core_companies": [
+    "Apple／苹果",
+    "Microsoft／微软",
+    "Alphabet／Google",
+    "Amazon／亚马逊",
+    "NVIDIA／英伟达",
+    "Meta",
+    "Tesla／特斯拉",
+    "OpenAI／GPT",
+    "Anthropic／Claude",
+    "SpaceX",
+    "AMD",
+    "SanDisk／闪迪",
+    "Micron／美光",
+    "xAI"
+  ],
+  "overseas_supplementary_companies": [
+    "Mistral AI",
+    "Hugging Face",
+    "Cohere",
+    "Perplexity",
+    "Midjourney",
+    "SSI",
+    "Thinking Machines Lab",
+    "World Labs相关团队与产品",
+    "Figure",
+    "Boston Dynamics"
+  ],
+  "domestic_company_allowlist": [
+    "Kimi／月之暗面",
+    "DeepSeek",
+    "智谱",
+    "千问／阿里",
+    "文心一言／百度",
+    "腾讯",
+    "豆包／字节跳动"
+  ],
+  "tracks": [
+    {
+      "editor": "小影2",
+      "direction": "论文讲解",
+      "subjects": "最新AI大模型论文、机器人及具身智能论文",
+      "story": "研究问题 → 方法 → 实验结果 → 条件与局限",
+      "visual": "保留已认可的论文PPT讲解：真实PDF、原文高亮、方法图、实验图表；有对应作者成果演示可穿插，不强制改成混剪。",
+      "voice": "沉稳男声，准确清楚，像研究者带读论文",
+      "example": "这篇新论文解决什么问题，方法与实验依据在哪里？"
+    },
+    {
+      "editor": "小影",
+      "direction": "前沿科技成果与AI真实落地场景科普",
+      "subjects": "机械手与机器人、AI软件和智能体成果、AI智能硬件与陪伴玩具、端侧AI、自动驾驶与智慧避障、无人机与低空经济、无人船、炒菜机器人、航天器与太空飞行，以及公开的军事科技应用进展",
+      "story": "先展示真实成果或实验场景 → 解释研究突破与原理 → 说明进展、条件及未来应用",
+      "visual": "有科技大片的视觉感，以真实实验、动作、产品和现场素材为主体；必要动画与AI合成用于解释机制、展示标识清楚的示意场景。先写完整口播再逐句匹配镜头。",
+      "voice": "有惊奇感、有信息量的科普叙事；不写成软件操作教程或购买评测",
+      "example": "这项研究让机械手、自动驾驶或飞行器推进到了哪一步？真实场景里发生了什么，AI如何做到？"
+    },
+    {
+      "editor": "小影3",
+      "direction": "AI圈人物及海外科技公司大新闻",
+      "subjects": "重点海外人物和公司：公开言论、决策、组织变动、重大合作、争议；AI投入、芯片/存储、重要航天与科技事件；国内仅指定七家",
+      "story": "发生了什么 → 谁说了什么或做了什么 → 为什么引起关注 → 影响与待确认部分",
+      "visual": "原始发言/采访片段、事件相关动态素材、发布会、简短原话和时间线、必要动态图解；形成新闻故事，整片不采用论文PPT模板。",
+      "voice": "有新闻叙事感，有钩子和转折，事实、说法归属与自己的分析清楚分开",
+      "example": "辛顿的新判断为什么引起争论？某家公司作出了什么重大AI决策？"
+    }
+  ],
+  "production": {
+    "daily_total": 6,
+    "per_editor": 2,
+    "duration_seconds_about": 150,
+    "douyin_daily_total": 3,
+    "douyin_per_editor": 1,
+    "automatic_platforms": [
+      "douyin"
+    ],
+    "manual_platforms": [
+      "xiaohongshu",
+      "kuaishou"
+    ],
+    "save_every_original": true,
+    "manual_cross_platform_allowed": true,
+    "publish_times": [
+      "17:00",
+      "20:00",
+      "22:00"
+    ],
+    "publish_jitter_seconds": 900
+  },
+  "notes": [
+    "海外/国内指观察池所属产业生态，不是对个人国籍作认定。",
+    "人物背景与资料入口用于识别人物，不保证都是当前职务；每条新闻须重新核对发言日期、事件日期与当时职务。",
+    "名单不是今日新闻，也不是热度排名。没有可靠新事件时记录无更新，不捏造瓜。",
+    "国内公司及人物新闻严格限于指定七家；其他国内公司负责人不纳入本观察池。",
+    "同一家公司的内容按核心问题分工：论文由小影2，前沿科技成果与AI真实落地场景由小影，公司人物发生什么由小影3。",
+    "三个剪辑师分别固定内容方向和叙事风格，各自独立口播与对应镜头。",
+    "每日6条全部保存中文标题MP4及完整发布包，小红书、快手均由用户按需人工上传。",
+    "抖音每天最多自动发布3条，每位剪辑师各选1条；保留AI声明、官方验证与防重复提交检查。",
+    "最新分发规则替换旧的单平台独占、各平台每天2条以及快手自动上传规则；历史回执保留。"
+  ],
+  "version": 2,
+  "approved_on": "2026-11-16",
+  "distribution_policy": "douyin-three-tracks-v2"
+}

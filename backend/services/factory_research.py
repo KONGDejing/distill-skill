@@ -28,6 +28,7 @@ FEED_URLS = (
     "https://nvidianews.nvidia.com/rss.xml",
     "https://about.fb.com/news/feed/",
     "https://rss.arxiv.org/rss/cs.RO",
+    "https://rss.arxiv.org/rss/cs.CL",
     "https://rss.arxiv.org/rss/cs.AI",
 )
 WATCH_PAGES = (
@@ -58,6 +59,8 @@ ALLOWED_HOSTS = frozenset({
     "aistudio.google.com", "docs.anthropic.com", "platform.claude.com",
     "www.anthropic.com", "anthropic.com",
     "nvidianews.nvidia.com", "about.fb.com", "deepmind.google", "allenai.github.io", "gradium.ai",
+    "blogs.microsoft.com", "microsoft.ai", "www.apple.com", "ir.aboutamazon.com",
+    "www.amd.com", "ir.spacex.com", "investor.sandisk.com", "investors.micron.com", "ir.tesla.com", "x.ai",
     "arxiv.org", "rss.arxiv.org", "export.arxiv.org", "www.ces.tech", "ces.tech", "www.mofcom.gov.cn",
     "sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io", "weirdlabuw.github.io", "zju3dv.github.io",
 })
