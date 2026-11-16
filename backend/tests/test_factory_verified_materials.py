@@ -182,3 +182,25 @@ def test_original_document_companions_keep_all_integrity_checks(bundle):
     Path(assets[0]['path']).write_bytes(b'tampered original')
     with pytest.raises(ValueError, match='SHA256'):
         verified.load_verified_assets(save(), sources, minimum_assets=1)
+
+
+def test_reviewed_official_stream_excerpts_keep_nonoverlapping_source_windows(bundle):
+    _, assets, save, sources = bundle
+    stream='https://ipo.anthropic.com/video/us/roadshow/720p/index.m3u8'
+    for index,asset in enumerate(assets):
+        asset['url']=stream;asset['source_chain'][-1]=stream
+        asset['stream_excerpt']={'start':index*30,'end':index*30+18.5,
+            'playlist_sha256':'a'*64,'segment_receipts':[{'url':'https://ipo.anthropic.com/video/us/roadshow/720p/seg_0001.m4s','sha256':'b'*64}]}
+    assert len(verified.load_verified_assets(save(),sources))==10
+    assets[1]['stream_excerpt']['start']=1
+    assets[1]['stream_excerpt']['end']=19.5
+    with pytest.raises(ValueError,match='不能重叠'):
+        verified.load_verified_assets(save(),sources)
+
+
+def test_official_stream_excerpt_without_download_provenance_is_rejected(bundle):
+    _,assets,save,sources=bundle
+    assets[0]['url']='https://ipo.anthropic.com/video/us/roadshow/720p/index.m3u8'
+    assets[0]['source_chain'][-1]=assets[0]['url']
+    with pytest.raises(ValueError):
+        verified.load_verified_assets(save(),sources)

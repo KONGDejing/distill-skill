@@ -38,7 +38,12 @@ PAGE_RULES = {
     "ai4ce.github.io": ("/VICTR/",),
     "weirdlabuw.github.io": ("/qoil/",),
     "zju3dv.github.io": ("/SplatAnything/",),
-    "deepmind.google": ("/models/veo/", "/models/genie/", "/models/gemini-robotics/"),
+    "deepmind.google": ("/models/veo/", "/models/genie/", "/models/gemini-robotics/", "/blog/"),
+    "www.anthropic.com": ("/claude-", "/news/"),
+    "ipo.anthropic.com": ("/us/", "/eu/"),
+    "www.apple.com": ("/newsroom/", "/homeview/"),
+    "www.spacex.com": ("/launches/", "/content/"),
+    "content.spacex.com": ("/api/spacex-website/",),
     "allenai.github.io": ("/ToyBlocks/",),
     "allenai.org": ("/blog/",),
     "huggingface.co": ("/blog/allenai/", "/blog/nvidia/", "/blog/phonon-tts/", "/allenai/", "/nvidia/"),
@@ -48,7 +53,7 @@ PAGE_RULES = {
     "blogs.nvidia.com": ("/blog/",),
     "www.nvidia.com": ("/en-us/ai/cosmos/",),
     "openai.com": ("/index/",),
-    "blog.google": ("/technology/ai/",),
+    "blog.google": ("/technology/ai/", "/innovation-and-ai/", "/products-and-platforms/"),
 }
 MEDIA_RULES = {
     # Exact public launch-page previews, verified against Anthropic source pages.
@@ -63,7 +68,11 @@ MEDIA_RULES = {
     "developer-blogs.nvidia.com": ("/wp-content/uploads/",),
     "images.nvidia.com": ("/aem-dam/",),
     "cdn.openai.com": ("/",),
-    "storage.googleapis.com": ("/gdm-deepmind-com-prod-public/media/", "/deepmind-media/"),
+    "storage.googleapis.com": ("/gdm-deepmind-com-prod-public/media/", "/deepmind-media/", "/gweb-uniblog-publish-prod/original_videos/"),
+    "content.spacex.com": ("/cms-assets/assets/", "/cms-assets/content-hub/"),
+    "www.apple.com": ("/105/media/us/apple-homeview/2026/",),
+    "ipo.anthropic.com": ("/video/us/roadshow/",),
+    "prod-fastly-a.video.pscp.tv": ("/a/Transcoding/v1/hls/",),
 }
 MAX_FILE_BYTES = 15_000_000
 MAX_TOTAL_BYTES = 60_000_000
@@ -263,6 +272,7 @@ class _MediaParser(HTMLParser):
             if script in PROJECT_DATA:
                 self.data_scripts.append(script)
         keys = ("src", "data-src") if tag in {"video", "source"} else ("href",) if tag == "a" else ()
+        keys += tuple(key for key in ("or-mp4-video-url", "data-video-src", "data-video-url") if key in attrs)
         for key in keys:
             if not attrs.get(key):
                 continue
@@ -279,7 +289,7 @@ class _MediaParser(HTMLParser):
                     if any(v["url"].rsplit(".", 1)[0] == stem for v in self.videos):
                         continue
                     self.videos.append({"url": _url(address, media=True),
-                                        "description": (attrs.get("aria-label") or attrs.get("title") or "")[:300]})
+                                        "description": (attrs.get("aria-label") or attrs.get("alt-text") or attrs.get("title") or "")[:300]})
                 elif tag == "a" and "/docs" not in urlsplit(address).path:
                     self.links.append(_url(address))
             except ValueError:
@@ -322,6 +332,12 @@ def _probe(path, deadline=None, *, max_duration=180):
 def _metadata(candidate, metadata):
     from services.factory_visual_catalog import INSPECTED_ASSETS
     url = candidate["url"]
+    if (metadata.get('reviewed_windows_sha256') == metadata.get('sha256')
+            and metadata.get('reviewed_windows_sha256')
+            and metadata.get('reviewed_clips')):
+        return {key: metadata[key] for key in ('label', 'kind', 'description', 'topic_tags',
+                'credit', 'rights_note', 'license_url', 'focus_regions', 'background_label') if key in metadata} | {
+                'clips': [dict(c) for c in metadata['reviewed_clips']]}
     reviewed = REVIEWED_LOCAL_ASSETS.get(url)
     if reviewed and metadata.get("sha256") == reviewed["sha256"]:
         return {"label": "官方演示", "kind": "official_video", "description": reviewed["description"],
@@ -526,19 +542,19 @@ def _import_reviewed_local_assets(sources, directory, limit, deadline):
     return assets, warnings
 
 
-def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6) -> dict:
+def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 16) -> dict:
     """Return status, assets, warnings and manifest_path; ready requires 3 clips.
 
     ``sources`` must be this script's already cited source objects (id/title/url),
     not a topical search query. Fetch at most six pages/two linked project hops,
-    six videos, 15 MB per file, 60 MB total and 180 seconds of network work.
+    sixteen videos, 15 MB per file, 60 MB total and 180 seconds of network work.
     Three pinned NVIDIA originals may be imported locally under a separate
     80 MB/file, 150 MB total budget; ordinary download limits remain unchanged.
     Every asset retains its complete reference -> project -> media source chain.
     """
     if (not isinstance(sources, list) or not isinstance(limit, int)
-            or isinstance(limit, bool) or not 3 <= limit <= 6):
-        raise ValueError("sources 必须为数组，limit 必须为 3–6")
+            or isinstance(limit, bool) or not 3 <= limit <= 16):
+        raise ValueError("sources 必须为数组，limit 必须为 3–16；网络字节与时间预算独立保持有界")
     directory = Path(output_dir).expanduser().resolve()
     if not directory.is_relative_to(STORAGE.resolve()):
         raise ValueError("视觉素材输出目录必须位于本工程 storage 内")
@@ -579,7 +595,11 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 6)
             if not cached.is_relative_to((STORAGE / "factory/asset-library").resolve()) or not cached.is_file():
                 continue
             size = cached.stat().st_size
-            if size > MAX_FILE_BYTES or cache_bytes + size > MAX_TOTAL_BYTES:
+            reviewed = bool(entry.get('reviewed_windows_sha256') == entry.get('sha256')
+                            and entry.get('reviewed_clips'))
+            file_limit = REVIEWED_LOCAL_MAX_FILE_BYTES if reviewed else MAX_FILE_BYTES
+            total_limit = REVIEWED_LOCAL_MAX_TOTAL_BYTES if reviewed else MAX_TOTAL_BYTES
+            if size > file_limit or cache_bytes + size > total_limit:
                 continue
             digest = hashlib.sha256(cached.read_bytes()).hexdigest()
             if digest != entry.get("sha256") or digest in fingerprints or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", entry.get("id", "")):

@@ -242,3 +242,76 @@ def test_render_boundary_wait_retains_memory_admission(monkeypatch):
     monkeypatch.setattr(montage, 'ensure_memory_available', lambda: (_ for _ in ()).throw(MemoryPressure({'reason': '仍然高'})))
     with pytest.raises(MemoryPressure):
         montage._wait_for_render_memory(timeout=0)
+
+
+def test_flexible_opening_reserves_scarce_footage_for_later_specific_scene():
+    source=assets()
+    for a in source:a['clips']=[{'start':0,'end':8}]
+    lines=['先说明两个相关任务。','再看只能由这一片段支撑的任务。','最后看另一个动作。']
+    scenes=[{'heading':'开场','narration_exact':lines[0],'asset_ids':['real','generation']},
+            {'heading':'具体任务','narration_exact':lines[1],'asset_ids':['real']},
+            {'heading':'收尾','narration_exact':lines[2],'asset_ids':['interaction']}]
+    cues=[{'text':t,'start':i*8,'end':(i+1)*8} for i,t in enumerate(lines)]
+    plan=build_shot_plan({'scenes':scenes},cues,source,24)
+    assert {s['asset_id'] for s in plan if s['scene_index']==0}=={'generation'}
+    assert {s['asset_id'] for s in plan if s['scene_index']==1}=={'real'}
+    assert validate_shot_plan(plan,24)['dynamic_coverage']==1
+
+
+def test_motion_region_cannot_escape_source_frame():
+    for region in ([0,0,0,1],[-.1,0,1,1],[.8,0,.5,1],[0,0,float('nan'),1]):
+        with pytest.raises(ValueError,match='区域'):
+            measure_motion(Path('unused.mp4'),0,3,region=region)
+
+
+def test_source_window_focus_is_used_instead_of_unrelated_global_crop():
+    source=assets()
+    focus={'rect':[.1,.1,.6,.7],'label':'Actual interview speaker'}
+    source[0]['clips'][0]['focus_region']=focus
+    source[0]['focus_regions']=[{'rect':[0,0,.2,.2],'label':'Other scene'}]
+    scenes=[{'heading':'片段','narration_exact':line,'asset_ids':[a['id']]}
+            for line,a in zip(['首先说明第一段真实动作。','接着说明第二段真实动作。','最后说明第三段真实动作。'],source)]
+    cues=[{'text':s['narration_exact'],'start':i*4,'end':(i+1)*4} for i,s in enumerate(scenes)]
+    plan=build_shot_plan({'scenes':scenes},cues,source,12)
+    assert plan[0]['focus_region']==focus
+
+
+def test_adaptive_cuts_can_use_short_windows_without_freezing_or_reusing_frames():
+    source=assets()
+    for a in source:a['clips']=[{'start':0,'end':3},{'start':4,'end':7},{'start':8,'end':11}]
+    scenes=[{'heading':'同一研究','narration_exact':'解释真实动作。','asset_ids':[a['id'] for a in source]}]
+    plan=build_shot_plan({'scenes':scenes},[],source,24)
+    assert len(plan)==8
+    assert all(s['duration']==3 for s in plan)
+    assert validate_shot_plan(plan,24)['source_reuse_seconds']==0
+
+
+def test_exact_reviewed_timeline_still_checks_source_scope_hash_and_timing():
+    from services.factory_montage import validate_editor_cut_plan
+    lines=['先看第一段真实动作。','接着看第二段真实动作。','最后看第三段真实动作。']
+    scene=[{'heading':'真实动作','body':'','narration_exact':line,'asset_ids':[a['id']],
+            'match_reason':'本段只对应这份真实动作'} for line,a in zip(lines,assets())]
+    content={'script':''.join(lines),'scenes':scene}
+    cues=[{'text':t,'start':i*4,'end':(i+1)*4} for i,t in enumerate(lines)]
+    plan=build_shot_plan(content,cues,assets(),12)
+    assert len(validate_editor_cut_plan(content,cues,assets(),plan,12))==3
+    for change in [{'source_start':100,'source_end':104},{'source_sha256':'invented'},
+                   {'asset_id':'generation'},{'timeline_end':7}, {'source_start':float('nan')}]:
+        bad=deepcopy(plan);bad[0].update(change)
+        with pytest.raises(ValueError):
+            validate_editor_cut_plan(content,cues,assets(),bad,12)
+
+
+def test_same_event_roadshow_background_does_not_claim_it_is_from_another_event():
+    from services.factory_montage import validate_editor_cut_plan
+    source=assets()
+    for a in source:
+        a['topic_tags']=['official_roadshow']
+        a['background_label']='官方路演 · 资料画面 · 中文解读'
+    lines=['第一段说明官方路演。','第二段解释公开披露。','第三段交代预期条件。']
+    scene=[{'heading':'公司新闻','narration_exact':line,'asset_ids':[a['id']],
+            'evidence_role':'background','match_reason':'本次官方路演同期人物资料，不把画面当数据测试'} for line,a in zip(lines,source)]
+    content={'script':''.join(lines),'scenes':scene};cues=[{'text':line,'start':i*4,'end':(i+1)*4} for i,line in enumerate(lines)]
+    plan=build_shot_plan(content,cues,source,12)
+    assert all('非本事件' not in s['display_label'] and '官方路演' in s['display_label'] for s in plan)
+    assert validate_editor_cut_plan(content,cues,source,plan,12)

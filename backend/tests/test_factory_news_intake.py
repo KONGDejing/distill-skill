@@ -37,3 +37,54 @@ def test_owner_core_company_pool_is_explicit_and_collection_reports_gaps(monkeyp
     assert result['sources']==[] and len(result['company_checks'])==14
     assert len(result['warnings'])==14
     assert all(p['status']=='no_verified_lead' for p in result['company_checks'])
+
+
+def test_deepmind_overlay_links_keep_research_title_instead_of_empty_text():
+    parser=intake.ArticleLinks('https://deepmind.google/blog/')
+    parser.feed('<a data-event-content-name="Robots learn new dexterous skills - Learn more" href="/blog/new-robot/"></a>')
+    assert parser.rows[0]['title']=='Robots learn new dexterous skills'
+    assert parser.rows[0]['url']=='https://deepmind.google/blog/new-robot/'
+
+
+def test_spacex_reads_actual_mission_summary_not_image_metadata(monkeypatch):
+    import json
+    body='A real completed flight summary. '*20
+    raw={'missionId':'starship-flight-15','title':'Starship Flight 15','endDate':'2026-11-14',
+         'paragraphs':[{'content':body}],'imageDesktop':{'caption':'Navigation metadata is not event evidence'}}
+    monkeypatch.setattr(research,'_fetch_url',lambda url:(json.dumps(raw),url))
+    source,warning=intake._article({'url':'https://content.spacex.com/api/spacex-website/missions/starship-flight-15'},NOW)
+    assert warning is None and source['text']==body
+    assert source['publication_precision']=='date'
+    assert source['url'].endswith('?missionId=starship-flight-15')
+    raw['endDate']='2099-01-01'
+    assert intake._article({'url':'https://content.spacex.com/api/spacex-website/missions/starship-flight-15'},NOW)[0] is None
+
+
+def test_failed_top_links_are_replaced_by_further_verified_leads(monkeypatch):
+    monkeypatch.setattr(intake, 'COMPANY_SOURCES', [('one', 'feed', 'https://example.org')])
+    records = [{'url': f'https://example.org/news/{i}', 'kind': 'news',
+                'title': 'Actual company announcement'} for i in range(6)]
+    monkeypatch.setattr(intake, '_candidates', lambda entry, now: ('one', records, None))
+    checked = []
+    def article(row, now):
+        checked.append(row['url'])
+        if row['url'].endswith('/0'):
+            return None, 'First article unavailable'
+        return {**row, 'text': 'Verified original body', 'id': row['url']}, None
+    monkeypatch.setattr(intake, '_article', article)
+    result = intake.collect_company_news(limit=2)
+    assert len(result['sources']) == 2
+    assert len(checked) == result['article_check_count'] == 3
+    assert result['discovered_candidate_count'] == 6
+    assert result['warnings'] == ['First article unavailable']
+
+
+def test_google_keeps_multiple_research_and_product_leads(monkeypatch):
+    products = [{'url': f'https://blog.google/technology/ai/product-{i}/', 'title': 'AI product news'} for i in range(6)]
+    html = ''.join(f'<a href="/blog/research-{i}/">Robotics research number {i}</a>' for i in range(6))
+    monkeypatch.setattr(research, '_load_feed', lambda url, now: (products, None))
+    monkeypatch.setattr(research, '_fetch_url', lambda url: (html, url))
+    _, rows, warning = intake._candidates(('Alphabet / Google', 'feed', 'https://blog.google/technology/ai/rss/'), NOW)
+    assert warning is None and len(rows) == 6
+    assert sum('deepmind.google' in row['url'] for row in rows) == 3
+    assert sum('blog.google' in row['url'] for row in rows) == 3

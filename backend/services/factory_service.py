@@ -432,8 +432,10 @@ def _make_plan(run_id):
                     source["visual_preflight"].update(status="error", error_type=type(exc).__name__, reason=str(exc)[:300])
                     continue
                 source["visual_ready"] = visuals.get("status") == "ready"
-                source["visual_assets"] = [{k: a.get(k) for k in ("id", "sha256", "description", "topic_tags")}
+                source["visual_assets"] = [{k: a.get(k) for k in ("id", "sha256", "kind", "description", "topic_tags", "clips", "credit")}
                                             for a in visuals.get("assets", [])]
+                source['sampled_visual_seconds'] = round(sum(clip['end'] - clip['start']
+                    for a in visuals.get('assets', []) for clip in a.get('clips', [])), 3)
                 source["visual_preflight"].update(status=visuals.get("status", "unknown"),
                     verified_assets=len(source["visual_assets"]), warnings=visuals.get("warnings", []))
             for source in sources:
@@ -855,16 +857,21 @@ def _editing_assets(content, assets):
     return [a for a in assets if a.get('kind') != 'paper_page' or a['paper_page'] in selected]
 
 
-def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
+def _plan_edit(run_id, content, assets, visual_style, owner="producer", timing=None, initial_feedback=None):
     editor_content = {k: v for k, v in content.items() if k != 'production_status'}
     selected_assets = _editing_assets(content, assets)
     available = [{k: a.get(k) for k in ("id", "kind", "description", "source_title", "topic_tags", "clips", "paper_page", "document_kind", "reference_source_url", "source_chain")} for a in selected_assets]
-    feedback = {}
+    feedback = dict(initial_feedback or {})
+    if not feedback and content.get("editing_feedback"):
+        feedback = {"error": content["editing_feedback"]}
     prior_edit = bool(content.get("editorial_review"))
     for attempt in range(2):
         check_cancel(run_id)
+        exact_plan = None
         arrangement = call_agent(run_id, owner, {"content": editor_content, "visual_style": visual_style,
-            "available_assets": available, "editorial_feedback": feedback}, max_tokens=6500,
+            "available_assets": available, "editorial_feedback": feedback,
+            **({"actual_speech_duration": timing['duration'], "actual_subtitle_cues": timing['cues'],
+                "timing_instruction": "按真实口播时间给每段选择足量、不重复的源时间窗；一个叙事段可选多条相关素材。全片累计不能超用某一素材，后面的段落也须留足。可以拆分或合并叙事段，但口播必须原样完整覆盖，不能用无关画面补数。"} if timing else {})}, max_tokens=6500,
             work_kind="rework" if feedback or prior_edit else "initial")
         scenes = arrangement.get("scenes", [])
         try:
@@ -877,6 +884,17 @@ def _plan_edit(run_id, content, assets, visual_style, owner="producer"):
                 raise ValueError(f"分镜须为顶层scenes数组、2–18个叙事段（不是逐镜头列表）；当前段数{count}。每段heading非空、body为字符串（可为空）。请按8–14段交付。")
             if assets:
                 validate_editorial_scenes(content["script"], scenes, assets)
+                arrangement['scenes'] = scenes
+                if timing:
+                    from services.factory_montage import build_shot_plan
+                    try:
+                        exact_plan = build_shot_plan({**content, 'scenes': scenes}, timing['cues'], assets, timing['duration'])
+                    except ValueError as exc:
+                        if '没有足够的不重复素材' not in str(exc) or any(a.get('kind') == 'paper_page' for a in assets):
+                            raise
+                        from services.factory_cut_allocator import allocate_cut_plan
+                        exact_plan = allocate_cut_plan({**content, 'scenes': scenes}, timing['cues'], assets, timing['duration'])
+                    arrangement['actual_cut_plan'] = exact_plan
                 if content.get("paper_document"):
                     from services.factory_papers import validate_paper_scenes, highlight_rectangles
                     validate_paper_scenes(scenes, assets, content.get("document_evidence_sources"))
@@ -984,26 +1002,12 @@ def _render(run_id, item_id):
         from services.factory_montage import validate_assets, require_footage_budget
         assets = validate_assets(assets)
         if target_duration:
-            require_footage_budget(assets, target_duration)
-    emit(run_id, owner, "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
-    arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner)
-    scenes = arrangement.get("scenes", [])
-    if content.get("background_visuals"):
-        scenes = [{**scene, "evidence_role": "background"} for scene in scenes]
-    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 18 or not all(isinstance(s, dict) and s.get("heading") and isinstance(s.get("body", ""), str) for s in scenes):
-        raise ValueError("制作员未提供有效的画面安排")
-    if assets:
-        known = {asset["id"] for asset in assets}
-        if any(not isinstance(s.get("asset_ids"), list) or not s["asset_ids"]
-               or not all(isinstance(a, str) and a in known for a in s["asset_ids"]) for s in scenes):
-            raise ValueError("镜头计划引用了不存在的演示素材")
-    content = {**content, "editor_id": owner, "scenes": scenes, "visual_note": arrangement.get("visual_note", ""),
-               "editorial_review": arrangement.get("editorial_review", {})}
-    _save_item(item_id, content=content)
+            require_footage_budget(assets, max(10, target_duration - 15))
+    voice = None
     if visual_style == "tech_montage":
         from services.factory_voice import synthesize_factory_audio
         from services.factory_montage import render_tech_montage
-        emit(run_id, owner, "voice_synthesis", "口播与分镜已审核，正在合成配音并对齐字幕：" + content["title"],
+        emit(run_id, owner, "voice_synthesis", "口播已审核，正在合成配音、测量时长并对齐字幕：" + content["title"],
              detail={"item_id": item_id})
         voice = synthesize_factory_audio(item_id, content, directory)
         if owner == "producer2" and voice.get("voice_profile") != "calm_male":
@@ -1022,9 +1026,47 @@ def _render(run_id, item_id):
             emit(run_id, "director", "duration_revision", f"按实测配音时长修订一次，目标{target_duration}秒", "warning")
             _write_and_review(run_id, item_id)
             return _render(run_id, item_id)
+    timing_context = None
+    if voice:
+        from services.factory_montage import read_subtitle_cues
+        timing_context = {'duration': voice['duration'], 'cues': read_subtitle_cues(Path(voice['subtitle_path']))}
+    emit(run_id, owner, "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
+    arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner, timing=timing_context)
+    scenes = arrangement.get("scenes", [])
+    if content.get("background_visuals"):
+        scenes = [{**scene, "evidence_role": "background"} for scene in scenes]
+    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 18 or not all(isinstance(s, dict) and s.get("heading") and isinstance(s.get("body", ""), str) for s in scenes):
+        raise ValueError("制作员未提供有效的画面安排")
+    if assets:
+        known = {asset["id"] for asset in assets}
+        if any(not isinstance(s.get("asset_ids"), list) or not s["asset_ids"]
+               or not all(isinstance(a, str) and a in known for a in s["asset_ids"]) for s in scenes):
+            raise ValueError("镜头计划引用了不存在的演示素材")
+    content = {**content, "editor_id": owner, "scenes": scenes, "visual_note": arrangement.get("visual_note", ""),
+               "editorial_review": arrangement.get("editorial_review", {}),
+               "actual_cut_plan": arrangement.get('actual_cut_plan')}
+    _save_item(item_id, content=content)
+    if visual_style == "tech_montage":
         emit(run_id, owner, "rendering", f"配音已完成（{voice['duration']:.1f}秒），正在按口播裁剪画面并检查重复：" + content["title"],
              detail={"item_id": item_id, "tts_engine": voice["tts_engine"]})
-        media = render_tech_montage(item_id, content, voice["audio_path"], voice["subtitle_path"], assets, directory)
+        from services.factory_montage import build_shot_plan, read_subtitle_cues, validate_editor_cut_plan
+        cues = read_subtitle_cues(Path(voice['subtitle_path']))
+        try:
+            if content.get('actual_cut_plan') and owner != 'producer2':
+                validate_editor_cut_plan(content, cues, assets, content['actual_cut_plan'], voice['duration'])
+            else:
+                build_shot_plan(content, cues, assets, voice['duration'])
+        except ValueError as exc:
+            emit(run_id, 'director', 'edit_timing_revision', '按实际配音时长重新分配镜头，保留口播与已取得素材，不循环补帧：' + str(exc), 'warning')
+            arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner,
+                timing={'duration': voice['duration'], 'cues': cues},
+                initial_feedback={'error': str(exc), 'previous_arrangement': content['scenes']})
+            content = {**content, 'scenes': arrangement['scenes'],
+                'visual_note': arrangement.get('visual_note', ''), 'editorial_review': arrangement['editorial_review'],
+                'actual_cut_plan': arrangement.get('actual_cut_plan')}
+            _save_item(item_id, content=content)
+        media = render_tech_montage(item_id, content, voice["audio_path"], voice["subtitle_path"], assets, directory,
+                                   shot_plan=content.get('actual_cut_plan') if owner != 'producer2' else None)
         media.update(tts_engine=voice["tts_engine"], speech_timings_path=voice["speech_timings_path"], style="tech_montage")
         media.update({key: voice.get(key) for key in ("voice_profile", "voice_name", "voice_label", "voice_rate", "voice_pitch")})
     else:

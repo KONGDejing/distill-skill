@@ -60,7 +60,7 @@ ALLOWED_HOSTS = frozenset({
     "www.anthropic.com", "anthropic.com",
     "nvidianews.nvidia.com", "about.fb.com", "deepmind.google", "allenai.github.io", "gradium.ai",
     "blogs.microsoft.com", "microsoft.ai", "www.apple.com", "ir.aboutamazon.com",
-    "www.amd.com", "ir.spacex.com", "investor.sandisk.com", "investors.micron.com", "ir.tesla.com", "x.ai",
+    "www.amd.com", "ir.spacex.com", "www.spacex.com", "content.spacex.com", "ipo.anthropic.com", "x.com", "investor.sandisk.com", "investors.micron.com", "ir.tesla.com", "x.ai",
     "arxiv.org", "rss.arxiv.org", "export.arxiv.org", "www.ces.tech", "ces.tech", "www.mofcom.gov.cn",
     "sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io", "weirdlabuw.github.io", "zju3dv.github.io",
 })

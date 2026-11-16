@@ -103,6 +103,7 @@ def load_verified_assets(manifest_path, sources, *, minimum_assets=3) -> list[di
         raise ValueError("素材来源必须是来源列表")
     source_urls = {s.get("url") for s in sources if isinstance(s, dict) and isinstance(s.get("url"), str)}
     prepared, identifiers, hashes, total = [], set(), set(), 0
+    stream_windows = {}
     for asset in assets:
         if not isinstance(asset, dict):
             raise ValueError("素材记录必须是对象")
@@ -124,8 +125,25 @@ def load_verified_assets(manifest_path, sources, *, minimum_assets=3) -> list[di
         if reference not in source_urls:
             raise ValueError("素材 reference_source_url 未出现在本条来源中")
         media_url = asset.get("url")
-        if _url(media_url, media=True) != media_url or Path(urlsplit(media_url).path).suffix.lower() not in VIDEO_SUFFIXES:
+        suffix = Path(urlsplit(media_url).path).suffix.lower()
+        if _url(media_url, media=True) != media_url or suffix not in VIDEO_SUFFIXES | {".m3u8"}:
             raise ValueError("素材必须记录确切的官方媒体文件 URL")
+        if suffix == '.m3u8':
+            excerpt = asset.get('stream_excerpt') or {}
+            first = _number(excerpt.get('start'), '官方流截取起点')
+            last = _number(excerpt.get('end'), '官方流截取终点')
+            if (first < 0 or last <= first or abs(last - first - _number(asset.get('duration'), '截取时长')) > .2
+                    or not re.fullmatch(r'[0-9a-f]{64}', str(excerpt.get('playlist_sha256', '')))
+                    or not excerpt.get('segment_receipts')):
+                raise ValueError('官方流截取必须保留真实时间窗、播放清单指纹和片段下载记录')
+            for start, end in stream_windows.get(media_url, []):
+                if min(end, last) > max(start, first):
+                    raise ValueError('同一官方流的截取时间窗不能重叠或重复计入素材')
+            for receipt in excerpt['segment_receipts']:
+                if (not isinstance(receipt, dict) or _url(receipt.get('url'), media=True) != receipt['url']
+                        or not re.fullmatch(r'[0-9a-f]{64}', str(receipt.get('sha256', '')))):
+                    raise ValueError('官方流片段下载记录无效')
+            stream_windows.setdefault(media_url, []).append((first, last))
         chain = asset.get("source_chain")
         if (not isinstance(chain, list) or len(chain) < 2
                 or chain[0] != reference or chain[-1] != media_url):
@@ -160,3 +178,15 @@ def load_verified_assets(manifest_path, sources, *, minimum_assets=3) -> list[di
         if digest.hexdigest() != asset["sha256"]:
             raise ValueError(f"原文件 SHA256 不匹配：{asset['id']}")
     return prepared
+
+
+def archive_verified_assets(manifest_path, sources):
+    """Explicitly retain reviewed bytes/windows; loading alone remains read-only."""
+    from services.factory_visuals import _archive_asset
+    assets = load_verified_assets(manifest_path, sources)
+    for asset in assets:
+        _archive_asset({**asset, 'reviewed_windows_sha256': asset['sha256'],
+                        'reviewed_clips': [dict(c) for c in asset['clips']],
+                        'review_scope': 'sampled source frames and original context; final motion and repeat checks still required'})
+    return {'archived_assets': len(assets), 'unique_reviewed_seconds': round(
+        sum(clip['end'] - clip['start'] for asset in assets for clip in asset['clips']), 3)}

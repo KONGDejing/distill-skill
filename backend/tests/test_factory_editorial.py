@@ -109,3 +109,20 @@ def test_newsroom_handoff_rejects_invented_evidence_and_index_pages():
     with pytest.raises(ValueError):validate_packet(packet,[{**source,'kind':'reference_index'}])
     bad=deepcopy(packet);bad['facts'][0]['evidence_quote']='A fabricated statement not in the source.'
     with pytest.raises(ValueError):validate_packet(bad,[source])
+
+
+def test_real_speech_budget_failure_returns_to_editor_before_alignment_review(monkeypatch):
+    from services import factory_montage, factory_cut_allocator
+    calls=Mock(side_effect=[{'scenes':scenes()}, {'scenes':scenes()},
+                            {'approved':True,'score':90,'reason':'描述对应'}])
+    allocation=Mock(side_effect=[ValueError('第2段没有足够的不重复素材'), []])
+    monkeypatch.setattr(factory_service,'call_agent',calls)
+    monkeypatch.setattr(factory_service,'check_cancel',lambda _:None)
+    monkeypatch.setattr(factory_service,'emit',Mock())
+    monkeypatch.setattr(factory_montage,'build_shot_plan',allocation)
+    monkeypatch.setattr(factory_cut_allocator,'allocate_cut_plan',Mock(side_effect=ValueError('没有足够的不重复素材：精确规划也不可行')))
+    timing={'duration':150,'cues':[{'start':0,'end':150,'text':SCRIPT}]}
+    factory_service._plan_edit('run',{'script':SCRIPT},ASSETS,'tech_montage',timing=timing)
+    assert [c.args[1] for c in calls.call_args_list]==['producer','producer','reviewer']
+    assert calls.call_args_list[0].args[2]['actual_speech_duration']==150
+    assert '不重复素材' in calls.call_args_list[1].args[2]['editorial_feedback']['error']

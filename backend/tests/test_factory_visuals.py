@@ -297,3 +297,38 @@ def test_verified_toyblocks_focus_regions_survive_metadata_generation():
     # A renderer may edit its own shot copy without changing later jobs' crops.
     hero[0]["rect"][0] = 0
     assert metadata("hero")["focus_regions"][0]["rect"][0] == 0.375
+
+
+def test_google_custom_video_attributes_keep_real_caption_and_official_bucket():
+    parser = visuals._MediaParser('https://blog.google/products-and-platforms/products/search/new-model/')
+    url = 'https://storage.googleapis.com/gweb-uniblog-publish-prod/original_videos/search-demo.mp4'
+    parser.feed(f'<uni-video or-mp4-video-url="{url}" alt-text="Real query and results"></uni-video>')
+    parser.feed('<uni-video or-mp4-video-url="https://example.org/fake.mp4"></uni-video>')
+    assert parser.videos == [{'url': url, 'description': 'Real query and results'}]
+
+
+def test_reviewed_cache_keeps_real_source_windows_instead_of_default_twelve_seconds():
+    source={'url':'https://storage.googleapis.com/gweb-uniblog-publish-prod/original_videos/demo.mp4',
+            'source_title':'Official demonstration'}
+    metadata={'duration':55,'sha256':'a'*64,'reviewed_windows_sha256':'a'*64,
+              'reviewed_clips':[{'start':10,'end':45,'description':'Reviewed actual scene'}],
+              'description':'Reviewed original footage','credit':'Official source','kind':'official_video'}
+    assert visuals._metadata(source,metadata)['clips'][0]['end']==45
+    changed={**metadata,'sha256':'b'*64}
+    assert visuals._metadata(source,changed)['clips'][0]['end']==12
+
+
+def test_full_montage_can_reuse_more_than_six_reviewed_clips_without_network(monkeypatch,tmp_path):
+    import hashlib
+    requested=[]
+    def offline(request):
+        requested.append(str(request.url));return httpx.Response(503)
+    sources=_collector(monkeypatch,tmp_path,offline)
+    for index in range(9):
+        p=tmp_path/f'source-{index}.mp4';p.write_bytes(f'reviewed independent clip {index}'.encode())
+        digest=hashlib.sha256(p.read_bytes()).hexdigest()
+        visuals._archive_asset({'id':f'clip{index}','path':str(p),'url':f'https://storage.googleapis.com/gdm-deepmind-com-prod-public/media/reviewed/{index}.mp4',
+            'sha256':digest,'bytes':p.stat().st_size,'reference_source_url':sources[0]['url'],'source_title':'Reviewed source',
+            'duration':20,'reviewed_windows_sha256':digest,'reviewed_clips':[{'start':0,'end':20}]})
+    result=visuals.collect_visuals(sources,tmp_path/'full-montage',limit=9)
+    assert len(result['assets'])==9 and not requested

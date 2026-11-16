@@ -109,6 +109,7 @@ for _owner in EDITOR_IDS:
     AGENT_MAP[_owner]['role'] = '剪辑师 · ' + _profile['direction']
     AGENT_MAP[_owner]['description'] = _profile['subjects'] + '。' + _profile['visual'] + ' 每日2条，各预选1条自动上传抖音；6条全量保存供本人手动上传小红书、快手。'
     INSTRUCTIONS[_owner] += '\n固定岗位：' + str(_profile)
+INSTRUCTIONS['writer'] += '\n先读来源visual_assets中已核对的实际对象、动作与可用时间窗，再完成独立口播。口播定稿后才安排剪辑；某个动作只有8秒画面，就不能为它写30秒具体动作解说。多讲有足量对应证据的研究进展与机制，不让没有相应画面的例子占据全片，也不把内部改稿说明说给观众。'
 INSTRUCTIONS['writer'] += '\n严格按任务editor_profile独立写口播：小影讲前沿科技成果与AI真实落地场景，有惊奇感和具体机制，不写成使用教程；小影2保留沉稳男声论文PPT讲解；小影3讲海外人物/公司新闻，有事件、转折、影响。先完整口播，后逐句配镜头，三类不得共用一种叙事模板。'
 INSTRUCTIONS['director'] += '\n每天小影/小影2/小影3各2条；给抖音各选1条，三种不同方向。6条均保存完整MP4和小红书/快手人工发布文案。研究与选题以editor_profiles及people_watchlist为准，国内人物/公司新闻只限指定七家，海外优先。不得因论文页面方便就让其他岗位也生产整片PPT。'
 INSTRUCTIONS['researcher'] += '\n候选须提供editor_track=technology_scenes/paper_explainer/people_news。小影重点找最新成果与真实实验/落地画面，覆盖软件、智能体、硬件、陪伴玩具、端侧AI、机器人、无人驾驶/船舶/无人机、低空与航天；小影2只读具体论文；小影3按观察池找海外人物和公司重大事件。人物名单只是线索，不能冒充当天新闻。'
