@@ -72,7 +72,7 @@ test('schedule is visible for either Douyin publishing or manual delivery', () =
   const props = { target: 6, releases: [{ id: 'fixture', status: 'manual_ready', platforms: ['douyin'],
     due_at: '2026-11-11T00:00:00+08:00', nominal_at: '2026-11-11T00:00:00+08:00' }] }
   assert.equal(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: false } }), '')
-  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /抖音自动发布/)
+  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /自动发布：抖音3条＋快手2条/)
   const html = render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: true, publish_enabled: false } })
   assert.match(html, /发布与交付计划/)
   assert.match(html, /建议发布时间/)
