@@ -41,7 +41,7 @@ class BloggerWatch(Base):
     __tablename__ = "blogger_watches"
     blogger_id = Column(String(36), ForeignKey("bloggers.id", ondelete="CASCADE"), primary_key=True)
     enabled = Column(Boolean, nullable=False, default=False)
-    interval_seconds = Column(Integer, nullable=False, default=10800)
+    interval_seconds = Column(Integer, nullable=False, default=28800)
     daily_import_limit = Column(Integer, nullable=False, default=6)
     status = Column(String(40), nullable=False, default="waiting")
     profile_url = Column(String(2048), nullable=True)

@@ -84,7 +84,7 @@ export default function BloggerDetail() {
     try {
       if (refresh) await api.refreshBloggerWatch(id)
       else await api.updateBloggerWatch(id, !blogger.watch?.enabled)
-      setNotice(refresh ? '已安排检查新作品，已有分析与成片会保留。' : blogger.watch?.enabled ? '已关闭自动跟踪。' : '已启用自动跟踪，每3小时检查，自动学习新样本。')
+      setNotice(refresh ? '已安排检查新作品，已有分析与成片会保留。' : blogger.watch?.enabled ? '已关闭自动跟踪。' : '已启用自动跟踪，每8小时检查，自动学习新样本。')
       await loadBlogger()
     } catch (e) { setError(e.message) }
     finally { setActionLoading('') }
@@ -144,7 +144,7 @@ export default function BloggerDetail() {
 
       {blogger.platform === 'douyin' && <section className="mb-6 rounded-xl border border-gray-800 bg-gray-900 p-4" aria-label="自动跟踪对标新作品">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h3 className="font-semibold">自动跟踪新作品</h3><p className="mt-1 text-sm text-gray-400">每3小时检查公开主页；每轮最多学习3条新作品，每日最多6条，自动去重。</p></div>
+          <div><h3 className="font-semibold">自动跟踪新作品</h3><p className="mt-1 text-sm text-gray-400">每8小时检查公开主页；每轮最多学习3条新作品，每日最多6条，自动去重。</p></div>
           <div className="flex gap-2">
             <button disabled={actionLoading === 'watch'} onClick={() => handleWatch()} className="rounded-lg bg-gray-800 px-3 py-2 text-sm disabled:opacity-50">{blogger.watch?.enabled ? '关闭跟踪' : '开启自动跟踪'}</button>
             {blogger.watch?.enabled && <button disabled={actionLoading === 'watch' || ['checking', 'importing', 'analyzing'].includes(blogger.watch?.status)} onClick={() => handleWatch(true)} className="rounded-lg bg-blue-600 px-3 py-2 text-sm disabled:opacity-50">检查新作品</button>}
