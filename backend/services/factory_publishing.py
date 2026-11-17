@@ -91,6 +91,12 @@ def refresh_job(db, job):
     result = _command_result(job.platform, job.command_id)
     if not isinstance(result, dict):
         result = {"status": "failed", "submission_uncertain": job.action == "publish", "message": "平台返回状态无效，需核对实际结果"}
+    item = db.get(FactoryItem, job.item_id)
+    revision = (item.media or {}).get('submission_revision', 0) if item else 0
+    if (revision and result.get('status') in {'prepared','submitted'}
+            and result.get('submission_revision') != revision):
+        result = {**result, 'status':'failed', 'submission_uncertain':job.action=='publish',
+                  'message':'平台回执版本与当前修正版不一致，保留记录等待核对，不计为重新提交成功'}
     if result.get("status") == "submitted":
         evidence = result.get("evidence") or {}
         valid = _valid_evidence(job.platform, evidence)
@@ -116,6 +122,15 @@ def refresh_job(db, job):
             else:
                 package["publication_error"] = result.get("message", "平台任务未完成")
         item.packages = packages
+        if revision and job.action == 'publish':
+            state = {**(item.media.get('caption_replacement') or {}), 'status':job.status,
+                     'latest_job_id':job.id, 'latest_result':result}
+            item.media = {**item.media, 'caption_replacement':state}
+            from models.factory import FactoryWorkOrder
+            work = db.get(FactoryWorkOrder, 'caption-replacement:'+item.id)
+            if work:
+                work.status = 'completed' if job.status == 'submitted' else 'in_progress'
+                work.evidence = {**work.evidence, 'replacement_result':state}
         db.add(FactoryEvent(run_id=item.run_id, agent_id="publisher", stage="platform_submission",
             status="completed" if job.status in {"prepared", "submitted"} else "warning",
             message=f"{platform_name}：{result.get('message', job.status)}"))
@@ -219,6 +234,8 @@ def _begin_publication(db, item_id, action, platform):
             raise ValueError('抖音必须上传最终交付成片与定稿封面，请先完成平台打包')
         require_owner_attribution(variant)
     payload = {"item_id": item.id}
+    if item.media.get('submission_revision'):
+        payload['submission_revision'] = item.media['submission_revision']
     if action == "prepare":
         if platform in {"douyin", "kuaishou"} and not (variant.get("video_path") and variant.get("cover_path")):
             raise ValueError(f"{platform_name}必须上传最终交付成片与定稿封面，请先完成平台打包")

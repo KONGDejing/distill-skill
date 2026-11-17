@@ -300,8 +300,12 @@ def _payload(platform, action, payload):
     item_id = payload.get("item_id")
     if not isinstance(item_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item_id):
         raise ValueError("需要有效 item_id")
+    revision = payload.get('submission_revision', 0)
+    if type(revision) is not int or not 0 <= revision <= 100:
+        raise ValueError('无效的重发版本')
+    revision_fields = {'submission_revision': revision} if revision else {}
     if action == "publish":
-        return {"item_id": item_id}
+        return {"item_id": item_id, **revision_fields}
     title, caption, tags = payload.get("title"), payload.get("caption", ""), payload.get("tags", [])
     config = PLATFORMS[platform]
     if not isinstance(title, str) or not 1 <= len(title.strip()) <= config["title_limit"]:
@@ -329,7 +333,30 @@ def _payload(platform, action, payload):
         result["requested_publication_city"] = "北京"
     if payload.get("cover_path"):
         result["cover_path"] = _media(payload["cover_path"], {".png", ".jpg", ".jpeg"})
+    result.update(revision_fields)
     return result
+
+
+def _submission_key(platform, payload):
+    """A new ledger key requires explicit owner-confirmed withdrawal of the old work."""
+    item_id = payload['item_id']
+    revision = payload.get('submission_revision', 0)
+    if type(revision) is not int or not 0 <= revision <= 100:
+        raise ValueError('无效的重发版本')
+    if not revision:
+        return item_id
+    previous = _ledger(platform).get(item_id, {})
+    authorization = previous.get('replacement_authorization') or {}
+    if (platform != 'douyin' or previous.get('status') != 'submitted'
+            or not _valid_evidence(platform, previous.get('evidence'))
+            or authorization.get('owner_confirmed_withdrawn') is not True
+            or authorization.get('submission_revision') != revision):
+        raise ValueError('旧作尚无本人确认撤下的重发授权，禁止重复提交')
+    if payload.get('video_path'):
+        from services.factory_branding import file_sha256
+        if file_sha256(payload['video_path']) != authorization.get('replacement_sha256'):
+            raise ValueError('修正版文件与本人确认重发时的版本不一致，未上传')
+    return f'{item_id}:r{revision}'
 
 
 def submit_command(platform, action, payload=None) -> dict:
@@ -493,7 +520,7 @@ class _Browser:
 
     def prepare(self, payload):
         require_automation(self.platform)
-        if payload["item_id"] in _ledger(self.platform):
+        if _submission_key(self.platform, payload) in _ledger(self.platform):
             raise ValueError("该作品已有提交记录，禁止自动重新准备")
         if not self.inspect()["authenticated"]:
             raise ValueError("请先在官方页面扫码登录，尚未上传")
@@ -505,24 +532,29 @@ class _Browser:
             raise ValueError("官方上传页面未确认准备完成")
         self.prepared = dict(payload)
         self.inspect()
-        return {**value, "status": "prepared", "item_id": payload["item_id"], "published": False}
+        return {**value, "status": "prepared", "item_id": payload["item_id"], "published": False,
+                'submission_revision': payload.get('submission_revision', 0)}
 
     def publish(self, payload):
         require_automation(self.platform)
         self.submission_attempted = None
         ledger = _ledger(self.platform)
         item_id = payload["item_id"]
-        if item_id in ledger:
+        ledger_key = _submission_key(self.platform, payload)
+        if ledger_key in ledger:
             self.submission_attempted = True
-            prior = ledger[item_id]
+            prior = ledger[ledger_key]
             if isinstance(prior, dict) and prior.get("status") == "submitted" and _valid_evidence(self.platform, prior.get("evidence")):
                 return {"status": "submitted", "item_id": item_id, "message": "已有官方提交回执，未重复点击",
                         "evidence": prior["evidence"], "submission_attempted": True, "published": False,
+                        'submission_revision': payload.get('submission_revision', 0),
                         "publication_settings": prior.get('publication_settings', {})}
             raise ValueError("已有提交尝试，需要核对平台结果，禁止自动重试")
         self.submission_attempted = False
         if not self.prepared or self.prepared["item_id"] != item_id:
             raise ValueError("必须在当前会话先准备同一作品，尚未提交")
+        if self.prepared.get('submission_revision', 0) != payload.get('submission_revision', 0):
+            raise ValueError('重发版本与当前已准备作品不一致，未点击提交')
         if not self.inspect()["authenticated"] or not self.adapter.supports_publish:
             raise ValueError("登录或发布联调尚未完成，未点击提交")
         control = self.adapter.publication_control(payload, self.prepared)
@@ -539,7 +571,7 @@ class _Browser:
                 publication_settings = {'allow_download': False,
                     'download_permission_evidence': dict(permission),
                     'owner_attribution': self.prepared.get('owner_attribution')}
-        ledger[item_id] = {"status": "attempting", "started_at": _now(),
+        ledger[ledger_key] = {"status": "attempting", "started_at": _now(),
                            'publication_settings': publication_settings}
         try:
             _write(self.directory / "submissions.json", ledger)
@@ -548,12 +580,13 @@ class _Browser:
             if not _valid_evidence(self.platform, evidence):
                 raise ValueError("已点击但缺少官方成功回执，请人工核对，禁止自动重试")
             evidence = {**evidence, "url": _clean_url(evidence["url"])}
-            ledger[item_id] = {"status": "submitted", "submitted_at": _now(), "evidence": evidence,
+            ledger[ledger_key] = {"status": "submitted", "submitted_at": _now(), "evidence": evidence,
                                'publication_settings': publication_settings}
             _write(self.directory / "submissions.json", ledger)
             self.prepared = None
             self.inspect()
             return {"status": "submitted", "item_id": item_id, "evidence": evidence,
+                    'submission_revision': payload.get('submission_revision', 0),
                     'publication_settings': publication_settings,
                     "message": "官方已确认提交，公开可见与审核状态仍以平台为准",
                     "submission_attempted": True, "published": False}

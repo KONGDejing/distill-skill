@@ -73,8 +73,8 @@ def isolated_factory(tmp_path, monkeypatch):
     monkeypatch.setattr("services.factory_cover.render_cover", fake_cover)
     def fake_frame_cover(source, title, target, platform):
         Path(target).write_bytes(title.encode())
-        from services.factory_cover import frame_title_layout
-        return {"text_rendered": title, "lines": frame_title_layout(title, platform)[1], "version": 2, "frame_title_version": 2,
+        from services.factory_cover import frame_title_layout, FRAME_TITLE_VERSION
+        return {"text_rendered": title, "lines": frame_title_layout(title, platform)[1], "version": 2, "frame_title_version": FRAME_TITLE_VERSION,
                 "kind": "source_first_frame_with_title", "platform": platform, "overlay_path": str(target)}
     monkeypatch.setattr("services.factory_cover.render_frame_cover", fake_frame_cover)
     def fake_complete(source, cover, target, **kwargs):
@@ -478,11 +478,12 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 assert handoff == package["manual_handoff"]
                 assert handoff["platform"] == package["platform"]
                 assert handoff["title"] == package["title"]
-                assert handoff["caption"].splitlines()[0] == "平台简介"
+                assert handoff["caption"].startswith("平台简介")
                 if package["platform"] in {"douyin", "xiaohongshu", "kuaishou"}:
                     assert handoff["cover_text"] == content["title"]
                     assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
-                    assert package["cover_design"]["frame_title_version"] == 2
+                    from services.factory_cover import FRAME_TITLE_VERSION
+                    assert package["cover_design"]["frame_title_version"] == FRAME_TITLE_VERSION
                 else:
                     assert handoff["cover_text"] == f"{package['platform']} 封面文字"
                 assert archive.read("cover.png").decode() == handoff["cover_text"]
@@ -543,7 +544,7 @@ def test_first_frame_upgrade_reuses_approved_copy_and_preserves_old_archive(isol
         assert item.content == content and item.media == media
         package = item.packages[0]
         assert package["title"] == "已定稿发布标题"
-        assert package["caption"].splitlines()[0] == "已定稿正文"
+        assert package["caption"].startswith("已定稿正文")
         assert len(package["manual_handoff"]["description"]) <= 50
         assert finisher.call_count == 1
         assert finisher.call_args.args[0] == media["video_path"]

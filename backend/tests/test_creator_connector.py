@@ -80,6 +80,50 @@ def test_official_receipt_records_submission_without_claiming_publication(monkey
     button.click.assert_called_once()
 
 
+def test_owner_confirmed_revision_has_separate_receipt_and_remains_idempotent(monkeypatch, tmp_path):
+    browser,button=_browser(monkeypatch,tmp_path)
+    old={'type':'success_page','url':'https://creator.douyin.com/old','text':'发布成功'}
+    new={'type':'success_page','url':'https://creator.douyin.com/new','text':'发布成功'}
+    connector._write(browser.directory/'submissions.json',{'item-1':{'status':'submitted',
+        'evidence':old,'replacement_authorization':{'owner_confirmed_withdrawn':True,'submission_revision':1}}})
+    browser.prepared['submission_revision']=1
+    browser.adapter.wait_for_submission.return_value=new
+    payload={'item_id':'item-1','submission_revision':1}
+    assert browser.publish(payload)['evidence']==new
+    assert browser.publish(payload)['evidence']==new
+    assert connector._ledger('douyin')['item-1']['evidence']==old
+    assert connector._ledger('douyin')['item-1:r1']['evidence']==new
+    button.click.assert_called_once()
+
+
+def test_revision_cannot_be_used_without_withdrawal_or_with_another_prepared_version(monkeypatch,tmp_path):
+    browser,button=_browser(monkeypatch,tmp_path)
+    payload={'item_id':'item-1','submission_revision':1}
+    with pytest.raises(ValueError,match='本人确认撤下'):
+        browser.publish(payload)
+    old={'type':'success_page','url':'https://creator.douyin.com/old','text':'发布成功'}
+    connector._write(browser.directory/'submissions.json',{'item-1':{'status':'submitted',
+        'evidence':old,'replacement_authorization':{'owner_confirmed_withdrawn':True,'submission_revision':1}}})
+    with pytest.raises(ValueError,match='重发版本与当前'):
+        browser.publish(payload)
+    button.click.assert_not_called()
+
+
+def test_revision_authorization_is_bound_to_the_exact_corrected_file(monkeypatch,tmp_path):
+    import hashlib
+    browser,_=_browser(monkeypatch,tmp_path)
+    film=tmp_path/'corrected.mp4';film.write_bytes(b'approved correction')
+    old={'type':'success_page','url':'https://creator.douyin.com/old','text':'发布成功'}
+    connector._write(browser.directory/'submissions.json',{'item-1':{'status':'submitted',
+        'evidence':old,'replacement_authorization':{'owner_confirmed_withdrawn':True,'submission_revision':1,
+            'replacement_sha256':hashlib.sha256(film.read_bytes()).hexdigest()}}})
+    payload={'item_id':'item-1','submission_revision':1,'video_path':str(film)}
+    assert connector._submission_key('douyin',payload)=='item-1:r1'
+    film.write_bytes(b'a different film')
+    with pytest.raises(ValueError,match='文件与本人确认重发'):
+        connector._submission_key('douyin',payload)
+
+
 @pytest.mark.parametrize("evidence", [
     {"type": "clicked", "url": "https://creator.douyin.com/upload"},
     {"type": "success_page", "url": "https://example.com/success", "text": "发布成功"},

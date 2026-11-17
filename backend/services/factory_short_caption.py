@@ -31,11 +31,13 @@ def compact_douyin_caption(variant):
     if body is None:
         tags=tags[:1];suffix='#'+tags[0];available=DOUYIN_CAPTION_LIMIT-len(AI_LABEL)-len(suffix)-2
         body=next(c for c in candidates if c and len(c)<=available)
-    caption=body+'\n'+AI_LABEL
-    if len((caption+'\n'+suffix).strip())>DOUYIN_CAPTION_LIMIT:
+    caption=body+' '+AI_LABEL
+    if len((caption+' '+suffix).strip())>DOUYIN_CAPTION_LIMIT:
         raise ValueError('抖音发布文案、话题及AI说明合计超过50字')
     return caption,tags
 
 
 def caption_text(caption,tags):
-    return (caption+'\n'+' '.join('#'+tag for tag in tags)).strip()
+    # A single paragraph lets the official player collapse/expand naturally.
+    # Manual hard breaks otherwise turn a few words into several tall rows.
+    return re.sub(r'\s+', ' ', caption+' '+' '.join('#'+tag for tag in tags)).strip()

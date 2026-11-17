@@ -19,7 +19,7 @@ def test_existing_short_hook_remains_unchanged_and_ai_label_is_not_duplicated():
 
 def test_long_paragraph_falls_back_to_complete_title_not_a_truncated_claim():
     caption,tags=compact_douyin_caption({'title':'模型更新，进展在哪？','caption':'连续长句没有标点'*30,'tags':['大模型','AI科技']})
-    assert caption.splitlines()[0]=='模型更新，进展在哪？'
+    assert caption=='模型更新，进展在哪？ '+AI_LABEL
     assert len(caption_text(caption,tags))<=50
 
 
@@ -32,6 +32,12 @@ def test_copyable_manual_descriptions_are_short_on_each_short_video_platform():
             'tags':['机器人','具身智能','科技']})
         assert len(h['description'])<=50
         assert h['description'].count('#')==2
+        assert '\n' not in h['description'] and '\r' not in h['description']
         assert AI_LABEL in h['description']
         assert h['description'] in handoff_files(h)['发布文案.txt']
         assert content['sources'][0]['url'] in handoff_files(h)['资料来源.txt']
+
+
+def test_old_multiline_copy_is_delivered_as_one_continuous_paragraph():
+    text=caption_text('拿稳工具，就算会用了吗？\n\n内容由AI生成',['机器人','具身智能'])
+    assert text=='拿稳工具，就算会用了吗？ 内容由AI生成 #机器人 #具身智能'

@@ -104,7 +104,9 @@ npm --prefix frontend run build
 
 抖音、快手、小红书发布正文用一句引入或讨论问题，最多两个相关话题；包含话题和“内容由AI生成”在内合计不超过50个字符。自动提交与人工包均执行长度限制，优先选用完整短句，不能截断事实；资料来源单独保留在随附资料中。相关话题不代表曝光保证，已提交作品的历史文件与文案不会被覆盖。
 
-本机旧目录 `distill-skill` 是新目录的兼容符号链接，用于保持历史素材绝对路径有效。历史数据库文件 `backend/distill.db` 继续使用，新增 `factory_*` 表；部署前备份保存在 `.runtime/backups/`。
+正文、AI说明和话题用空格连接为连续单段，不主动换行或添加空行；手机端的折叠行数、行距及“展开”由官方客户端决定。抖音画面中上部的标题逐行水平居中，其他平台保留各自首帧样式。账号本人明确确认旧作已经手动撤下后，才允许独立版本重新排期；原作品、发布任务及连接器回执保留，新版按独立账本键防重，不增加当天原创数量。
+
+GitHub仓库为 [KONGDejing/short-video-ai-factory](https://github.com/KONGDejing/short-video-ai-factory)，SSH远端为 `git@github.com:KONGDejing/short-video-ai-factory.git`。工程只使用 `short-video-ai-factory` 目录，旧的兼容软链接已移除；历史素材的绝对路径已迁移到新目录。历史数据库文件 `backend/distill.db` 继续使用，新增 `factory_*` 表；部署前备份保存在 `.runtime/backups/`。
 
 ## 内存保护
 

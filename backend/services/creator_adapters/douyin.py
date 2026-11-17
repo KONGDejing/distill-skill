@@ -306,7 +306,8 @@ class Adapter(SubmissionWatch, BaseAdapter):
         self.page.get_by_text("重新上传", exact=True).wait_for(state="visible", timeout=180000)
         self._dismiss_editor_tips()
         title.fill(payload["title"])
-        caption = payload.get("caption", "") + "\n" + " ".join("#" + tag for tag in payload.get("tags", []))
+        from services.factory_short_caption import caption_text
+        caption = caption_text(payload.get("caption", ""), payload.get("tags", []))
         self.page.locator('[contenteditable=true]').fill(caption.strip())
         self.page.get_by_text("请选择自主声明", exact=True).click()
         disclosure = self.page.locator("label.semi-radio").filter(has_text="内容由AI生成")

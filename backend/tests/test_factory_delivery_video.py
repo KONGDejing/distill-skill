@@ -65,3 +65,23 @@ def test_real_first_frame_title_keeps_moving_footage_and_audio(tmp_path, monkeyp
         assert abs(original[96:162] - output[96:162]).mean() > 5
     assert abs(frame(target, .5)[180:] - first[180:]).mean() > 5
     assert abs(frame(source, 3) - frame(target, 3)).mean() < 5
+
+
+def test_douyin_title_lines_are_centered_in_actual_overlay_pixels(tmp_path):
+    import numpy as np
+    from services.factory_cover import render_frame_cover
+    source=tmp_path/'source.mp4';cover=tmp_path/'cover.png'
+    subprocess.run(['ffmpeg','-y','-v','error','-f','lavfi','-i',
+                    'color=black:s=270x480:r=24:d=0.2','-c:v','libx264','-threads','1',str(source)],check=True)
+    design=render_frame_cover(source,'Claude母公司筹备上市，模型之外看什么',cover,'douyin',caption_safe_area=True)
+    pixels=np.asarray(Image.open(design['overlay_path']))
+    mask=(pixels[:,:,:3].max(axis=2)>180)&(pixels[:,:,3]>0)
+    occupied=np.where(mask.any(axis=1))[0]
+    groups=np.split(occupied,np.where(np.diff(occupied)>2)[0]+1)
+    assert len(groups)==2
+    for rows in groups:
+        _,xs=np.where(mask[rows[0]:rows[-1]+1])
+        # PIL centers using typographic advance; punctuation's ink can differ slightly.
+        assert abs((xs.min()+xs.max())/2-pixels.shape[1]/2)<4
+    assert design['title_alignment']=='center'
+    assert design['frame_title_version']==3

@@ -6,7 +6,7 @@ import re
 from services.factory_media import WIDTH, HEIGHT, _font, _wrap
 
 COVER_DESIGN_VERSION = 2
-FRAME_TITLE_VERSION = 2
+FRAME_TITLE_VERSION = 3
 
 
 def frame_title_layout(title, platform, *, caption_safe_area=False):
@@ -76,7 +76,7 @@ def render_frame_cover(source, title, target, platform, *, caption_safe_area=Fal
             backdrop_top = top - 20 if caption_safe_area else 248
             for y in range(backdrop_top, bottom + 20):
                 alpha = round(145 * min(1, (y - backdrop_top) / 50, (bottom + 20 - y) / 70))
-                draw.line((40, y, 960, y), fill=(0, 0, 0, max(0, alpha)))
+                draw.line((120, y, 960, y), fill=(0, 0, 0, max(0, alpha)))
             if not caption_safe_area:
                 draw.text((76, 270), '科技观察', font=_font(30, bold=True), fill='#ffffff',
                           stroke_width=1, stroke_fill='#101010', anchor='lt')
@@ -84,8 +84,17 @@ def render_frame_cover(source, title, target, platform, *, caption_safe_area=Fal
     y = top + (bottom - top - len(lines) * line_height) // 2
     for n, line in enumerate(lines):
         color = "#ffd45a" if platform in {'douyin', 'kuaishou'} and n == len(lines) - 1 else fill
-        draw.text((x, y + n * line_height), line, font=font, fill=color,
-                  stroke_width=stroke, stroke_fill="#111111", anchor="lt")
+        if platform == 'douyin':
+            # Center visible glyphs, including outlines. Font advance alone
+            # leaves a line ending in punctuation visibly off-center.
+            glyph = Image.new('RGBA', (WIDTH, size + 80))
+            ImageDraw.Draw(glyph).text((20, 20), line, font=font, fill=color,
+                                     stroke_width=stroke, stroke_fill='#111111', anchor='lt')
+            glyph = glyph.crop(glyph.getbbox())
+            overlay.alpha_composite(glyph, ((WIDTH-glyph.width)//2, y+n*line_height))
+        else:
+            draw.text((x, y+n*line_height), line, font=font, fill=color,
+                      stroke_width=stroke, stroke_fill="#111111", anchor='lt')
     if background.size != overlay.size:
         overlay = overlay.resize(background.size, Image.Resampling.LANCZOS)
     overlay.save(overlay_path)
@@ -96,6 +105,7 @@ def render_frame_cover(source, title, target, platform, *, caption_safe_area=Fal
             "overlay_path": str(overlay_path), "source_frame_sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
             "text_rendered": title, "font_size": size, "lines": lines,
             "title_position": "upper_middle",
+            "title_alignment": "center" if platform == 'douyin' else "left",
             'caption_safe_area_version': 1 if caption_safe_area else 0,
             "title_bounds_normalized": [56 / WIDTH, top / HEIGHT, 944 / WIDTH, bottom / HEIGHT]}
 
