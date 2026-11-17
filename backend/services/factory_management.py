@@ -203,6 +203,7 @@ def sync_work_orders(db, state, analytics, now):
             title=alert["message"][:190], acceptance=alert["next_action"],
             due_at=now.astimezone(timezone.utc).replace(tzinfo=None) + timedelta(hours=2),
             status="blocked", evidence={"blocker": alert["message"], "item_id": alert.get("item_id"),
+                                       'editor_id': alert.get('editor_id'), 'day': alert.get('day'),
                                        "checked_at": now.isoformat()}))
     for order in db.query(FactoryWorkOrder).filter(FactoryWorkOrder.kind == "issue", FactoryWorkOrder.status != "completed"):
         identifier = order.key.rsplit(":", 1)[-1]
@@ -213,10 +214,14 @@ def sync_work_orders(db, state, analytics, now):
         elif order.key.startswith("issue:publication:"):
             job = db.get(FactoryPublication, identifier)
             resolved = bool(job and job.status == "submitted")
+        elif order.key.startswith('issue:coverage:'):
+            resolved = (order.evidence.get('day') == str(local.date())
+                and sum(editor_id(item) == order.evidence.get('editor_id') for item in items) >= quotas.get(order.evidence.get('editor_id'), DAILY_TARGET))
         if resolved:
             order.status = "completed"
             order.evidence = {**order.evidence, "blocker": None,
-                "resolution": "已取得约150秒成片" if order.key.startswith("issue:production:") else "已取得官方提交回执，公开状态仍以审核为准",
+                "resolution": ('已补齐岗位选题，成片仍须单独验收' if order.key.startswith('issue:coverage:')
+                    else "已取得约150秒成片" if order.key.startswith("issue:production:") else "已取得官方提交回执，公开状态仍以审核为准"),
                 "checked_at": now.isoformat()}
     # Separate long-form work orders cannot enter the short-video release queue.
     beginning = plan.started_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Shanghai"))
@@ -236,10 +241,37 @@ def sync_work_orders(db, state, analytics, now):
 
 def work_orders(db, now=None):
     now = now or datetime.utcnow()
-    rows = db.query(FactoryWorkOrder).filter(FactoryWorkOrder.due_at >= now - timedelta(days=1)).order_by(FactoryWorkOrder.due_at).limit(40).all()
+    rows = db.query(FactoryWorkOrder).filter(FactoryWorkOrder.kind != 'discipline', FactoryWorkOrder.due_at >= now - timedelta(days=1)).order_by(FactoryWorkOrder.due_at).limit(40).all()
     return [{"key": r.key, "kind": r.kind, "owner": r.owner, "title": r.title, "acceptance": r.acceptance,
              "due_at": r.due_at.replace(tzinfo=timezone.utc).isoformat(), "status": r.status,
              "overdue": r.status != "completed" and now > r.due_at, "evidence": r.evidence} for r in rows]
+
+
+def record_director_demerit(db, *, decision_id, reason, evidence=None, now=None):
+    """Record an explicit owner decision once; patrols never issue discipline."""
+    if not decision_id or len(decision_id) > 65 or not reason.strip():
+        raise ValueError('记过须有独立决定编号和明确原因')
+    key = 'discipline:director:' + decision_id
+    existing = db.get(FactoryWorkOrder, key)
+    if existing:
+        return existing
+    now = now or datetime.utcnow()
+    row = FactoryWorkOrder(key=key, kind='discipline', owner='director', title='用户决定：老周记过1次',
+        acceptance='此记录仅确认用户记过决定；整改任务须另行验收，不据此虚报整改完成或臆定扣分。',
+        status='completed', due_at=now, evidence={**(evidence or {}), 'reason': reason,
+            'decision_source': 'explicit_owner_instruction', 'demerit_count': 1,
+            'recorded_at': now.replace(tzinfo=timezone.utc).isoformat()})
+    db.add(row)
+    db.commit()
+    return row
+
+
+def accountability(db):
+    query = db.query(FactoryWorkOrder).filter_by(kind='discipline', owner='director')
+    rows = query.order_by(FactoryWorkOrder.created_at.desc()).limit(50).all()
+    return {'demerit_count': query.count(), 'records': [
+        {'key': row.key, 'reason': row.evidence.get('reason'), 'recorded_at': row.evidence.get('recorded_at'),
+         'evidence': row.evidence, 'note': row.acceptance} for row in rows]}
 
 
 def _score(name, weight, value, basis, denominator=None):
@@ -280,15 +312,17 @@ def scorecards(db, analytics):
     connected = [p for p in analytics["platforms"] if p["status"] == "connected"]
     ratio = lambda numerator, denominator: numerator / denominator if denominator else None
     pending = lambda name, weight: _score(name, weight, None, "缺少可核验数据，暂不评分")
-    patrol_value = None
-    try:
-        heartbeat = json.loads((Path(__file__).resolve().parents[2] / ".runtime/operations/heartbeat.json").read_text())
-        observed = datetime.fromisoformat(heartbeat["last_patrol_at"])
-        patrol_value = float((datetime.now(timezone.utc) - observed).total_seconds() <= 90)
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
+    # Process liveness belongs in monitoring, not the director's performance
+    # score. Require observable, due deliverables from the team instead.
+    due_orders = db.query(FactoryWorkOrder).filter(FactoryWorkOrder.kind == 'daily',
+        FactoryWorkOrder.owner != 'director', FactoryWorkOrder.due_at >= cutoff,
+        FactoryWorkOrder.due_at <= datetime.utcnow()).all()
+    accepted_orders = sum(row.status == 'completed' and bool(row.evidence.get('checked_at'))
+        and type(row.evidence.get('done')) is int and type(row.evidence.get('required')) is int
+        and row.evidence['required'] > 0 and row.evidence['done'] >= row.evidence['required'] for row in due_orders)
     data = {
-        "director": [_score("巡检与任务安排", 20, patrol_value, "核对管理服务90秒内的巡检心跳"),
+        "director": [_score("团队任务交付验收", 20, ratio(accepted_orders, len(due_orders)),
+                           "近7天已到期每日任务中，有实际数量与验收时间的完成比例；巡检在线不计工作成果", len(due_orders)),
                      pending("问题按期闭环", 30), pending("四平台周增长", 30), pending("日报准时交付", 20)],
         "researcher": [_score("来源可追溯", 30, ratio(sum(bool(s.get("fetched_at") and s.get("text")) for s in sources.values()), len(sources)), "来源地址、采集时间与实际正文齐全", len(sources)),
                        pending("热点相关性与原创角度", 25), pending("事实抽检", 30), pending("新增可用素材", 15)],
@@ -339,5 +373,6 @@ def overview(db, analytics):
             "formula": "周净增粉丝率 =（周末粉丝 − 周初粉丝）÷ 周初粉丝；缺少完整周数据时不判定达标",
             "policy": plan.policy, "targets": targets, "weeks": WEEKS, "rhythm": RHYTHM,
             "scorecards": scorecards(db, analytics), "work_orders": work_orders(db),
+            'accountability': accountability(db),
             "measurement_note": "周末使用截止时点前45分钟内的粉丝快照，保留起止采集时间；缺一端不判达标。晚接入平台从首次真实基线起计算四周。目标表是预测路径，每周考核按实际周初粉丝计算。",
             "score_note": "评分满分100。只列已核验分项，缺少数据的分项保留待评，不补0、不据此生成虚假总分；模型评分与平台实测分开。"}

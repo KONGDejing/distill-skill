@@ -25,7 +25,7 @@ ASSIGNMENTS = {
     "producer2": "专门做真实论文PPT讲解，保留原PDF、方法与结果高亮，配沉稳男声，记录来源与返工",
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
-    "publisher": "抖音每天3条、每位剪辑师各选1条，自动上传并声明AI生成；全部6条保存中文MP4及完整发布包，快手、小红书由本人按需上传和回复评论",
+    "publisher": "抖音每天3条、每位剪辑师各选1条，自动上传并声明AI生成；快手每天自动2条且不与抖音重复；全部6条保存中文MP4及完整发布包，小红书由本人按需上传，评论由本人回复",
     "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
 }
 
@@ -35,7 +35,7 @@ def stamp(value):
 
 
 def overview(db, now=None):
-    now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("Asia/Shanghai"))
     start = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
     today_events = db.query(FactoryEvent).filter(FactoryEvent.created_at >= start).order_by(FactoryEvent.id.desc()).limit(150).all()
     assignments = []
@@ -59,6 +59,24 @@ def overview(db, now=None):
     items = db.query(FactoryItem).filter(FactoryItem.status != "deferred", or_(
         (FactoryItem.created_at >= start) & (FactoryItem.created_at < start + timedelta(days=1)),
         FactoryItem.brief["distribution"]["day"].as_string() == now.date().isoformat())).all()
+    # An unassigned editor has no failed item to trigger the old incident path.
+    # Surface that production gap explicitly after the morning planning window.
+    from services.factory_editorial_policy import POLICY, EDITOR_IDS
+    from services.factory_team import editor_id
+    day_runs = db.query(FactoryRun).filter(or_(
+        (FactoryRun.created_at >= start) & (FactoryRun.created_at < start + timedelta(days=1)),
+        FactoryRun.id.in_({i.run_id for i in items}))).all()
+    current_runs = {r.id for r in day_runs if r.settings_snapshot.get('distribution_policy') == POLICY
+                    and r.target_count == DAILY_TARGET and r.status in {'partial', 'failed', 'completed'}}
+    if now.hour >= 6 and current_runs:
+        for owner in EDITOR_IDS:
+            assigned = sum(i.run_id in current_runs and editor_id(i) == owner for i in items)
+            if assigned < 2:
+                name = next(a['name'] for a in AGENTS if a['id'] == owner)
+                alerts.append({'key': f'issue:coverage:{now.date()}:{owner}', 'owner_id': 'director',
+                    'owner': f'老周 / {name}', 'editor_id': owner, 'day': str(now.date()),
+                    'message': f'{name}尚缺{2-assigned}条选题任务，不能以其他岗位产量代替',
+                    'next_action': '老周安排对应研究员补齐原始来源与可用画面，再分派独立选题；不足须主动汇报，不能拿旧样片算今日原创'})
     for item in items:
         incident = db.get(FactoryWorkOrder, "issue:production:" + item.id)
         recovering = bool(incident and incident.status != "completed" and item.status not in {"completed", "failed"})

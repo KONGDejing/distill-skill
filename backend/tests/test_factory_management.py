@@ -195,3 +195,64 @@ def test_today_assignments_include_carried_delivery_and_exclude_cancelled_slots(
     assert state['summary']['publish_target']==3 and state['summary']['scheduled_slots']==1
     manager.sync_work_orders(db,{'summary':{'target':6,'fully_submitted_slots':0}},analytics,now)
     assert db.get(FactoryWorkOrder,'daily:2026-11-11:producer3').evidence['done']==1
+
+
+def test_owner_demerit_is_durable_idempotent_and_distinct_from_task_completion(db):
+    decision = manager.record_director_demerit(db, decision_id='owner-decision-1',
+        reason='生产缺口未主动推进', now=datetime(2026, 1, 1))
+    repeated = manager.record_director_demerit(db, decision_id='owner-decision-1', reason='重复提交')
+    assert repeated.key == decision.key
+    summary = manager.accountability(db)
+    assert summary['demerit_count'] == 1
+    assert summary['records'][0]['reason'] == '生产缺口未主动推进'
+    # This history survives the daily task list's age window and cannot be
+    # mistaken for completed production work or a new automatically issued penalty.
+    assert manager.work_orders(db, now=datetime(2026, 2, 1)) == []
+    assert manager.accountability(db)['demerit_count'] == 1
+    assert decision.evidence['decision_source'] == 'explicit_owner_instruction'
+
+
+def test_director_is_scored_on_accepted_due_work_instead_of_service_heartbeat(db):
+    now = datetime.utcnow()
+    for key, status, count in [('done', 'completed', 2), ('pending', 'pending', 0), ('false-complete', 'completed', 0)]:
+        db.add(FactoryWorkOrder(key=key, kind='daily', owner='producer', title='真实交付', acceptance='2条',
+            due_at=now-timedelta(minutes=1), status=status,
+            evidence={'done':count, 'required':2, 'checked_at':now.isoformat()}))
+    db.add(FactoryWorkOrder(key='future',kind='daily',owner='producer3',title='未到期任务',acceptance='2条',
+        due_at=now+timedelta(hours=1),evidence={}))
+    db.commit()
+    card=next(c for c in manager.scorecards(db, {'platforms':[]}) if c['agent_id']=='director')
+    check=card['checks'][0]
+    assert check['name']=='团队任务交付验收'
+    assert check['sample_count']==3 and check['earned']==6.7
+    assert '巡检在线不计工作成果' in check['basis']
+    assert card['total_score'] is None
+
+
+def test_unassigned_editor_becomes_director_incident_and_is_not_counted_as_video(db, monkeypatch):
+    from models.factory import FactoryItem, FactoryRun
+    from services import factory_operations as operations
+    from services.factory_editorial_policy import POLICY
+    now=datetime(2026,11,17,4,tzinfo=timezone.utc)  # noon in Beijing
+    run=FactoryRun(target_count=6,status='partial',active_slot=None,created_at=datetime(2026,11,16,16,30),
+        settings_snapshot={'distribution_policy':POLICY,'target_duration_seconds':150})
+    db.add(run);db.flush()
+    for index,owner in enumerate(['producer','producer','producer2','producer2']):
+        db.add(FactoryItem(run_id=run.id,position=index,status='failed',created_at=datetime(2026,11,16,17),
+            brief={'editor_id':owner,'distribution':{'day':'2026-11-17'}}))
+    db.commit()
+    monkeypatch.setattr(operations.factory_analytics,'overview',lambda _:{'platforms':[]})
+    state=operations.overview(db,now)
+    gaps=[a for a in state['alerts'] if a.get('key','').startswith('issue:coverage:')]
+    assert len(gaps)==1 and gaps[0]['editor_id']=='producer3' and gaps[0]['owner_id']=='director'
+    manager.sync_work_orders(db,state,{'platforms':[]},now)
+    incident=db.get(FactoryWorkOrder,'issue:coverage:2026-11-17:producer3')
+    assert incident.status=='blocked'
+    for position in (4,5):
+        db.add(FactoryItem(run_id=run.id,position=position,status='planned',created_at=datetime(2026,11,17,4),
+            brief={'editor_id':'producer3','distribution':{'day':'2026-11-17'}}))
+    db.commit()
+    state=operations.overview(db,now)
+    manager.sync_work_orders(db,state,{'platforms':[]},now)
+    assert incident.status=='completed' and '成片仍须单独验收' in incident.evidence['resolution']
+    assert state['summary']['completed']==0
