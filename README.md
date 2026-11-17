@@ -108,6 +108,8 @@ npm --prefix frontend run build
 
 内容工厂支持后台显式选择的本人音色：使用经校准的参考片段和匹配逐字文本，校验原录音及参考片段指纹，按真实句段音频时长对齐字幕。本人音色合成失败时暂停并保留已有音轨，不自动替换为普通声线；试听不会自动切换已完成的成片或发布排期。
 
+经试听采用连续段落模式的本人音色，把同段内的短句合为有界语段交给模型连贯合成，保留原文字、标点和段落边界，减少频繁重启及额外拼接停顿。音色与连续合成模式共同参与缓存指纹；字幕标记为语段实长配合短语插值，不冒充逐字语音识别对齐。
+
 GitHub仓库为 [KONGDejing/short-video-ai-factory](https://github.com/KONGDejing/short-video-ai-factory)，SSH远端为 `git@github.com:KONGDejing/short-video-ai-factory.git`。工程只使用 `short-video-ai-factory` 目录，旧的兼容软链接已移除；历史素材的绝对路径已迁移到新目录。历史数据库文件 `backend/distill.db` 继续使用，新增 `factory_*` 表；部署前备份保存在 `.runtime/backups/`。
 
 ## 内存保护

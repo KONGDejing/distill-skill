@@ -42,10 +42,13 @@ def selected_owner_voice(db):
     if (file_sha256(sample['path']) != calibrated.get('source_sha256')
             or file_sha256(reference) != calibrated.get('sha256')):
         raise ValueError('本人音色录音已变化，需重新校准，不使用旧音色缓存')
-    return {'voice_profile':'owner_clone', 'voice_name':selection,
+    result = {'voice_profile':'owner_clone', 'voice_name':selection,
             'voice_label':sample.get('name') or '本人音色', 'voice_rate':'+0%', 'voice_pitch':'+0Hz',
             'voice_reference_sha256':calibrated['sha256'],
             '_reference_path':str(reference), '_reference_text':calibrated['prompt_text']}
+    if calibrated.get('prosody') == 'connected_paragraph_v1':
+        result.update(voice_prosody='connected_paragraph_v1', _connected_speech=True)
+    return result
 
 
 def resolve_voice_profile(content, voice=DEFAULT_VOICE):
@@ -97,12 +100,14 @@ def synthesize_factory_audio(item_id, content, output_dir, voice=DEFAULT_VOICE, 
         candidate_audio = Path(temporary) / "narration.mp3"
         if owner_voice:
             try:
+                options = {'connected_speech':True} if profile.get('_connected_speech') else {}
                 cues = speech._cosyvoice_speech(spoken, candidate_audio, Path(temporary), display_text=display,
-                    reference_path=profile['_reference_path'], reference_text=profile['_reference_text'])
+                    reference_path=profile['_reference_path'], reference_text=profile['_reference_text'], **options)
             except Exception as exc:
                 raise RuntimeError(f'本人音色合成失败（{type(exc).__name__}），已暂停配音，未回退普通音色') from None
             engine = 'cosyvoice2-owner-reference'
-            timing_method = 'sentence_audio_duration_with_phrase_interpolation'
+            timing_method = ('connected_utterance_audio_duration_with_phrase_interpolation'
+                             if profile.get('_connected_speech') else 'sentence_audio_duration_with_phrase_interpolation')
         try:
             if not owner_voice:
                 cues = asyncio.run(speech._edge_speech(spoken, profile["voice_name"], candidate_audio,

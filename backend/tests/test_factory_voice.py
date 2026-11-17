@@ -180,12 +180,44 @@ def test_backend_owner_selection_requires_calibrated_unchanged_reference(tmp_pat
             'source_sha256':file_sha256(source)}}];db.commit()
         profile=factory_voice.selected_owner_voice(db)
         assert profile['voice_profile']=='owner_clone' and profile['_reference_path']==str(reference)
+        calibrated={**user.voice_clone_samples[0]['factory_reference'],'prosody':'connected_paragraph_v1'}
+        user.voice_clone_samples=[{**user.voice_clone_samples[0],'factory_reference':calibrated}];db.commit()
+        connected=factory_voice.selected_owner_voice(db)
+        assert connected['_connected_speech'] is True and connected['voice_prosody']=='connected_paragraph_v1'
         source.write_bytes(b'changed recording')
         with pytest.raises(ValueError,match='录音已变化'):
             factory_voice.selected_owner_voice(db)
         user.tts_voice='zh-CN-YunyangNeural';db.commit()
         assert factory_voice.selected_owner_voice(db) is None
     engine.dispose()
+
+
+def test_connected_owner_speech_is_an_explicit_cache_and_backend_option(tmp_path,monkeypatch,voice_backend):
+    profile={'voice_profile':'owner_clone','voice_name':'clone:owner','voice_label':'本人音色',
+        '_reference_path':'ref.wav','_reference_text':'参考录音文字。','_connected_speech':True,
+        'voice_prosody':'connected_paragraph_v1','voice_reference_sha256':'approved-reference'}
+    def local(text,audio,work,display_text,**kwargs):
+        assert kwargs['connected_speech'] is True
+        audio.write_bytes(b'connected speech')
+        return [{'text':display_text,'start':0,'end':5}]
+    monkeypatch.setattr(factory_voice.speech,'_cosyvoice_speech',local)
+    result=factory_voice.synthesize_factory_audio('connected',{'script':'先看动作。再看结果。'},tmp_path,owner_voice=profile)
+    assert result['voice_prosody']=='connected_paragraph_v1'
+    assert result['subtitle_timing']=='connected_utterance_audio_duration_with_phrase_interpolation'
+    assert '_connected_speech' not in result
+
+
+def test_connected_utterances_preserve_paragraphs_and_all_words_without_tiny_sentence_restarts():
+    from services.factory_media import _connected_utterances,_speech_text
+    text='先看机器人动作。再看完成了什么任务？这一步要对照原始演示。\n接着检查条件。最后给出结论。'
+    groups=_connected_utterances(text)
+    assert groups==['先看机器人动作。再看完成了什么任务？这一步要对照原始演示。','接着检查条件。最后给出结论。']
+    assert ''.join(groups)==text.replace('\n','')
+    long='容量65MB，版本3.2。'*12
+    groups=_connected_utterances(long,limit=48)
+    assert all(len(g)<=48 for g in groups)
+    assert ''.join(groups)==long
+    assert ''.join(_speech_text(g) for g in groups)==_speech_text(long)
 
 
 @pytest.mark.parametrize("options,expected", [({}, ("+0%", "+0Hz")),

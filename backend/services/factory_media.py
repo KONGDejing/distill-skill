@@ -99,6 +99,21 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.findall(r"[^。！？!?\n]+[。！？!?]?", text) if s.strip()]
 
 
+def _connected_utterances(text: str, limit: int = 120) -> list[str]:
+    """Keep related short sentences in one inference, preserving all original words."""
+    result = []
+    for paragraph in text.splitlines():
+        buffer = ''
+        for sentence in _sentences(paragraph):
+            if buffer and len(buffer)+len(sentence)>limit:
+                result.append(buffer)
+                buffer = ''
+            buffer += sentence
+        if buffer:
+            result.append(buffer)
+    return result
+
+
 def _speech_segments(display: str, spoken: str) -> list[dict]:
     """Bound long mixed-language specifications while preserving their text."""
     if len(display) <= 64 or not re.search(r"[A-Za-z]", display) or not re.search(r"\d", display):
@@ -182,7 +197,7 @@ async def _edge_speech(text: str, voice: str, audio: Path, *,
 
 
 def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | None = None,
-                     *, reference_path=None, reference_text=None) -> list[dict]:
+                     *, reference_path=None, reference_text=None, connected_speech=False) -> list[dict]:
     from services.factory_resources import ensure_memory_available
     ensure_memory_available()
     engine = Path(os.getenv("COSYVOICE_DIR", str(BACKEND / "engines" / "CosyVoice"))).resolve()
@@ -198,13 +213,18 @@ def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | No
     job = work / "speech_job.json"
     wav = work / "speech.wav"
     timing = work / "speech_timings.json"
-    job.write_text(json.dumps({"text": text, "sentences": [{"display": s, "spoken": _speech_text(s)} for s in _sentences(display_text or text)],
+    units = _connected_utterances(display_text or text) if connected_speech else _sentences(display_text or text)
+    job.write_text(json.dumps({"text": text, "sentences": [{"display": s, "spoken": _speech_text(s)} for s in units],
                                "engine": str(engine), "model": str(model),
                                "reference": str(reference), "wav": str(wav), "timing": str(timing)},
                               ensure_ascii=False), encoding="utf-8")
     if reference_path:
         value = json.loads(job.read_text())
         value['reference_text'] = reference_text
+        job.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+    if connected_speech:
+        value = json.loads(job.read_text())
+        value.update(join_pause_seconds=0.08, speech_unit='connected_utterance')
         job.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
     env = os.environ.copy()
     # The bundled environment may use a CUDA build newer than the host driver.
@@ -256,6 +276,9 @@ def _cosyvoice_job(job_path: str) -> None:
     model.add_zero_shot_spk(job.get('reference_text', "希望你以后能够做的比我还好呦。"), job["reference"], "factory_reference")
     sentences = job.get("sentences") or [{"display": s, "spoken": s} for s in _sentences(job["text"])]
     audio_parts, timings, cursor = [], [], 0.0
+    join_pause = float(job.get('join_pause_seconds', 0.18))
+    if not 0 <= join_pause <= 1:
+        raise ValueError('无效的配音段落间隔')
     for sentence_index, entry in enumerate(sentences):
         sentence = entry["spoken"].strip()
         if not sentence:
@@ -289,9 +312,11 @@ def _cosyvoice_job(job_path: str) -> None:
         for cue in sentence_cues:
             cue.update(sentence_index=sentence_index, sentence_start=cursor,
                        sentence_end=cursor + duration, sentence_text=entry["display"])
+            if job.get('speech_unit'):
+                cue['speech_unit'] = job['speech_unit']
             timings.append(cue)
-        audio_parts.extend([samples, torch.zeros((1, int(model.sample_rate * 0.18)))])
-        cursor += duration + 0.18
+        audio_parts.extend([samples, torch.zeros((1, int(model.sample_rate * join_pause)))])
+        cursor += duration + join_pause
     if not audio_parts:
         raise RuntimeError("文案为空")
     # Leave no gratuitous trailing silence in the produced narration.
