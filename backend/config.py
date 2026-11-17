@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     FACTORY_OPENAI_REASONING: Literal["low", "medium", "high"] = "low"
     FACTORY_CODEX_MODEL: str = "gpt-6-astra"
     FACTORY_CODEX_BIN: str = "codex"
-    FACTORY_CODEX_TIMEOUT_SECONDS: int = Field(default=180, ge=30, le=600)
+    FACTORY_CODEX_REASONING_EFFORT: Literal['low', 'medium', 'high'] = 'medium'
+    FACTORY_CODEX_TIMEOUT_SECONDS: int = Field(default=360, ge=30, le=600)
     # Zero disables the optional per-run token stop. Subscription limits remain external.
     FACTORY_MAX_TOTAL_TOKENS: int = Field(default=0, ge=0)
 

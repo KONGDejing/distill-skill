@@ -6,7 +6,8 @@ from services.factory_media import _probe, _run
 from services.factory_resources import ensure_memory_available
 
 
-def render_delivery_video(source, cover, target, *, opening_mode="brand_card", title_overlay=None):
+def render_delivery_video(source, cover, target, *, opening_mode="brand_card", title_overlay=None,
+                          persistent_title=False, branding=None, attribution_y=700):
     ensure_memory_available()
     source, cover, target = Path(source), Path(cover), Path(target)
     info = _probe(source)
@@ -21,6 +22,9 @@ def render_delivery_video(source, cover, target, *, opening_mode="brand_card", t
     if opening_mode == "first_frame_title" and not title_overlay:
         raise ValueError("真实首帧开场必须提供透明标题层")
     opening_seconds = min(2.4 if opening_mode == "first_frame_title" else 0.9, duration / 2)
+    if persistent_title and opening_mode != 'first_frame_title':
+        raise ValueError('常驻标题必须叠加在真实视频上')
+    title_seconds = duration if persistent_title else opening_seconds
     layer = Path(title_overlay) if opening_mode == "first_frame_title" else cover
     if opening_mode == "first_frame_title":
         from PIL import Image
@@ -29,10 +33,20 @@ def render_delivery_video(source, cover, target, *, opening_mode="brand_card", t
                 raise ValueError("首帧标题层必须保留透明区域，不能替换真实画面")
     width, height = video['width'], video['height']
     temp = target.with_name(target.stem + '.tmp.mp4')
+    brand_quality = {}
+    graph = f'[1:v]scale={width}:{height},setsar=1[c];[0:v][c]overlay=enable=\'lt(t,{title_seconds})\':shortest=1'
+    if branding:
+        from services.factory_branding import write_branding_subtitle
+        signature = target.with_suffix('.branding.ass')
+        brand_quality = write_branding_subtitle(branding, duration, signature, position_y=attribution_y)
+        escaped = str(signature.resolve()).replace('\\', '\\\\').replace(':', '\\:').replace("'", "'\\''")
+        graph += f"[lettered];[lettered]ass=filename='{escaped}'[v]"
+    else:
+        graph += '[v]'
     try:
         _run(['ffmpeg', '-y', '-v', 'error', '-threads', '2', '-i', str(source),
               '-loop', '1', '-framerate', '24', '-i', str(layer), '-filter_complex_threads', '1',
-              '-filter_complex', f'[1:v]scale={width}:{height},setsar=1[c];[0:v][c]overlay=enable=\'lt(t,{opening_seconds})\':shortest=1[v]',
+              '-filter_complex', graph,
               '-map', '[v]', '-map', '0:a:0', '-t', str(duration), '-c:v', 'libx264', '-preset', 'veryfast',
               '-crf', '20', '-pix_fmt', 'yuv420p', '-threads', '2', '-c:a', 'copy', '-movflags', '+faststart', str(temp)], timeout=1200)
         output = _probe(temp)
@@ -49,7 +63,10 @@ def render_delivery_video(source, cover, target, *, opening_mode="brand_card", t
         os.replace(temp, target)
     finally:
         temp.unlink(missing_ok=True)
-    return {'cover_integrated': True, 'opening_mode': opening_mode,
+    from services.factory_branding import file_sha256
+    return {**brand_quality, 'delivery_sha256': file_sha256(target),
+            'cover_integrated': True, 'opening_mode': opening_mode,
             'source_motion_preserved': opening_mode == 'first_frame_title',
+            'persistent_title': persistent_title, 'title_seconds': title_seconds,
             'opening_seconds': opening_seconds, 'audio_preserved': True,
             'duration': float(output['format']['duration'])}

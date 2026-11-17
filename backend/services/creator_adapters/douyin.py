@@ -259,6 +259,44 @@ class Adapter(SubmissionWatch, BaseAdapter):
         if self._location_control().locator('.semi-select-selection-text').inner_text().strip() != '北京市':
             raise ValueError("作品位置在准备后发生变化，未点击提交")
 
+    def _download_options(self):
+        # Observed official 保存权限 group. Its inputs are checkboxes and their
+        # native checked flags can lag behind the controlled label state.
+        group = self.page.locator('[class*="download-content-"]')
+        if group.count() != 1 or not group.is_visible():
+            raise ValueError("无法唯一定位抖音官方保存权限，未提交")
+        allow = group.locator('label').filter(has=self.page.get_by_text('允许', exact=True))
+        deny = group.locator('label').filter(has=self.page.get_by_text('不允许', exact=True))
+        if allow.count() != 1 or deny.count() != 1:
+            raise ValueError("官方保存权限选项不明确，未提交")
+        return allow, deny
+
+    def set_download_permission(self, payload):
+        if payload.get('allow_download') is not False:
+            raise ValueError("本账号必须禁止作品下载，未提交")
+        self._verified_download = None
+        allow, deny = self._download_options()
+        deny.click(timeout=5000)
+        try:
+            expect(deny).to_have_attribute('data-checked', 'true', timeout=5000)
+            expect(allow).to_have_attribute('data-checked', 'false', timeout=5000)
+        except AssertionError as exc:
+            raise ValueError("官方不允许保存尚未生效，未提交") from exc
+        self._verified_download = {'allow_download': False, 'selected_text': '不允许',
+                                   'verification_method': 'official_editor_save_permission',
+                                   'item_id': payload.get('item_id')}
+        return dict(self._verified_download)
+
+    def require_download_permission(self, prepared):
+        evidence = getattr(self, '_verified_download', None)
+        if (prepared.get('allow_download') is not False or not evidence
+                or evidence.get('allow_download') is not False
+                or evidence.get('item_id') != prepared.get('item_id')):
+            raise ValueError("作品禁止下载尚未在官方表单核验，未点击提交")
+        allow, deny = self._download_options()
+        if deny.get_attribute('data-checked') != 'true' or allow.get_attribute('data-checked') != 'false':
+            raise ValueError("官方保存权限在准备后发生变化，未点击提交")
+
     def prepare(self, payload):
         self.page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=45000)
         self.page.locator('input[type=file][accept*="video"]').first.set_input_files(payload["video_path"], timeout=30000)
@@ -298,9 +336,11 @@ class Adapter(SubmissionWatch, BaseAdapter):
                 pass
         self._prepared_title = payload["title"]
         location = self.set_publication_location(payload)
+        download = self.set_download_permission(payload)
         self.publication_control(payload, payload)
         return {"status": "prepared", "uploaded": True, "ai_disclosure": "内容由AI生成", "location_evidence": location,
-                "message": "视频、文案、竖封面及AI声明已准备，等待定时提交"}
+                "download_permission_evidence": download,
+                "message": "视频、文案、封面、AI声明及禁止下载已核验，等待定时提交"}
 
     def publication_control(self, payload, prepared):
         if urlsplit(self.page.url).path != "/creator-micro/content/post/video":
@@ -314,4 +354,5 @@ class Adapter(SubmissionWatch, BaseAdapter):
             raise ValueError("未核验到AI内容声明，尚未提交")
         if self.visible([self.page.get_by_text("重新上传", exact=True)]) is None:
             raise ValueError("视频上传尚未完成")
+        self.require_download_permission(prepared)
         return self.page.get_by_role("button", name="发布", exact=True)

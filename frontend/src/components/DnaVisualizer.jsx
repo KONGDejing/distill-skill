@@ -3,6 +3,13 @@ export default function DnaVisualizer({ dna }) {
 
   const sections = [
     {
+      title: '真实画面分析', color: 'blue', data: dna.viral_techniques?.visual_style,
+      render: (d) => <div className="space-y-3">
+        {Object.entries({ cover: '封面', opening: '开场', picture_layout: '构图', evidence_highlighting: '证据呈现', subtitle: '字幕', adaptation_rules: '可借鉴方法', scope: '分析范围' }).map(([key, label]) =>
+          <DnaRow key={key} label={label} value={typeof d?.[key] === 'string' ? d[key] : d?.[key] ? JSON.stringify(d[key]) : null} />)}
+      </div>,
+    },
+    {
       title: '价值观定位',
       color: 'blue',
       data: dna.value_positioning,

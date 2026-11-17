@@ -555,8 +555,29 @@
     "抖音每天最多自动发布3条，每位剪辑师各选1条；保留AI声明、官方验证与防重复提交检查。",
     "最新规则：抖音每日3条，三位剪辑师各1条；快手每日2条，从当天未上抖音的作品中按内容选择，两个平台不自动重复上传。历史回执保留。"
   ],
-  "version": 3,
-  "approved_on": "2026-11-16",
+  "version": 4,
+  "approved_on": "2026-11-17",
   "distribution_policy": "douyin-three-tracks-v2",
-  "kuaishou_auto_policy": "kuaishou-two-exclusive-v1"
+  "kuaishou_auto_policy": "kuaishou-two-exclusive-v1",
+  "visual_reference": {
+    "account": "新智元",
+    "actual_samples": [
+      "https://www.douyin.com/video/7705677631496146214",
+      "https://www.douyin.com/video/7706791731877956905"
+    ],
+    "scope": "两个不同原视频的实际转写与六点抽帧；不代表完整动效或微信视频号审查",
+    "principles": [
+      "具体动作、成果或事件开头，真实证据兑现",
+      "每条独立真实主体封面，中上部大标题，画面持续运动",
+      "三位剪辑师保留独立栏目；真实论文页仅由小影2主导",
+      "不复制对标署名、标识、原稿或声线"
+    ]
+  },
+  "douyin_protection": {
+    "allow_download": false,
+    "official_permission_required": true,
+    "owner_attribution": "verified_private_account_burned_into_whole_video",
+    "original_sources_preserved": true,
+    "identity_storage": "private_runtime_only"
+  }
 }

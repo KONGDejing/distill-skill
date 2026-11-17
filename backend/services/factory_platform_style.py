@@ -3,8 +3,8 @@ from copy import deepcopy
 
 PLATFORM_STYLES = {
     'douyin': {'platform': 'douyin', 'name': '抖音', 'accent': '#5ef0c5', 'label': 'AI · 看懂科技变化',
-        'opening_mode': 'brand_card', 'opening_brief': '沿用统一品牌图片片头，配合本条标题。',
-        'narrative': '一个明确问题开场→真实演示或对比→解释原因与边界→观点式收尾。节奏紧凑，先让观众看见问题，重点画面留观察时间。',
+        'opening_mode': 'first_frame_title', 'opening_brief': '本条真实首帧就是封面背景，主体对应本期人物、机器人、产品或论文证据；叠加中上部大标题，背景从第一秒继续运动。每条独立内容画面，不再使用统一AI品牌图片片头。',
+        'narrative': '先展示真实动作、成果或本期事件→一句具体的新进展或反差→解释2–3个关键原理→用真实结果兑现开头→自然邀请继续关注。开场3秒有具体对象，10秒内说明发生了什么。短句、主动语态、关键数字与对应证据同屏；画面跟随口播对象变化，不把整片做成文字播报。',
         'copy': '短标题突出一个冲突或疑问；正文简洁给看点，结尾问一个与本条相关的问题。'},
     'xiaohongshu': {'platform': 'xiaohongshu', 'name': '小红书', 'accent': '#ffacb7', 'label': 'AI · 实用科技笔记',
         'opening_mode': 'first_frame_title', 'opening_brief': '直接用本条视频真实首帧，叠加视频大标题；紧凑笔记式文字，不能套用抖音独立图片片头。背景按原视频播放。',

@@ -25,6 +25,7 @@ export const api = {
   // Videos
   getVideo: (id) => request(`/videos/${id}`),
   transcribeVideo: (id) => request(`/videos/${id}/transcribe`, { method: 'POST' }),
+  retryVideo: (id) => request(`/videos/${id}/retry`, { method: 'POST' }),
   deleteVideo: (id) => request(`/videos/${id}`, { method: 'DELETE' }),
 
   // Scripts

@@ -26,6 +26,21 @@ class VideoLinkAdd(BaseModel):
     title: Optional[str] = None
 
 
+def video_summary(video):
+    from pathlib import Path
+    from config import settings
+    media_url = None
+    if video.video_path:
+        path = Path(video.video_path).resolve()
+        if path.is_relative_to(settings.STORAGE_DIR.resolve()) and path.is_file():
+            media_url = '/storage/' + path.relative_to(settings.STORAGE_DIR.resolve()).as_posix()
+    return {'id': video.id, 'source_url': video.source_url, 'title': video.title,
+            'status': video.status, 'error_message': video.error_message, 'video_url': media_url,
+            'has_transcript': bool(video.transcript),
+            'transcript_preview': video.transcript[:500] if video.transcript else None,
+            'created_at': video.created_at.isoformat() if video.created_at else None}
+
+
 @router.get("")
 def list_bloggers(db: Session = Depends(get_db)):
     bloggers = db.query(Blogger).order_by(Blogger.created_at.desc()).all()
@@ -87,18 +102,7 @@ def get_blogger(blogger_id: str, db: Session = Depends(get_db)):
             "content_calendar": dna.content_calendar,
             "version": dna.version,
         } if dna else None,
-        "videos": [
-            {
-                "id": v.id,
-                "source_url": v.source_url,
-                "title": v.title,
-                "status": v.status,
-                "transcript_preview": v.transcript[:500] if v.transcript else None,
-                "has_transcript": v.transcript is not None,
-                "created_at": v.created_at.isoformat() if v.created_at else None,
-            }
-            for v in videos
-        ],
+        "videos": [video_summary(v) for v in videos],
     }
 
 
@@ -118,9 +122,22 @@ def add_video(blogger_id: str, data: VideoLinkAdd, db: Session = Depends(get_db)
     if not blogger:
         raise HTTPException(status_code=404, detail="博主不存在")
 
+    from services.video_downloader import normalize_video_url
+    try:
+        source_url = normalize_video_url(data.source_url)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    from sqlalchemy import update
+    db.execute(update(Blogger).where(Blogger.id == blogger_id).values(updated_at=Blogger.updated_at))
+    for existing in db.query(SourceVideo).filter_by(blogger_id=blogger_id).order_by(SourceVideo.created_at):
+        try:
+            if normalize_video_url(existing.source_url) == source_url:
+                return {**video_summary(existing), 'reused': True, 'message': '该视频已存在，保留原记录；失败时可点击重新导入。'}
+        except ValueError:
+            continue
     video = SourceVideo(
         blogger_id=blogger_id,
-        source_url=data.source_url,
+        source_url=source_url,
         title=data.title,
         status="pending",
     )
@@ -130,27 +147,21 @@ def add_video(blogger_id: str, data: VideoLinkAdd, db: Session = Depends(get_db)
 
     # Auto-trigger download + transcribe pipeline
     from tasks.celery_app import run_download_and_transcribe
-    run_download_and_transcribe.delay(str(video.id))
+    try:
+        task = run_download_and_transcribe.delay(str(video.id))
+    except Exception:
+        video.status = 'error'; video.error_message = '下载队列暂时不可用，请点击重新导入'
+        db.commit()
+        raise HTTPException(503, video.error_message) from None
 
-    return {"id": video.id, "source_url": video.source_url, "status": video.status, "task": "download_and_transcribe"}
+    return {"id": video.id, "source_url": video.source_url, "status": video.status, "task": "download_and_transcribe", 'task_id': task.id}
 
 
 @router.get("/{blogger_id}/videos")
 def list_blogger_videos(blogger_id: str, db: Session = Depends(get_db)):
     videos = db.query(SourceVideo).filter(SourceVideo.blogger_id == blogger_id).order_by(SourceVideo.created_at.desc()).all()
     return {
-        "videos": [
-            {
-                "id": v.id,
-                "source_url": v.source_url,
-                "title": v.title,
-                "status": v.status,
-                "has_transcript": v.transcript is not None,
-                "transcript_preview": v.transcript[:500] if v.transcript else None,
-                "created_at": v.created_at.isoformat() if v.created_at else None,
-            }
-            for v in videos
-        ]
+        "videos": [video_summary(v) for v in videos]
     }
 
 
@@ -159,6 +170,9 @@ def trigger_analyze(blogger_id: str, db: Session = Depends(get_db)):
     blogger = db.query(Blogger).filter(Blogger.id == blogger_id).first()
     if not blogger:
         raise HTTPException(status_code=404, detail="博主不存在")
+
+    if blogger.status == BloggerStatus.ANALYZING.value:
+        return {"status": "analyzing", "blogger_id": blogger_id, "message": "已有分析进行中，未重复安排"}
 
     videos = db.query(SourceVideo).filter(SourceVideo.blogger_id == blogger_id).all()
     transcripts = [v.transcript for v in videos if v.transcript]
@@ -170,7 +184,13 @@ def trigger_analyze(blogger_id: str, db: Session = Depends(get_db)):
 
     # Trigger async task
     from tasks.celery_app import run_distill_analysis
-    run_distill_analysis.delay(blogger_id)
+    try:
+        run_distill_analysis.delay(blogger_id)
+    except Exception:
+        blogger.status = BloggerStatus.ERROR.value
+        blogger.error_message = '分析队列暂时不可用，请稍后重新分析'
+        db.commit()
+        raise HTTPException(503, blogger.error_message) from None
 
     return {"status": "analyzing", "blogger_id": blogger_id}
 

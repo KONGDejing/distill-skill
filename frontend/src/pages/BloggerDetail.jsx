@@ -11,9 +11,17 @@ export default function BloggerDetail() {
   const [showAdd, setShowAdd] = useState(false)
   const [videoUrl, setVideoUrl] = useState('')
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const importing = blogger?.videos?.some(v => ['pending', 'downloading', 'extracting', 'transcribing'].includes(v.status))
   const [actionLoading, setActionLoading] = useState('')
 
   useEffect(() => { loadBlogger() }, [id])
+  const busy = importing || blogger?.status === 'analyzing'
+  useEffect(() => {
+    if (!busy) return
+    const timer = setInterval(loadBlogger, 4000)
+    return () => clearInterval(timer)
+  }, [id, busy])
 
   async function loadBlogger() {
     try {
@@ -31,7 +39,8 @@ export default function BloggerDetail() {
     setError('')
     setActionLoading('adding')
     try {
-      await api.addVideo(id, { source_url: videoUrl })
+      const result = await api.addVideo(id, { source_url: videoUrl })
+      setNotice(result.reused ? result.message : '已添加视频，正在下载和转写。')
       setShowAdd(false)
       setVideoUrl('')
       loadBlogger()
@@ -46,11 +55,11 @@ export default function BloggerDetail() {
     setActionLoading(`download-${videoId}`)
     try {
       // Trigger download + transcribe pipeline
-      await api.transcribeVideo(videoId)
-      alert('已触发下载和转写任务，请稍后刷新页面查看结果')
-      setTimeout(() => loadBlogger(), 3000)
+      await api.retryVideo(videoId)
+      setNotice('已重新安排导入，会保留已完成的视频和转写步骤。')
+      await loadBlogger()
     } catch (e) {
-      alert('触发失败: ' + e.message)
+      setError(e.message)
     } finally {
       setActionLoading('')
     }
@@ -60,8 +69,8 @@ export default function BloggerDetail() {
     setActionLoading('analyze')
     try {
       await api.analyzeBlogger(id)
-      alert('已触发蒸馏分析，请稍后刷新页面查看结果')
-      setTimeout(() => loadBlogger(), 5000)
+      setNotice('正在分析实际转写与可用画面，结果会自动更新。')
+      await loadBlogger()
     } catch (e) {
       setError(e.message)
     } finally {
@@ -90,6 +99,7 @@ export default function BloggerDetail() {
         <ArrowLeft size={16} /> 返回博主列表
       </Link>
 
+      {notice && <div role="status" className="mb-4 rounded-lg bg-green-500/10 p-3 text-sm text-green-300">{notice}</div>}
       {error && <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-3 rounded-lg mb-4 text-sm">{error}</div>}
 
       {/* Header */}
@@ -108,7 +118,7 @@ export default function BloggerDetail() {
             className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm transition-colors">
             <Plus size={16} /> 添加视频
           </button>
-          <button onClick={handleAnalyze} disabled={!hasTranscripts || actionLoading === 'analyze'}
+          <button onClick={handleAnalyze} disabled={!hasTranscripts || blogger.status === 'analyzing' || actionLoading === 'analyze'}
             className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm transition-colors">
             <RefreshCw size={16} className={actionLoading === 'analyze' ? 'animate-spin' : ''} />
             {blogger.content_dna ? '重新蒸馏' : '开始蒸馏分析'}
@@ -126,7 +136,7 @@ export default function BloggerDetail() {
                 <label className="block text-sm text-gray-400 mb-1">视频链接 *</label>
                 <input required value={videoUrl} onChange={e => setVideoUrl(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                  placeholder="粘贴抖音/小红书/快手视频链接" />
+                  placeholder="支持粘贴完整分享文案，系统会提取视频网址" />
               </div>
               <div className="flex gap-3 justify-end">
                 <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white">取消</button>
@@ -166,16 +176,18 @@ export default function BloggerDetail() {
                       </span>
                       {v.has_transcript && <span className="text-xs text-green-400">已转写</span>}
                     </div>
+                    {v.error_message && <p role="alert" className="mt-2 break-words text-xs leading-relaxed text-red-300">{v.error_message}</p>}
+                    {v.video_url && <details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">预览导入的真实视频</summary><video controls preload="none" src={v.video_url} className="mt-2 max-h-96 max-w-full rounded-lg" /></details>}
                     {v.transcript_preview && (
                       <p className="text-xs text-gray-500 mt-2 line-clamp-2">{v.transcript_preview}</p>
                     )}
                   </div>
                   <div className="flex gap-2 ml-4">
-                    {(v.status === 'downloaded' || v.status === 'pending') && (
+                    {(['downloaded', 'pending', 'error'].includes(v.status)) && (
                       <button onClick={() => handleDownload(v.id)} disabled={actionLoading === `download-${v.id}`}
                         className="flex items-center gap-1 px-3 py-1.5 bg-green-600/20 text-green-400 rounded text-xs hover:bg-green-600/30 transition-colors">
                         <Mic size={14} />
-                        {actionLoading === `download-${v.id}` ? '处理中...' : '下载并转写'}
+                        {actionLoading === `download-${v.id}` ? '处理中...' : v.status === 'error' ? '重新导入' : '下载并转写'}
                       </button>
                     )}
                   </div>

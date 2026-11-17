@@ -9,6 +9,7 @@ from models.factory import FactoryItem, FactoryPublication, FactoryEvent
 from services.factory_resources import ensure_memory_available
 from services.factory_distribution import guard_publication, RESERVATION_KEY
 from services.factory_platform_policy import require_automation
+from services.factory_branding import require_owner_attribution
 
 LOCK_DIRECTORY = Path(__file__).resolve().parents[2] / '.runtime'
 
@@ -208,6 +209,10 @@ def _begin_publication(db, item_id, action, platform):
             step = "上传" if action == "prepare" else "发布"
             raise ValueError(f"{platform_name}{step}页面尚未完成真实联调，未创建操作任务")
     ensure_memory_available()
+    if platform == 'douyin':
+        if not (variant.get('video_path') and variant.get('cover_path')):
+            raise ValueError('抖音必须上传最终交付成片与定稿封面，请先完成平台打包')
+        require_owner_attribution(variant)
     payload = {"item_id": item.id}
     if action == "prepare":
         if platform in {"douyin", "kuaishou"} and not (variant.get("video_path") and variant.get("cover_path")):
@@ -220,6 +225,9 @@ def _begin_publication(db, item_id, action, platform):
                        title=variant["title"], caption=caption, tags=variant.get("tags", []), ai_generated=True)
         if platform in {"douyin", "kuaishou"}:
             payload["requested_publication_city"] = "北京"
+        if platform == 'douyin':
+            payload['allow_download'] = False
+            payload['owner_attribution'] = (variant.get('delivery_quality') or {}).get('branding_signature')
     job = existing if reuse_job else FactoryPublication(item_id=item_id, platform=platform, action=action)
     if reuse_job and action == "publish":
         db.add(FactoryEvent(run_id=item.run_id, agent_id="publisher", stage="platform_retry",

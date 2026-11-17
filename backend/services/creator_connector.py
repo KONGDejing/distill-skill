@@ -320,6 +320,11 @@ def _payload(platform, action, payload):
         raise ValueError("正文与标签超过平台连接器长度上限")
     result = {"item_id": item_id, "title": title.strip(), "caption": body, "tags": clean_tags,
               "video_path": _media(payload.get("video_path"), {".mp4", ".mov"}), "ai_generated": True}
+    if platform == 'douyin':
+        # Account policy cannot be relaxed by a stale queue/client payload.
+        result['allow_download'] = False
+        if payload.get('owner_attribution'):
+            result['owner_attribution'] = payload['owner_attribution']
     if automation_enabled(platform):
         result["requested_publication_city"] = "北京"
     if payload.get("cover_path"):
@@ -512,7 +517,8 @@ class _Browser:
             prior = ledger[item_id]
             if isinstance(prior, dict) and prior.get("status") == "submitted" and _valid_evidence(self.platform, prior.get("evidence")):
                 return {"status": "submitted", "item_id": item_id, "message": "已有官方提交回执，未重复点击",
-                        "evidence": prior["evidence"], "submission_attempted": True, "published": False}
+                        "evidence": prior["evidence"], "submission_attempted": True, "published": False,
+                        "publication_settings": prior.get('publication_settings', {})}
             raise ValueError("已有提交尝试，需要核对平台结果，禁止自动重试")
         self.submission_attempted = False
         if not self.prepared or self.prepared["item_id"] != item_id:
@@ -526,7 +532,15 @@ class _Browser:
             raise ValueError("未找到可用的官方发布控件，未点击提交")
         self.adapter.start_submission_watch()
         self.submission_attempted = True
-        ledger[item_id] = {"status": "attempting", "started_at": _now()}
+        publication_settings = {}
+        if self.platform == 'douyin':
+            permission = getattr(self.adapter, '_verified_download', None)
+            if isinstance(permission, dict):
+                publication_settings = {'allow_download': False,
+                    'download_permission_evidence': dict(permission),
+                    'owner_attribution': self.prepared.get('owner_attribution')}
+        ledger[item_id] = {"status": "attempting", "started_at": _now(),
+                           'publication_settings': publication_settings}
         try:
             _write(self.directory / "submissions.json", ledger)
             control.click()
@@ -534,11 +548,13 @@ class _Browser:
             if not _valid_evidence(self.platform, evidence):
                 raise ValueError("已点击但缺少官方成功回执，请人工核对，禁止自动重试")
             evidence = {**evidence, "url": _clean_url(evidence["url"])}
-            ledger[item_id] = {"status": "submitted", "submitted_at": _now(), "evidence": evidence}
+            ledger[item_id] = {"status": "submitted", "submitted_at": _now(), "evidence": evidence,
+                               'publication_settings': publication_settings}
             _write(self.directory / "submissions.json", ledger)
             self.prepared = None
             self.inspect()
             return {"status": "submitted", "item_id": item_id, "evidence": evidence,
+                    'publication_settings': publication_settings,
                     "message": "官方已确认提交，公开可见与审核状态仍以平台为准",
                     "submission_attempted": True, "published": False}
         finally:

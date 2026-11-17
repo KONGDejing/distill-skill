@@ -135,6 +135,8 @@ def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=Fals
             if runtime["provider"] == "codex":
                 from services.factory_codex import create_response as subscription_response
                 request.pop("temperature")
+                if agent_id in {'writer','producer','producer2','producer3','reviewer'}:
+                    request['reasoning_effort'] = 'high'
                 response = subscription_response(**request)
             elif runtime["provider"] == "openai":
                 request.pop("temperature")

@@ -49,7 +49,7 @@ def parse_events(stdout):
                               cached_input_tokens=usage.get("cached_input_tokens", 0)), stop_reason="completed")
 
 
-def create_response(*, model, system, messages, max_tokens):
+def create_response(*, model, system, messages, max_tokens, image_paths=None, reasoning_effort=None):
     environment = subscription_environment()
     try:
         login = subprocess.run([settings.FACTORY_CODEX_BIN, "login", "status"], env=environment,
@@ -62,13 +62,27 @@ def create_response(*, model, system, messages, max_tokens):
     with tempfile.TemporaryDirectory(prefix="factory-codex-role-") as directory:
         instructions = Path(directory) / "role.txt"
         instructions.write_text(system + "\n只完成当前内容岗位任务，返回JSON。不得调用工具、读写文件或执行命令。", encoding="utf-8")
+        effort = reasoning_effort or settings.FACTORY_CODEX_REASONING_EFFORT
+        if effort not in {'low', 'medium', 'high'}:
+            raise ValueError('无效的模型推理设置')
         command = [settings.FACTORY_CODEX_BIN, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                    "--skip-git-repo-check", "--sandbox", "read-only", "--model", model, "--json",
                    "-c", "approval_policy=\"never\"", "-c", "web_search=\"disabled\"",
-                   "-c", "model_reasoning_effort=\"low\"", "-c", "skills.include_instructions=false",
+                   "-c", "model_reasoning_effort=" + json.dumps(effort), "-c", "skills.include_instructions=false",
                    "-c", "project_doc_max_bytes=0", "-c", "model_instructions_file=" + json.dumps(str(instructions))]
         for feature in DISABLED:
             command += ["--disable", feature]
+        if image_paths:
+            import shutil
+            if len(image_paths) > 4:
+                raise ValueError('视觉核对每次最多4张抽帧图')
+            for index, value in enumerate(image_paths):
+                source = Path(value).resolve(strict=True)
+                if source.suffix.lower() not in {'.png','.jpg','.jpeg','.webp'} or source.stat().st_size > 10_000_000:
+                    raise ValueError('视觉核对图片类型或大小无效')
+                copied = Path(directory) / f'reference-{index}{source.suffix.lower()}'
+                shutil.copy2(source, copied)
+                command += ['--image', str(copied)]
         command += ["-"]
         prompt = "\n\n".join(m["content"] for m in messages) + f"\n只输出所需JSON，避免重复材料，目标输出不超过{max_tokens} tokens。"
         try:

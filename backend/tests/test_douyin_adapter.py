@@ -148,6 +148,7 @@ def test_prepare_waits_for_ai_radio_and_never_confirms_an_unselected_declaration
     client = adapter()
     client._dismiss_editor_tips = Mock()
     client.set_publication_location = Mock(return_value=None)
+    client.set_download_permission = Mock(return_value={'allow_download': False})
     client.publication_control = Mock()
     payload = {'video_path': 'approved.mp4', 'title': '定稿标题', 'ai_generated': True}
     with patch('services.creator_adapters.douyin.expect') as verify:

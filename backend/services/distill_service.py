@@ -1,6 +1,6 @@
 """
-Claude API distillation service.
-Analyzes blogger video transcripts to extract content DNA.
+Configured-model distillation with optional real visual samples.
+Analyzes reference transcripts and sampled frames without copying account identity.
 """
 import json
 import anthropic
@@ -53,19 +53,19 @@ DISTILL_PROMPT = """你是一位顶级短视频内容策略专家。请深度分
 分析要求：
 1. 必须从每个维度的具体细节出发，给出可操作的结论
 2. 给出原文中的具体例子作为支撑，但例子只能用于分析，不能要求后续文案复用
-3. 不要泛泛而谈，要说清楚这个博主"为什么火"
+3. 具体分析辨识度和表达方法；缺少真实播放与涨粉数据时，不声称解释了流量因果。
 4. 保持客观分析，不做价值判断
 5. 严禁把博主个人身份沉淀为可复用内容基因，包括姓名、昵称、账号名、地域身份、公司/学校、家庭成员、联系方式、个人经历细节、"我是XXX"、"感谢大家观看"、"关注XXX"等署名式/个人标识内容
 6. 如果转录里出现个人信息，只抽象成可泛化的方法论，例如“自我介绍式开场”应抽象成“直接建立话题身份”，不要保留具体身份文本
 
-以下是博主的视频转录文本：
+7. 样本不能支持发布频率、最佳时段和涨粉效果时明确写“样本不足”，不得猜测。\n8. 若提供真实时间点抽帧，只分析实际可见构图、标题位置、图解和字幕；不能把抽帧当完整运动审查，不能声称听过未提供的声音。请额外输出visual_style对象，字段包括cover、opening、picture_layout、evidence_highlighting、subtitle、adaptation_rules、scope。无图片时visual_style.scope必须写“仅文本，未核对画面”。\n以下是博主的视频转录文本：
 {transcripts}
 """
 
 
-def analyze_blogger_content(transcripts: list[str]) -> dict | None:
+def analyze_blogger_content(transcripts: list[str], *, image_paths=None, video_metadata=None) -> dict | None:
     """
-    Analyze blogger transcripts using Claude API.
+    Analyze actual reference transcripts and optional frame samples with the configured model.
     Returns the content DNA dict, or None on failure.
     """
     if not transcripts:
@@ -75,21 +75,34 @@ def analyze_blogger_content(transcripts: list[str]) -> dict | None:
         f"视频 {i+1}:\n{t}" for i, t in enumerate(transcripts)
     )
 
-    # Truncate if too long (Claude context limit consideration)
+    # Bound the reference packet independently of the configured provider.
     max_chars = 80000
     if len(combined) > max_chars:
         combined = combined[:max_chars] + "\n\n[文本过长已截断]"
 
     prompt = DISTILL_PROMPT.replace("{transcripts}", combined)
 
+    if video_metadata:
+        prompt += "\n实际视频测量与抽帧范围：\n" + json.dumps(video_metadata, ensure_ascii=False)
     try:
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, auth_token=settings.ANTHROPIC_AUTH_TOKEN or None, base_url=settings.ANTHROPIC_BASE_URL)
-        message = client.messages.create(
-            model=settings.CLAUDE_MODEL,
-            max_tokens=4096,
-            temperature=0.3,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        from services.factory_llm import model_runtime
+        runtime = model_runtime()
+        if runtime['provider'] == 'codex':
+            from services.factory_codex import create_response
+            message = create_response(model=runtime['model'], system='你是内容研究员。只根据提供的真实转写和抽帧提炼可操作表达方法，输出JSON。',
+                messages=[{'role':'user','content':prompt}], max_tokens=6000, image_paths=image_paths, reasoning_effort='high')
+        elif runtime['provider'] == 'openai':
+            from services.factory_openai import create_response
+            message = create_response(model=runtime['model'], system='只依据实际样本分析，输出JSON。',
+                messages=[{'role':'user','content':prompt}], max_tokens=6000)
+        else:
+            client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY, auth_token=settings.ANTHROPIC_AUTH_TOKEN or None, base_url=settings.ANTHROPIC_BASE_URL)
+            message = client.messages.create(
+                model=settings.CLAUDE_MODEL,
+                max_tokens=4096,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+            )
 
         # Extract text from response (handle thinking models that return multiple blocks)
         text_blocks = [b.text for b in message.content if b.type == "text"]
@@ -101,8 +114,17 @@ def analyze_blogger_content(transcripts: list[str]) -> dict | None:
         json_end = response_text.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
             json_str = response_text[json_start:json_end]
-            return json.loads(json_str)
+            value = json.loads(json_str)
+            required = ('value_positioning','viral_techniques','content_preferences','language_style','content_calendar')
+            if not isinstance(value, dict) or not all(isinstance(value.get(key), dict) for key in required):
+                return None
+            if isinstance(value.get('visual_style'), dict):
+                value['viral_techniques'] = {**value['viral_techniques'], 'visual_style': value['visual_style']}
+            value['_model_usage'] = {'provider':runtime['provider'],'model':runtime['model'],
+                'input_tokens':message.usage.input_tokens,'output_tokens':message.usage.output_tokens,
+                'actual_reference_images':len(image_paths or []) if runtime['provider']=='codex' else 0}
+            return value
         return None
     except Exception as e:
-        print(f"Distill analysis error: {e}")
+        print(f"Distill analysis error: {type(e).__name__}")
         return None

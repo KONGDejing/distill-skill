@@ -19,8 +19,8 @@ def render_frame_cover(source, title, target, platform):
     import hashlib
     from services.factory_media import _run
 
-    if platform not in {"xiaohongshu", "kuaishou"}:
-        raise ValueError("首帧标题仅用于小红书和快手")
+    if platform not in {"douyin", "xiaohongshu", "kuaishou"}:
+        raise ValueError("首帧标题仅用于已配置的三个短视频平台")
     target = Path(target)
     frame_path = target.with_name(target.stem + "-source.png")
     overlay_path = target.with_name(target.stem + "-title.png")
@@ -34,7 +34,8 @@ def render_frame_cover(source, title, target, platform):
     title = str(title).strip()
     if not title:
         raise ValueError("首帧缺少视频标题")
-    for size in range(78 if platform == "kuaishou" else 70, 47, -2):
+    maximum_size = {'douyin': 100, 'kuaishou': 78, 'xiaohongshu': 70}[platform]
+    for size in range(maximum_size, 47, -2):
         font = _font(size, bold=True)
         lines = _wrap(title, font, 800)
         if len(lines) > 1:
@@ -48,18 +49,26 @@ def render_frame_cover(source, title, target, platform):
             break
     else:
         raise ValueError("首帧标题过长，请压缩标题")
-    top, bottom = 380, 650
+    top, bottom = (330, 650) if platform == 'douyin' else (380, 650)
     if platform == "xiaohongshu":
         draw.rounded_rectangle((56, top, 944, bottom), radius=24, fill=(255, 252, 249, 244))
         draw.rounded_rectangle((78, top + 30, 86, bottom - 30), radius=4, fill="#d94d76")
         x, fill, stroke = 114, "#202736", 0
     else:
         # Plain, outlined headline: the original footage remains the background.
-        x, fill, stroke = 72, "#ffffff", 4
+        x, fill, stroke = 72, "#ffffff", 6 if platform == 'douyin' else 4
+        if platform == 'douyin':
+            # A restrained translucent backing keeps the real shot visible.
+            # There is no common AI illustration or opaque full-screen card.
+            for y in range(248, bottom + 30):
+                alpha = round(145 * min(1, (y - 248) / 50, (bottom + 30 - y) / 70))
+                draw.line((40, y, 960, y), fill=(0, 0, 0, max(0, alpha)))
+            draw.text((76, 270), '科技观察', font=_font(30, bold=True), fill='#ffffff',
+                      stroke_width=1, stroke_fill='#101010', anchor='lt')
     line_height = size + 18
     y = top + (bottom - top - len(lines) * line_height) // 2
     for n, line in enumerate(lines):
-        color = "#ffc45e" if platform == "kuaishou" and n == len(lines) - 1 else fill
+        color = "#ffd45a" if platform in {'douyin', 'kuaishou'} and n == len(lines) - 1 else fill
         draw.text((x, y + n * line_height), line, font=font, fill=color,
                   stroke_width=stroke, stroke_fill="#111111", anchor="lt")
     if background.size != overlay.size:
@@ -68,6 +77,7 @@ def render_frame_cover(source, title, target, platform):
     Image.alpha_composite(background, overlay).convert("RGB").save(target)
     return {"kind": "source_first_frame_with_title", "version": COVER_DESIGN_VERSION,
             "frame_title_version": FRAME_TITLE_VERSION, "platform": platform,
+            "visual_basis": "this_original_video_first_frame",
             "overlay_path": str(overlay_path), "source_frame_sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
             "text_rendered": title, "font_size": size, "lines": lines,
             "title_position": "upper_middle",

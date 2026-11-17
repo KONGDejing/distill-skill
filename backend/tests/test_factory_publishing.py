@@ -19,6 +19,7 @@ def publishing(tmp_path, monkeypatch):
     # Current distribution/quota/manual-platform guards have dedicated tests.
     monkeypatch.setattr(factory_publishing, "guard_publication", lambda *args, **kwargs: None)
     monkeypatch.setattr(factory_publishing, "require_automation", lambda platform: None)
+    monkeypatch.setattr(factory_publishing, 'require_owner_attribution', lambda variant: None)
     monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'publishing.db'}")
     Base.metadata.create_all(engine, tables=[FactoryConfig.__table__, FactoryRun.__table__, FactoryItem.__table__,

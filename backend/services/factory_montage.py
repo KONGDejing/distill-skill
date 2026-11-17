@@ -475,6 +475,19 @@ def validate_publication_media(media):
 def _render_shot(asset: dict, shot: dict, target: Path):
     if asset["kind"] == "paper_page":
         return _render_paper_shot(asset, shot, target)
+    if shot.get('presentation_style') == 'science_editorial_v1':
+        # One complete source image is the hero. Avoid repeating it as both a
+        # giant blurred background and a simultaneous detail panel. The top
+        # band is reserved for the per-topic headline in the final export.
+        graph = ('[0:v]fps=' + str(FPS) + ',setpts=PTS-STARTPTS,'
+                 'scale=1024:1000:force_original_aspect_ratio=decrease,setsar=1,'
+                 'pad=1080:1920:(ow-iw)/2:650+(1000-ih)/2:color=0x080b10,'
+                 'format=yuv420p[out]')
+        _run(['ffmpeg', '-y', '-v', 'error', '-threads', '2', '-filter_complex_threads', '1',
+              '-ss', str(shot['source_start']), '-i', asset['path'], '-filter_complex', graph,
+              '-map', '[out]', '-an', '-t', f"{shot['duration']:.6f}", '-r', str(FPS),
+              '-c:v', 'libx264', '-threads', '2', '-preset', 'veryfast', '-crf', '20', str(target)], timeout=240)
+        return
     # Keep the complete source frame visible. Portrait phone demonstrations use
     # the available height; wide footage may add a labelled detail view below.
     region = shot.get("focus_region")
@@ -794,9 +807,12 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         quality['document_evidence' if paper_evidence.get('document_kind') == 'official_document' else 'paper_evidence'] = paper_evidence
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
+    presentation_style = content.get('presentation_style') or (
+        'science_editorial_v1' if content.get('editorial_policy_version', 1) >= 2 else 'legacy')
+    quality['presentation_style'] = presentation_style
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
         "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "exact_cut_plan": plan if shot_plan is not None else None,
-        "renderer": "tech_montage_v6_adaptive_source_windows"},
+        "renderer": "tech_montage_v6_adaptive_source_windows", 'presentation_style': presentation_style},
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     if (target / "media.json").exists():
         old = json.loads((target / "media.json").read_text())
@@ -841,7 +857,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         for shot in plan:
             _wait_for_render_memory()
             part = work / f"shot_{shot['shot_index']:03d}.mp4"
-            _render_shot(sources[shot["asset_id"]], shot, part)
+            _render_shot(sources[shot["asset_id"]], {**shot, 'presentation_style': presentation_style}, part)
             entries.append(f"file '{part.name}'")
             print(f"Montage shot {shot['shot_index'] + 1}/{len(plan)}: {shot['asset_id']}", flush=True)
         (work / "shots.txt").write_text("\n".join(entries))

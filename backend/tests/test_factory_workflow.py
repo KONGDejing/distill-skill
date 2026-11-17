@@ -74,12 +74,13 @@ def isolated_factory(tmp_path, monkeypatch):
     def fake_frame_cover(source, title, target, platform):
         Path(target).write_bytes(title.encode())
         return {"text_rendered": title, "version": 2, "frame_title_version": 2,
-                "kind": "source_first_frame_with_title", "overlay_path": str(target)}
+                "kind": "source_first_frame_with_title", "platform": platform, "overlay_path": str(target)}
     monkeypatch.setattr("services.factory_cover.render_frame_cover", fake_frame_cover)
     def fake_complete(source, cover, target, **kwargs):
         Path(target).write_bytes(Path(source).read_bytes())
         return {"cover_integrated": True, "audio_preserved": True,
-                "opening_mode": kwargs.get("opening_mode", "brand_card")}
+                "opening_mode": kwargs.get("opening_mode", "brand_card"),
+                "persistent_title": kwargs.get("persistent_title", False)}
     monkeypatch.setattr("services.factory_delivery_video.render_delivery_video", fake_complete)
     yield sessions
     engine.dispose()
@@ -474,7 +475,7 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 assert handoff == package["manual_handoff"]
                 assert handoff["platform"] == package["platform"]
                 assert handoff["title"] == package["title"] and handoff["caption"] == "平台简介"
-                if package["platform"] in {"xiaohongshu", "kuaishou"}:
+                if package["platform"] in {"douyin", "xiaohongshu", "kuaishou"}:
                     assert handoff["cover_text"] == content["title"]
                     assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
                     assert package["cover_design"]["frame_title_version"] == 2
@@ -495,7 +496,7 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
 
 
 @pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou"])
-def test_first_frame_upgrade_reuses_approved_copy_and_leaves_douyin_cached(isolated_factory, monkeypatch, platform):
+def test_first_frame_upgrade_reuses_approved_copy_and_preserves_old_archive(isolated_factory, monkeypatch, platform):
     content = {"title": "真实画面里的机器人", "script": "审核完成的完整口播。", "sources": [SOURCE]}
     run_id, item_id = _seed_item(isolated_factory, content=content)
     directory = factory_service.FACTORY_DIR / run_id / item_id
@@ -534,15 +535,14 @@ def test_first_frame_upgrade_reuses_approved_copy_and_leaves_douyin_cached(isola
         assert item.content == content and item.media == media
         package = item.packages[0]
         assert package["title"] == "已定稿发布标题" and package["caption"] == "已定稿正文"
-        if platform == "douyin":
-            finisher.assert_not_called()
-            assert package["path"] == str(old_path)
-        else:
-            assert finisher.call_count == 1
-            assert finisher.call_args.args[0] == media["video_path"]
-            assert package["path"] != str(old_path)
-            assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
-            assert package["manual_handoff"]["cover_text"] == content["title"]
+        assert finisher.call_count == 1
+        assert finisher.call_args.args[0] == media["video_path"]
+        assert package["path"] != str(old_path)
+        assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
+        assert package["manual_handoff"]["cover_text"] == content["title"]
+        if platform == 'douyin':
+            assert finisher.call_args.kwargs['persistent_title'] is True
+
 
 
 @pytest.mark.parametrize("old_version", [None, 1], ids=["legacy", "manual-v1"])
@@ -607,24 +607,10 @@ def test_existing_archive_upgrade_reuses_video_and_preserves_uncertain_publicati
         assert {column.name: getattr(publication, column.name)
                 for column in FactoryPublication.__table__.columns} == old_publication
         package = item.packages[0]
-        assert package["platform"] == "douyin" and Path(package["path"]) != old_zip
-        assert package["published"] is False
-        assert package["handoff_version"] == HANDOFF_VERSION == 5
-        assert package["video_filename"] == "已有定稿.mp4"
-        with zipfile.ZipFile(package["path"]) as archive:
-            assert "video.mp4" not in archive.namelist()
-            assert archive.read("已有定稿.mp4") == original_files[media["video_path"]]
-            metadata = json.loads(archive.read("metadata.json"))
-            assert metadata["video_filename"] == package["video_filename"]
-            handoff = metadata["manual_handoff"]
-            assert handoff["version"] == HANDOFF_VERSION
-            assert handoff["title"] == "沿用旧标题" and handoff["caption"] == "沿用已定稿正文"
-            if old_version:
-                assert handoff["cover_text"] == "保留已交付封面文字"
-            assert "结果未确认" in handoff["publication_warning"]
-            instructions = archive.read("手动发布说明.txt").decode("utf-8")
-            assert "请本人先在官方作品管理确认" in instructions and "不能重复提交" in instructions
-            assert "package_ready" in instructions and "不代表已提交" in instructions
+        assert package['platform'] == 'douyin' and Path(package['path']) == old_zip
+        assert package == existing  # Uncertain submission binds the exact old artifact.
+        assert package['publication_job_id'] == old_publication['id']
+
 
 
 def test_model_budget_stops_before_any_network_request(isolated_factory, monkeypatch):
@@ -1051,7 +1037,9 @@ def test_new_policy_saves_one_original_archive_with_both_manual_copies(isolated_
         assert {p['platform'] for p in item.packages}=={'douyin','xiaohongshu','kuaishou'}
         assert all(p['handoff_version']==HANDOFF_VERSION for p in item.packages)
         manual=[p for p in item.packages if p['platform']!='douyin']
-        assert manual[0]['video_path']==manual[1]['video_path']==item.media['manual_master_path']
+        assert manual[0]['video_path'] != manual[1]['video_path']
+        assert item.media['manual_master_path'] == next(p['video_path'] for p in manual if p['platform'] == 'xiaohongshu')
+        assert {p['cover_design']['text_rendered'] for p in manual} == {'无人船的新成果'}
         with zipfile.ZipFile(item.media['archive_path']) as archive:
             assert archive.testzip() is None
             assert [n for n in archive.namelist() if n.endswith('.mp4')]==['无人船的新成果.mp4']

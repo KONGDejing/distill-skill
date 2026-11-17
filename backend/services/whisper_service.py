@@ -14,7 +14,9 @@ def _load_model():
         # Use medium model for good Chinese accuracy
         # Options: tiny, base, small, medium, large-v3
         model_size = settings.WHISPER_MODEL
-        _model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        from services.factory_resources import ensure_memory_available
+        ensure_memory_available()
+        _model = WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=2, num_workers=1)
     return _model
 
 

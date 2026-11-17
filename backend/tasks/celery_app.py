@@ -40,16 +40,23 @@ def run_download_and_transcribe(video_id: str):
     """Full pipeline: download video -> extract audio -> transcribe"""
     from database import SessionLocal
     from models.source_video import SourceVideo
-    from services.video_downloader import download_video, extract_audio
+    from services.video_downloader import download_video, extract_audio, normalize_video_url, valid_video
     from services.whisper_service import transcribe_audio
     from config import settings
     import os
 
     db = SessionLocal()
+    video = None
     try:
         video = db.query(SourceVideo).filter(SourceVideo.id == video_id).first()
         if not video:
             return {"error": "Video not found"}
+        from services.factory_resources import ensure_memory_available
+        ensure_memory_available()
+        video.source_url = normalize_video_url(video.source_url)
+        if video.status == 'transcribed' and video.transcript and valid_video(video.video_path):
+            return {'status': 'transcribed', 'video_id': video_id, 'reused': True}
+        video.error_message = None
 
         # Step 1: Download
         video.status = "downloading"
@@ -58,7 +65,10 @@ def run_download_and_transcribe(video_id: str):
         video_dir = str(settings.VIDEO_DIR / video.blogger_id)
         os.makedirs(video_dir, exist_ok=True)
 
-        video_path, error = download_video(video.source_url, video_dir, video_id)
+        if video.video_path and valid_video(video.video_path):
+            video_path, error = video.video_path, None
+        else:
+            video_path, error = download_video(video.source_url, video_dir, video_id)
         if error:
             video.status = "error"
             video.error_message = f"Download failed: {error}"
@@ -66,6 +76,13 @@ def run_download_and_transcribe(video_id: str):
             return {"error": error}
 
         video.video_path = video_path
+        import json
+        from pathlib import Path
+        metadata_path = Path(video_path).with_suffix('.metadata.json')
+        if metadata_path.is_file():
+            metadata = json.loads(metadata_path.read_text())
+            video.extra_data = {**(video.extra_data or {}), **metadata}
+            video.title = video.title or metadata.get('title')
         video.status = "downloaded"
         db.commit()
 
@@ -87,6 +104,15 @@ def run_download_and_transcribe(video_id: str):
         video.audio_path = audio_path
         db.commit()
 
+        same_source = db.query(SourceVideo).filter(SourceVideo.blogger_id == video.blogger_id,
+            SourceVideo.id != video.id, SourceVideo.source_url == video.source_url,
+            SourceVideo.status == 'transcribed', SourceVideo.transcript.isnot(None)).first()
+        if same_source and same_source.transcript:
+            video.transcript = same_source.transcript; video.status = 'transcribed'; video.error_message = None
+            video.extra_data = {**(video.extra_data or {}), 'transcript_reused_from': same_source.id}
+            db.commit()
+            return {'status': 'transcribed', 'video_id': video_id, 'reused_transcript': True}
+
         # Step 3: Transcribe
         video.status = "transcribing"
         db.commit()
@@ -100,6 +126,7 @@ def run_download_and_transcribe(video_id: str):
 
         video.transcript = transcript
         video.status = "transcribed"
+        video.error_message = None
         db.commit()
 
         return {"status": "transcribed", "video_id": video_id}
@@ -107,9 +134,9 @@ def run_download_and_transcribe(video_id: str):
     except Exception as e:
         if video:
             video.status = "error"
-            video.error_message = str(e)[:2000]
+            video.error_message = f'视频导入中断（{type(e).__name__}），请点击重新导入；已下载素材会保留'
             db.commit()
-        return {"error": str(e)}
+        return {"error": '视频导入中断，请重试'}
     finally:
         db.close()
 
@@ -124,6 +151,7 @@ def run_distill_analysis(blogger_id: str):
     from services.distill_service import analyze_blogger_content
 
     db = SessionLocal()
+    blogger = None
     try:
         blogger = db.query(Blogger).filter(Blogger.id == blogger_id).first()
         if not blogger:
@@ -134,7 +162,14 @@ def run_distill_analysis(blogger_id: str):
             SourceVideo.transcript.isnot(None),
         ).all()
 
-        transcripts = [v.transcript for v in videos if v.transcript]
+        from services.video_downloader import normalize_video_url, valid_video
+        unique = {}
+        for video in videos:
+            if video.transcript:
+                key = normalize_video_url(video.source_url) if video.source_url else video.transcript
+                unique.setdefault(key, video)
+        videos = list(unique.values())
+        transcripts = [v.transcript for v in videos]
         if not transcripts:
             blogger.status = BloggerStatus.ERROR.value
             blogger.error_message = "No transcribed videos available"
@@ -144,10 +179,18 @@ def run_distill_analysis(blogger_id: str):
         blogger.status = BloggerStatus.ANALYZING.value
         db.commit()
 
-        dna_data = analyze_blogger_content(transcripts)
+        from services.reference_visuals import sample_reference
+        pictures, measurements = [], []
+        for video in videos[:3]:
+            if video.video_path and valid_video(video.video_path):
+                target = settings.VIDEO_DIR / blogger_id / 'reference-samples' / (video.id + '.jpg')
+                sampled = sample_reference(video.video_path, target)
+                pictures.append(sampled.pop('image_path'))
+                measurements.append({**sampled, 'source_url': video.source_url, 'title': video.title})
+        dna_data = analyze_blogger_content(transcripts, image_paths=pictures, video_metadata=measurements)
         if not dna_data:
             blogger.status = BloggerStatus.ERROR.value
-            blogger.error_message = "Claude analysis failed"
+            blogger.error_message = "当前模型服务未完成对标分析，请查看模型状态后重试"
             db.commit()
             return {"error": "Analysis failed"}
 
@@ -159,7 +202,8 @@ def run_distill_analysis(blogger_id: str):
             existing.content_preferences = dna_data.get("content_preferences")
             existing.language_style = dna_data.get("language_style")
             existing.content_calendar = dna_data.get("content_calendar")
-            existing.raw_analysis = str(dna_data)
+            import json
+            existing.raw_analysis = json.dumps(dna_data, ensure_ascii=False)
             existing.version = existing.version + 1
         else:
             dna = BloggerContentDNA(
@@ -169,11 +213,12 @@ def run_distill_analysis(blogger_id: str):
                 content_preferences=dna_data.get("content_preferences"),
                 language_style=dna_data.get("language_style"),
                 content_calendar=dna_data.get("content_calendar"),
-                raw_analysis=str(dna_data),
+                raw_analysis=__import__('json').dumps(dna_data, ensure_ascii=False),
             )
             db.add(dna)
 
         blogger.status = BloggerStatus.READY.value
+        blogger.error_message = None
         db.commit()
 
         return {"status": "ready", "blogger_id": blogger_id}
@@ -181,9 +226,9 @@ def run_distill_analysis(blogger_id: str):
     except Exception as e:
         if blogger:
             blogger.status = BloggerStatus.ERROR.value
-            blogger.error_message = str(e)[:2000]
+            blogger.error_message = f'对标分析中断（{type(e).__name__}），已保留原视频与转写，可重新分析'
             db.commit()
-        return {"error": str(e)}
+        return {"error": '对标分析中断，可重新分析'}
     finally:
         db.close()
 

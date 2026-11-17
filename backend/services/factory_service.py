@@ -1098,6 +1098,7 @@ def _package(run_id, item_id):
     from services.factory_filenames import safe_filename
     from services.factory_platform_style import platform_style
     from services.factory_cover import COVER_DESIGN_VERSION, FRAME_TITLE_VERSION
+    from services.factory_branding import branding_for
     from services.factory_handoff import HANDOFF_VERSION, build_handoff, handoff_files
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
@@ -1122,21 +1123,34 @@ def _package(run_id, item_id):
                 raise ValueError('历史归档的分发平台无效')
             platforms = [route['platform']]
             existing = [p for p in existing if p['platform'] in platforms]
-        reuse_variants = len(existing) == len(platforms) and all(Path(p["path"]).is_file() for p in existing)
-        if reuse_variants and all((p.get("cover_design") or {}).get("version") == COVER_DESIGN_VERSION
-                                  and (platform_style(p["platform"]).get("opening_mode") != "first_frame_title"
-                                       or ((p.get("cover_design") or {}).get("frame_title_version") == FRAME_TITLE_VERSION
-                                           and (p.get("cover_design") or {}).get("text_rendered") == content["title"]
-                                           and (p.get("delivery_quality") or {}).get("opening_mode") == "first_frame_title"))
-                                  and p.get("source_media_fingerprint") == media.get("fingerprint")
-                                  and p.get("delivery_layout") == "platform-zip-v1"
-                                  and p.get("handoff_version") == HANDOFF_VERSION
-                                  and p.get("cover_path") and Path(p["cover_path"]).is_file()
-                                  and p.get("video_path") and Path(p["video_path"]).is_file()
-                                  and p.get("video_filename") == video_filename for p in existing):
+        def current_package(p):
+            quality = p.get('delivery_quality') or {}
+            design = p.get('cover_design') or {}
+            brand = branding_for(p['platform'])
+            return (design.get('version') == COVER_DESIGN_VERSION
+                    and (platform_style(p['platform']).get('opening_mode') != 'first_frame_title'
+                         or (design.get('frame_title_version') == FRAME_TITLE_VERSION
+                             and design.get('platform') == p['platform']
+                             and design.get('text_rendered') == content['title']
+                             and quality.get('opening_mode') == 'first_frame_title'))
+                    and (p['platform'] != 'douyin' or (quality.get('persistent_title') is (content.get('editor_id') != 'producer2')
+                         and (not brand or (quality.get('branding_signature') == brand['signature']
+                              and quality.get('source_attribution_integrated') is True))))
+                    and p.get('source_media_fingerprint') == media.get('fingerprint')
+                    and p.get('delivery_layout') == 'platform-zip-v1'
+                    and p.get('handoff_version') == HANDOFF_VERSION
+                    and all(p.get(key) and Path(p[key]).is_file() for key in ('path', 'cover_path', 'video_path'))
+                    and p.get('video_filename') == video_filename)
+        reuse_variants = len(existing) == len(platforms) and all(Path(p['path']).is_file() for p in existing)
+        if reuse_variants and all(current_package(p) for p in existing):
             if not new_distribution or (media.get('archive_path') and Path(media['archive_path']).is_file()):
-                _save_item(item_id, status="completed", error=None)
+                _save_item(item_id, status='completed', error=None)
                 return
+        # Uploaded forms, durable receipts and uncertain attempts bind the old
+        # files. An editorial upgrade must never mutate those exact artifacts.
+        held_platforms = {j.platform for j in db.query(FactoryPublication).filter_by(item_id=item_id)
+                          if j.status in {'queued', 'running', 'prepared', 'submitted'}
+                          or (j.result or {}).get('submission_uncertain')}
         publications = db.query(FactoryPublication).filter_by(item_id=item_id, action="publish").all()
         warnings = {}
         for job in publications:
@@ -1166,32 +1180,37 @@ def _package(run_id, item_id):
     directory = FACTORY_DIR / run_id / item_id
     directory.mkdir(parents=True, exist_ok=True)
     previous = {p["platform"]: p for p in existing}
-    manual_finish = None
     for variant in variants:
         platform = variant["platform"]
+        old = previous.get(platform)
+        if old and (platform in held_platforms or current_package(old)):
+            packages.append(old)
+            continue
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
             raise ValueError("平台版本缺少标题")
         handoff = build_handoff(content, variant, route, warnings.get(platform))
         style = platform_style(platform)
         frame_title = style.get("opening_mode") == "first_frame_title"
         design_suffix = f"design{COVER_DESIGN_VERSION}" + (f"-firstframe{FRAME_TITLE_VERSION}" if frame_title else "")
-        if new_distribution and platform in {'xiaohongshu', 'kuaishou'} and manual_finish:
-            cover_path, cover_design, delivery_video, delivery_quality = manual_finish
+        brand = branding_for(platform)
+        if platform == 'douyin':
+            design_suffix += '-editorial2' + ('-owner' + brand['signature'][:10] if brand else '')
+        cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
+        if frame_title:
+            from services.factory_cover import render_frame_cover
+            handoff["cover_text"] = content["title"]
+            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
         else:
-            cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
-            if frame_title:
-                from services.factory_cover import render_frame_cover
-                handoff["cover_text"] = content["title"]
-                cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
-            else:
-                from services.factory_cover import render_cover
-                cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
-            from services.factory_delivery_video import render_delivery_video
-            delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-{design_suffix}.mp4"
-            finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
-            delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
-            if new_distribution and platform in {'xiaohongshu', 'kuaishou'}:
-                manual_finish = (cover_path, cover_design, delivery_video, delivery_quality)
+            from services.factory_cover import render_cover
+            cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
+        from services.factory_delivery_video import render_delivery_video
+        delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-{design_suffix}.mp4"
+        finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
+        if platform == 'douyin':
+            paper_style = content.get('editor_id') == 'producer2'
+            finish_options.update(persistent_title=not paper_style, branding=brand,
+                                  attribution_y=1760 if paper_style else 700)
+        delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
         manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
                     "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
                     "delivery_quality": delivery_quality, "platform_style": style,
