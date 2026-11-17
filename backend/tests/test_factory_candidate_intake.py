@@ -135,7 +135,7 @@ def test_preflight_reaches_new_newsroom_handoff_after_old_catalogue(sessions, mo
     fetched = []
     def collect(rows, path, *, limit):
         fetched.append(rows[0]["id"])
-        assert limit == 3
+        assert limit == 16
         return {"status": "ready", "assets": [asset(1), asset(2), asset(3)]}
     monkeypatch.setattr(visuals, "collect_visuals", collect)
     candidate = {"title": "Hardware announcement", "category": "科技热点", "source_ids": [fresh["id"]]}

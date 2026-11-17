@@ -11,7 +11,7 @@ from config import settings
 from agents.registry import AGENTS, PLATFORMS, DAILY_TARGET
 from models.factory import FactoryRun, FactoryItem, FactoryEvent, FactoryPublication
 from services.factory_service import get_config, config_dict, run_dict, run_detail, start_run, queue_available, FACTORY_DIR, TERMINAL
-from services.factory_editorial_policy import editorial_policy
+from services.factory_editorial_policy import editorial_policy, POLICY
 from services.factory_resources import MemoryPressure, ensure_memory_available, memory_state
 
 router = APIRouter()
@@ -37,7 +37,7 @@ class SettingsUpdate(BaseModel):
     visual_style: Literal["tech_montage"] | None = None
     publish_enabled: bool | None = None
     manual_delivery_enabled: bool | None = None
-    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=3)
+    publish_times: list[Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, min_length=1, max_length=4)
 
     @field_validator("publish_times", "platforms")
     @classmethod
@@ -79,7 +79,7 @@ def overview(db: Session = Depends(get_db)):
                         transport=transport,
                         status="paused" if state["enabled"] and not publishing_enabled else state["mode"], login_status=state["mode"],
                         account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
-                        description=(("抖音自动发布：每天3条、三位剪辑师各1条，必须声明AI生成。" if state["enabled"]
+                        description=(("抖音自动发布：每天3条、小影和小影3非论文6条中随机选择，必须声明AI生成。" if state["enabled"]
                                       else "全部6条成片和文案均保留，由本人按需手动上传。") if platform["enabled"]
                                      else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases
@@ -108,8 +108,8 @@ def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     if updates.get("auto_publish_xiaohongshu"):
         raise HTTPException(409, "小红书由本人手动发布，不能启用自动上传或自动发布")
     merged = {**config_dict(config), **updates}
-    if len(merged['publish_times']) != 3:
-        raise HTTPException(422, '抖音每天三个时段，分别对应三位剪辑师；每日6条生产目标独立于发布时段数量')
+    if len(merged['publish_times']) != 4:
+        raise HTTPException(422, '抖音每天四个时段，从小影和小影3的非论文6条中随机选4条；论文每周单独人工交付')
     if merged["manual_delivery_enabled"]:
         if not config.manual_delivery_enabled:
             config.publish_start_at = datetime.utcnow()
@@ -169,6 +169,8 @@ def catch_up_run(run_id: str, db: Session = Depends(get_db)):
 @router.post("/runs/{run_id}/retry", status_code=202)
 def retry_run(run_id: str, db: Session = Depends(get_db), data: RetryRun | None = None):
     run = require_run(db, run_id)
+    if run.settings_snapshot.get('distribution_policy') not in {None, POLICY}:
+        raise HTTPException(409, '旧排产规则已替换，请使用当前新计划；历史成片和回执保留，不重启旧规则任务')
     selected = set(data.item_ids) if data and data.item_ids else None
     items = db.query(FactoryItem).filter_by(run_id=run.id).all()
     if selected and not selected.issubset({item.id for item in items}):

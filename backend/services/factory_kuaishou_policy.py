@@ -8,7 +8,8 @@ PUBLISH_TIMES = ('19:00', '21:00')
 
 
 def authorized(run):
-    return (run.settings_snapshot or {}).get('kuaishou_auto_policy') == POLICY
+    # The owner replaced automatic Kuaishou delivery with manual uploads.
+    return False
 
 
 def content_score(item):

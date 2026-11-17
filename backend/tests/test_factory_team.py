@@ -25,18 +25,18 @@ def db():
 
 def briefs():
     return [{"title": f"Topic {index}", "category": category, "source_ids": []}
-            for index, category in enumerate(["科技成果", "论文讲解", "人物新闻", "智能硬件", "论文讲解", "公司争议"])]
+            for index, category in enumerate(["科技成果", "智能硬件", "人物新闻", "端侧AI", "科技成果", "公司争议"])]
 
 
 def test_persisted_defaults_are_six_and_three_editors_have_two_each(db):
     config, run = FactoryConfig(), FactoryRun()
     db.add_all([config, run]); db.commit()
     assert config.daily_target == run.target_count == 6
-    assert config.publish_times == list(DEFAULT_PUBLISH_TIMES) == ["17:00", "20:00", "22:00"]
+    assert config.publish_times == list(DEFAULT_PUBLISH_TIMES) == ["17:00", "19:00", "20:00", "22:00"]
     assert config.publish_jitter_seconds == 900
     assert config.platforms == ["douyin", "xiaohongshu", "kuaishou"]
-    assert len(config.publish_times) * len(config.platforms) == 9
-    assert all(AGENT_MAP[owner]["daily_quota"] == 2 for owner in DAILY_EDITOR_QUOTAS)
+    assert len(config.publish_times) * len(config.platforms) == 12
+    assert {owner:AGENT_MAP[owner]['daily_quota'] for owner in DAILY_EDITOR_QUOTAS} == {'producer':4,'producer2':0,'producer3':2}
 
 
 @pytest.mark.parametrize("target", range(1, 7))
@@ -44,7 +44,7 @@ def test_partial_run_quotas_are_balanced_and_never_exceed_daily_caps(target):
     quotas = editor_quotas(target)
     assert sum(quotas.values()) == target
     assert set(quotas) == set(DAILY_EDITOR_QUOTAS)
-    assert max(quotas.values()) <= 2 and max(quotas.values()) - min(quotas.values()) <= 1
+    assert quotas['producer'] <= 4 and quotas['producer2'] == 0 and quotas['producer3'] <= 2
 
 
 @pytest.mark.parametrize("target", [0, 7, 10, True, 6.0])
@@ -56,18 +56,18 @@ def test_oversized_or_invalid_new_run_cannot_allocate_quotas(target):
 def test_selection_validation_returns_ordered_ids_without_mutation():
     plan = briefs(); original = deepcopy(plan)
     owners = validate_editor_plan(plan, [], editor_quotas())
-    assert owners == ["producer", "producer2", "producer3", "producer", "producer2", "producer3"]
-    assert Counter(owners) == DAILY_EDITOR_QUOTAS and plan == original
+    assert owners == ["producer", "producer", "producer3", "producer", "producer", "producer3"]
+    assert {key:Counter(owners)[key] for key in DAILY_EDITOR_QUOTAS} == DAILY_EDITOR_QUOTAS and plan == original
     # A paper's cited source takes priority over an inaccurate generic label.
     assert candidate_editor({"category": "科技动态", "source_ids": ["paper"]},
                             [{"id": "paper", "url": "https://arxiv.org/abs/2601.12345"}]) == "producer2"
 
 
 def test_six_topics_are_rejected_when_track_quota_or_owner_is_wrong():
-    plan = briefs(); plan[1]["category"] = "工具指南"
-    with pytest.raises(ValueError, match="小影2需要2条、实际1条"):
+    plan = briefs(); plan[1]["category"] = "论文讲解"
+    with pytest.raises(ValueError, match="小影2需要0条、实际1条"):
         validate_editor_plan(plan, [], editor_quotas())
-    plan = briefs(); plan[1]["editor_id"] = "producer"
+    plan = briefs(); plan[1]["editor_id"] = "producer2"
     with pytest.raises(ValueError, match="负责人不符合岗位"):
         validate_editor_plan(plan, [], editor_quotas())
     with pytest.raises(ValueError, match="配额"):
@@ -93,7 +93,7 @@ def test_quota_assignment_skips_deferred_and_is_idempotent(db):
 
 
 def test_imbalanced_new_plan_is_rejected_before_any_assignment(db):
-    plan = briefs(); plan[1]["category"] = "工具指南"
+    plan = briefs(); plan[1]["category"] = "论文讲解"
     run, items = seed(db, plan)
     with pytest.raises(ValueError, match="剪辑配额不匹配"):
         assign_editors(db, run.id)
@@ -101,19 +101,19 @@ def test_imbalanced_new_plan_is_rejected_before_any_assignment(db):
 
 
 def test_documented_material_shortfall_admits_ready_roles_without_changing_day_target(db):
-    run, items = seed(db, [briefs()[0], briefs()[1], briefs()[4]])
-    run.plan = {'production_quotas': {'producer': 1, 'producer2': 2, 'producer3': 0},
-                'material_shortfall': {'producer': 1, 'producer2': 0, 'producer3': 2}}
+    run, items = seed(db, [briefs()[0], briefs()[1], briefs()[2]])
+    run.plan = {'production_quotas': {'producer': 2, 'producer2': 0, 'producer3': 1},
+                'material_shortfall': {'producer': 2, 'producer2': 0, 'producer3': 1}}
     db.commit()
-    assert assign_editors(db, run.id) == {'producer': 1, 'producer2': 2, 'producer3': 0}
+    assert assign_editors(db, run.id) == {'producer': 2, 'producer2': 0, 'producer3': 1}
     assert run.target_count == 6 and run.settings_snapshot['editor_quotas'] == DAILY_EDITOR_QUOTAS
-    assert [item.brief['editor_id'] for item in items] == ['producer', 'producer2', 'producer2']
+    assert [item.brief['editor_id'] for item in items] == ['producer', 'producer', 'producer3']
 
 
 @pytest.mark.parametrize('gap', [None, {'producer': 0, 'producer2': 0, 'producer3': 0}])
 def test_partial_quota_cannot_silently_hide_missing_work(db, gap):
-    run, _ = seed(db, [briefs()[0], briefs()[1], briefs()[4]])
-    run.plan = {'production_quotas': {'producer': 1, 'producer2': 2, 'producer3': 0}, 'material_shortfall': gap}
+    run, _ = seed(db, [briefs()[0], briefs()[1], briefs()[2]])
+    run.plan = {'production_quotas': {'producer': 2, 'producer2': 0, 'producer3': 1}, 'material_shortfall': gap}
     db.commit()
     with pytest.raises(ValueError, match='保留真实岗位缺口'):
         assign_editors(db, run.id)
@@ -183,4 +183,17 @@ def test_explicit_retry_of_deferred_requires_rescheduling(db, monkeypatch):
         api.retry_run(run.id, db, api.RetryRun(item_ids=[items[0].id]))
     assert error.value.status_code == 409 and "重新排期" in error.value.detail
     assert items[0].status == "deferred" and run.status == "cancelled"
+    queue.assert_not_called()
+
+
+def test_old_policy_retry_cannot_restart_daily_paper_plan(db,monkeypatch):
+    from fastapi import HTTPException
+    from routers import factory as api
+    run,items=seed(db,quotas=False)
+    run.settings_snapshot={'distribution_policy':'douyin-three-tracks-v2'}
+    run.status='cancelled';run.active_slot=None;db.commit()
+    queue=Mock(side_effect=AssertionError('Replaced policy must not reach broker'))
+    monkeypatch.setattr(api,'queue_available',queue)
+    with pytest.raises(HTTPException) as error:api.retry_run(run.id,db)
+    assert error.value.status_code==409 and '旧排产规则已替换' in error.value.detail
     queue.assert_not_called()

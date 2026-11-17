@@ -11,40 +11,44 @@ def editor_id(item):
     return value if value in EDITOR_IDS else "producer"
 
 
-def editor_quotas(target_count=DAILY_TARGET):
-    """Balanced quotas for a new 1–6-item run; a full day is exactly 2 each."""
+def editor_quotas(target_count=DAILY_TARGET, production_kind='daily'):
+    if production_kind == 'weekly_papers':
+        if type(target_count) is not int or not 1 <= target_count <= 2:
+            raise ValueError('论文每周最多2条，独立排产')
+        return {'producer': 0, 'producer2': target_count, 'producer3': 0}
     if type(target_count) is not int or not 1 <= target_count <= DAILY_TARGET:
-        raise ValueError("每轮产量应为1–6条")
-    return {owner: target_count // len(EDITOR_IDS) + int(index < target_count % len(EDITOR_IDS))
-            for index, owner in enumerate(EDITOR_IDS)}
+        raise ValueError('每轮日常产量应为1–6条')
+    order = ('producer', 'producer3', 'producer', 'producer', 'producer3', 'producer')
+    counts = Counter(order[:target_count])
+    return {owner: counts[owner] for owner in EDITOR_IDS}
 
 
 def _validated_quotas(quotas):
+    weekly = isinstance(quotas, dict) and quotas.get('producer2', 0) > 0
+    limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if weekly else DAILY_EDITOR_QUOTAS
     if (not isinstance(quotas, dict) or set(quotas) != set(EDITOR_IDS)
-            or any(type(quotas[owner]) is not int or not 0 <= quotas[owner] <= DAILY_EDITOR_QUOTAS[owner]
-                   for owner in EDITOR_IDS)
-            or not 1 <= sum(quotas.values()) <= DAILY_TARGET):
-        raise ValueError("剪辑师配额必须覆盖三位剪辑师，每人0–2条、合计1–6条")
+            or any(type(quotas[owner]) is not int or not 0 <= quotas[owner] <= limits[owner] for owner in EDITOR_IDS)
+            or not 1 <= sum(quotas.values()) <= (2 if weekly else DAILY_TARGET)):
+        raise ValueError('日常配额为小影最多4条、小影3最多2条；论文每周独立最多2条，不混入日常')
     return dict(quotas)
 
 
 def candidate_editor(brief, sources):
-    """Classify by cited evidence and topic; a model-provided owner is not proof."""
     from services.factory_papers import is_paper_story
     from services.factory_newsroom import is_newsroom_story
-    cited = [source for source in sources if source.get("id") in brief.get("source_ids", [])]
+    cited = [source for source in sources if source.get('id') in brief.get('source_ids', [])]
     if brief.get('editor_track') == 'technology_scenes':
         return 'producer'
     if is_paper_story(brief, cited) or brief.get('editor_track') == 'paper_explainer':
         return 'producer2'
-    return "producer3" if is_newsroom_story(brief) else "producer"
+    return 'producer3' if is_newsroom_story(brief) else 'producer'
 
 
 def _require_counts(counts, quotas):
     differences = [f"{AGENT_MAP[owner]['name']}需要{quotas[owner]}条、实际{counts[owner]}条"
                    for owner in EDITOR_IDS if counts[owner] != quotas[owner]]
     if differences:
-        raise ValueError("剪辑配额不匹配：" + "；".join(differences) + "。请补充对应选题，不挪用其他岗位名额。")
+        raise ValueError('剪辑配额不匹配：' + '；'.join(differences) + '。请补对应选题，不挪用其他岗位名额。')
 
 
 def production_quotas(run):

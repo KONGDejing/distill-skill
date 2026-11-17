@@ -9,6 +9,28 @@ COVER_DESIGN_VERSION = 2
 FRAME_TITLE_VERSION = 2
 
 
+def frame_title_layout(title, platform):
+    maximum_size = {'douyin': 100, 'kuaishou': 78, 'xiaohongshu': 70}[platform]
+    for size in range(maximum_size, 47, -2):
+        font = _font(size, bold=True)
+        lines = _wrap(title, font, 800)
+        if len(lines) > 1:
+            # Prefer a real clause boundary to splitting words such as 离线边界.
+            candidates = [(title[:m.end()], title[m.end():]) for m in re.finditer(r"[？?，,：:]", title)
+                          if m.end() < len(title)]
+            readable_boundary = platform == 'douyin' and any(all(_font(48, bold=True).getlength(part) <= 800 for part in parts) for parts in candidates)
+            candidates = [parts for parts in candidates if all(font.getlength(s) <= 800 for s in parts)]
+            if readable_boundary and not candidates:
+                continue
+            if candidates:
+                lines = list(min(candidates, key=lambda parts: abs(font.getlength(parts[0]) - font.getlength(parts[1]))))
+        if len(lines) <= 2 and not any(len(s.strip()) == 1 for s in lines):
+            break
+    else:
+        raise ValueError("首帧标题过长，请压缩标题")
+    return size, lines
+
+
 def render_frame_cover(source, title, target, platform):
     """Letter the actual first frame; export the same transparent title for motion.
 
@@ -34,21 +56,8 @@ def render_frame_cover(source, title, target, platform):
     title = str(title).strip()
     if not title:
         raise ValueError("首帧缺少视频标题")
-    maximum_size = {'douyin': 100, 'kuaishou': 78, 'xiaohongshu': 70}[platform]
-    for size in range(maximum_size, 47, -2):
-        font = _font(size, bold=True)
-        lines = _wrap(title, font, 800)
-        if len(lines) > 1:
-            # Prefer a real clause boundary to splitting words such as 离线边界.
-            candidates = [(title[:m.end()], title[m.end():]) for m in re.finditer(r"[？?，,：:]", title)
-                          if m.end() < len(title)]
-            candidates = [parts for parts in candidates if all(font.getlength(s) <= 800 for s in parts)]
-            if candidates:
-                lines = list(min(candidates, key=lambda parts: abs(font.getlength(parts[0]) - font.getlength(parts[1]))))
-        if len(lines) <= 2 and not any(len(s.strip()) == 1 for s in lines):
-            break
-    else:
-        raise ValueError("首帧标题过长，请压缩标题")
+    size, lines = frame_title_layout(title, platform)
+    font = _font(size, bold=True)
     top, bottom = (330, 650) if platform == 'douyin' else (380, 650)
     if platform == "xiaohongshu":
         draw.rounded_rectangle((56, top, 944, bottom), radius=24, fill=(255, 252, 249, 244))

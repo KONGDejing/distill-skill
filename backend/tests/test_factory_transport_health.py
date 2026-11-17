@@ -1,6 +1,12 @@
 from datetime import datetime, timezone, timedelta
 import json
 from unittest.mock import Mock
+import pytest
+
+@pytest.fixture(autouse=True)
+def historical_transport_capability(monkeypatch):
+    from services import factory_platform_policy
+    monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: True)
 
 from services import factory_transport_health as health
 

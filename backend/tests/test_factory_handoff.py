@@ -21,7 +21,7 @@ def test_missing_extras_produce_complete_copyable_handoff_without_new_facts():
     content, variant = inputs()
     before = deepcopy((content, variant))
     handoff = build_handoff(content, variant)
-    assert handoff["version"] == HANDOFF_VERSION == 5
+    assert handoff["version"] == HANDOFF_VERSION == 6
     assert handoff["title"] == variant["title"] and handoff["caption"] == variant["caption"]
     assert handoff["tags"] == ["AI论文", "研究条件"]
     assert handoff["cover_text"] == variant["title"]
@@ -39,7 +39,7 @@ def test_missing_extras_produce_complete_copyable_handoff_without_new_facts():
     assert handoff["sources"] == content["sources"]
     assert content["sources"][0]["url"] in files["资料来源.txt"]
     assert "2026-11-10" in files["资料来源.txt"]
-    assert "全部6条" in files["手动发布说明.txt"]
+    assert "小影4条、小影3两条" in files["手动发布说明.txt"]
     assert (content, variant) == before
 
 
@@ -66,7 +66,7 @@ def test_reviewed_overrides_and_partial_replies_are_preserved_and_completed():
     assert "2026-11-12" in text and "本包提供抖音专用文案" in text
     assert "历史提交结果未明" in text and "确认之前不要再次上传" in text
     assert "本人按需手动上传" in text and "不代表已提交" in text
-    assert "抖音每天最多3条" in text
+    assert "随机抽4条抖音发布" in text
 
 
 def test_absent_approved_hook_and_follow_prompt_use_generic_nonfactual_prompts():

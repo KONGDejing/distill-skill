@@ -73,7 +73,8 @@ def isolated_factory(tmp_path, monkeypatch):
     monkeypatch.setattr("services.factory_cover.render_cover", fake_cover)
     def fake_frame_cover(source, title, target, platform):
         Path(target).write_bytes(title.encode())
-        return {"text_rendered": title, "version": 2, "frame_title_version": 2,
+        from services.factory_cover import frame_title_layout
+        return {"text_rendered": title, "lines": frame_title_layout(title, platform)[1], "version": 2, "frame_title_version": 2,
                 "kind": "source_first_frame_with_title", "platform": platform, "overlay_path": str(target)}
     monkeypatch.setattr("services.factory_cover.render_frame_cover", fake_frame_cover)
     def fake_complete(source, cover, target, **kwargs):
@@ -89,7 +90,7 @@ def isolated_factory(tmp_path, monkeypatch):
 def test_material_gap_keeps_valid_topics_running_and_final_report_partial(isolated_factory, monkeypatch):
     from services.factory_team import assign_editors, editor_quotas
     candidates = [{'title': title, 'category': category, 'source_ids': [SOURCE['id']]}
-                  for title, category in [('工具解释', '工具指南'), ('论文甲', '论文讲解'), ('论文乙', '论文讲解')]]
+                  for title, category in [('工具解释', '工具指南'), ('硬件场景', '智能硬件'), ('人物新闻', '人物新闻')]]
     invalid = {'title': '没有来源的热点', 'category': '科技热点', 'source_ids': ['missing-source']}
     with isolated_factory() as db:
         run = FactoryRun(target_count=6, sources=[SOURCE], settings_snapshot={
@@ -101,7 +102,7 @@ def test_material_gap_keeps_valid_topics_running_and_final_report_partial(isolat
             return {'candidates': [*candidates, invalid]}
         if role == 'director':
             assert payload['target'] == 3
-            assert payload['editor_quotas'] == {'producer': 1, 'producer2': 2, 'producer3': 0}
+            assert payload['editor_quotas'] == {'producer': 2, 'producer2': 0, 'producer3': 1}
             return {'selected': [{'candidate_index': n} for n in range(3)]}
         assert role == 'analyst'
         return {'summary': '已完成可制作部分，缺口保留。'}
@@ -111,8 +112,8 @@ def test_material_gap_keeps_valid_topics_running_and_final_report_partial(isolat
     with isolated_factory() as db:
         run = db.get(FactoryRun, run_id)
         assert run.target_count == 6
-        assert run.plan['material_shortfall'] == {'producer': 1, 'producer2': 0, 'producer3': 2}
-        assert assign_editors(db, run_id) == {'producer': 1, 'producer2': 2, 'producer3': 0}
+        assert run.plan['material_shortfall'] == {'producer': 2, 'producer2': 0, 'producer3': 1}
+        assert assign_editors(db, run_id) == {'producer': 2, 'producer2': 0, 'producer3': 1}
         items = db.query(FactoryItem).filter_by(run_id=run_id).all()
         assert len(items) == 3 and all(i.brief['title'] != invalid['title'] for i in items)
         for item in items:
@@ -226,6 +227,8 @@ def test_paper_requires_fulltext_before_writing_and_never_substitutes_background
         run = db.get(FactoryRun, run_id)
         run.sources = [{**SOURCE, "kind": "paper"}, visual]
         run.settings_snapshot = {**run.settings_snapshot, "visual_style": "tech_montage"}
+        item = db.get(FactoryItem, item_id)
+        item.brief = {**item.brief, "editor_id": "producer2"}
         db.commit()
     document = {"id": "test-paper", "url": "https://arxiv.org/pdf/0000.00000", "pages": [{"page": 1, "text": "Original paper"}], "sha256": "test"}
     monkeypatch.setattr(factory_papers, "collect_paper", Mock(return_value=document, side_effect=None if matched else ValueError("原文不足")))
@@ -1045,3 +1048,64 @@ def test_new_policy_saves_one_original_archive_with_both_manual_copies(isolated_
             assert [n for n in archive.namelist() if n.endswith('.mp4')]==['无人船的新成果.mp4']
             assert '小红书/正文描述.txt' in archive.namelist() and '快手/正文描述.txt' in archive.namelist()
     factory_service._package(rid,iid);publisher.assert_called_once()
+
+
+def test_owner_approved_two_films_are_preserved_and_only_missing_four_are_planned(isolated_factory,monkeypatch):
+    from services.factory_editorial_policy import POLICY
+    from services.factory_team import assign_editors
+    with isolated_factory() as db:
+        run=FactoryRun(target_count=6,sources=[SOURCE],settings_snapshot={'distribution_policy':POLICY,
+            'visual_style':'cards','editor_quotas':{'producer':4,'producer2':0,'producer3':2}})
+        db.add(run);db.flush()
+        seeds=[FactoryItem(run_id=run.id,position=position,status='completed',brief={'editor_id':owner},content={'title':title,'script':title})
+               for position,owner,title in [(0,'producer','已认可机器人'),(4,'producer3','已认可公司新闻')]]
+        db.add_all(seeds);db.flush()
+        run.settings_snapshot={**run.settings_snapshot,'owner_seeded_item_ids':[item.id for item in seeds]}
+        db.commit();run_id=run.id;seed_ids={item.id for item in seeds}
+    candidates=[{'title':title,'category':category,'source_ids':[SOURCE['id']]} for title,category in
+                [('科技一','科技成果'),('科技二','智能硬件'),('科技三','AI落地场景'),('人物新闻','人物新闻')]]
+    def respond(run_id,role,payload,**kwargs):
+        if role=='researcher':
+            assert payload['target']==6 and payload['editor_quotas']=={'producer':3,'producer2':0,'producer3':1}
+            return {'candidates':candidates}
+        assert role=='director' and payload['target']==4
+        return {'selected':[{'candidate_index':index} for index in range(4)]}
+    monkeypatch.setattr(factory_service,'call_agent',respond)
+    factory_service._make_plan(run_id)
+    with isolated_factory() as db:
+        assert db.query(FactoryItem).filter_by(run_id=run_id).count()==6
+        assert assign_editors(db,run_id)=={'producer':4,'producer2':0,'producer3':2}
+        assert {item.id for item in db.query(FactoryItem).filter_by(run_id=run_id,status='completed')}==seed_ids
+
+
+def test_technology_scene_citing_a_paper_is_not_converted_into_paper_ppt(isolated_factory,monkeypatch):
+    from services import factory_papers
+    source={'id':'paper','title':'Research with real robot experiments','url':'https://arxiv.org/abs/2601.12345','kind':'paper'}
+    run_id,item_id=_seed_item(isolated_factory)
+    with isolated_factory() as db:
+        run=db.get(FactoryRun,run_id);run.sources=[source];run.settings_snapshot={**run.settings_snapshot,'visual_style':'tech_montage'}
+        item=db.get(FactoryItem,item_id);item.brief={'editor_id':'producer','editor_track':'technology_scenes','source_ids':['paper']}
+        db.commit()
+    collect=Mock(side_effect=AssertionError('Science scene must retain actual dynamic demonstration workflow'))
+    monkeypatch.setattr(factory_papers,'collect_paper',collect)
+    factory_service._ensure_visual_support(run_id,item_id)
+    collect.assert_not_called()
+    accepted,diagnostics=factory_service._eligible_candidates([
+        {'title':'真实机器人场景','editor_track':'technology_scenes','source_ids':['paper']}],[source],'tech_montage',with_diagnostics=True)
+    assert accepted==[] and diagnostics[0]['reasons'][0]['code']=='insufficient_verified_visuals'
+
+
+def test_planning_failure_preserves_approved_deliveries_and_reports_partial(isolated_factory,monkeypatch):
+    run_id,item_id=_seed_item(isolated_factory,status='completed',content={'title':'已认可作品'})
+    with isolated_factory() as db:
+        db.get(FactoryRun,run_id).target_count=6;db.commit()
+    _fake_lock(monkeypatch)
+    monkeypatch.setattr(factory_service,'_make_plan',Mock(side_effect=ValueError('真实动态素材尚未补齐')))
+    result=factory_service.execute_run(run_id)
+    assert result['status']=='failed'
+    with isolated_factory() as db:
+        run=db.get(FactoryRun,run_id)
+        assert run.status=='partial' and run.completed_count==1 and run.target_count==6
+        assert run.report['production']['completed']==1 and run.report['production']['submitted']==0
+        assert run.report['blocker']=='真实动态素材尚未补齐'
+        assert db.get(FactoryItem,item_id).status=='completed'

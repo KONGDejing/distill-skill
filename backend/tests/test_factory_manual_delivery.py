@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base, get_db
-from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
+from models.factory import FactoryWorkOrder, FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from routers import creator_platforms, factory
 from services import factory_schedule as schedule
 from services import factory_publishing as publishing
@@ -26,17 +26,17 @@ def manual(tmp_path, monkeypatch):
     monkeypatch.setattr(creator_platforms, "automation_enabled", lambda _: False)
     engine = create_engine(f"sqlite:///{tmp_path / 'manual.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine, tables=[model.__table__ for model in
-        (FactoryConfig, FactoryRun, FactoryItem, FactoryPublication, FactoryRelease, FactoryEvent)])
+        (FactoryConfig, FactoryRun, FactoryItem, FactoryPublication, FactoryRelease, FactoryEvent, FactoryWorkOrder)])
     db = sessionmaker(bind=engine)()
     config = FactoryConfig(id=1, publish_enabled=False, publish_jitter_seconds=0)
-    run = FactoryRun(id="manual-run", status="completed", settings_snapshot={"distribution_policy":"douyin-three-tracks-v2"})
+    run = FactoryRun(id="manual-run", status="completed", settings_snapshot={"distribution_policy":"douyin-four-random-v1"})
     db.add_all([config, run])
     db.flush()
     run.active_slot = None
     package = tmp_path / "xiaohongshu.zip"
     package.write_bytes(b"fixture archive")
     item = FactoryItem(id="manual-item", run_id=run.id, position=0, status="completed",
-        brief={"distribution": {"platform": "xiaohongshu", "day": "2026-11-11", "policy": "douyin-three-tracks-v2", "manual_platforms": ["xiaohongshu","kuaishou"], "douyin_selected": False}},
+        brief={"distribution": {"platform": "xiaohongshu", "day": "2026-11-11", "policy": "douyin-four-random-v1", "manual_platforms": ["xiaohongshu","kuaishou"], "douyin_selected": False}},
         media={"video_path": "fixture.mp4"})
     copy = tmp_path / "manual-copy.txt"
     copy.write_text("fixture handoff", encoding="utf-8")

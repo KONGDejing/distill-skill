@@ -120,8 +120,8 @@ def _set_jitter(db, slot, config, now):
 
 def plan_slots(db, config, now):
     """Persist one draw per date/time; restart and polling never redraw it."""
-    if not 1 <= config.daily_target <= DAILY_TARGET or not 1 <= len(config.publish_times) <= 3:
-        raise ValueError("每天制作6条，抖音最多3个发布时间；请先替换旧计划配置")
+    if not 1 <= config.daily_target <= DAILY_TARGET or not 1 <= len(config.publish_times) <= 4:
+        raise ValueError("每天制作6条，抖音最多4个发布时间；请先替换旧计划配置")
     if (not config.platforms or len(config.platforms) != len(set(config.platforms))
             or not set(config.platforms).issubset({"douyin", "xiaohongshu", "kuaishou"})):
         raise ValueError("短视频计划仅包含抖音、小红书、快手；B站专题保持独立排期")
@@ -159,86 +159,46 @@ def plan_slots(db, config, now):
 
 
 def plan_kuaishou_slots(db, config, now):
-    from services.factory_kuaishou_policy import PUBLISH_TIMES
-    if 'kuaishou' not in config.platforms:
-        return
-    for offset in (0, 1):
-        day = now.date() + timedelta(days=offset)
-        for clock in PUBLISH_TIMES:
-            nominal = utc(datetime.fromisoformat(f'{day.isoformat()}T{clock}').replace(tzinfo=now.tzinfo))
-            if nominal < utc(now) or (config.publish_start_at and nominal < config.publish_start_at):
-                continue
-            for _ in range(10):
-                existing = db.query(FactoryRelease).filter(nominal_time() == nominal).first()
-                if existing is None or existing.platforms == ['kuaishou']:
-                    break
-                nominal += timedelta(minutes=1)
-            else:
-                raise ValueError('快手时段与现有排期冲突，保留原排期')
-            if existing is None:
-                # At first creation, sample only future instants inside the
-                # owner's ±15-minute window. Persisted draws are never moved.
-                span = config.publish_jitter_seconds
-                earliest = max(-span, ceil((max(utc(now), config.publish_start_at or utc(now)) - nominal).total_seconds()))
-                for _ in range(32):
-                    delta = earliest + randbelow(span - earliest + 1) if span > earliest else earliest
-                    due = nominal + timedelta(seconds=delta)
-                    if not db.query(FactoryRelease.id).filter_by(due_at=due).first():
-                        break
-                else:
-                    raise ValueError('快手随机排期冲突，保留已有时段')
-                slot = FactoryRelease(due_at=due, nominal_at=nominal, jitter_seconds=delta,
-                                      platforms=['kuaishou'], status='scheduled')
-                db.add(slot); db.flush()
-    db.commit()
+    # Replaced by explicit owner instruction: remaining two are manual.
+    return
 
 
 def bind_editor_releases(db, run, routes=None):
-    from services.factory_team import editor_id
-    from services.factory_editorial_policy import EDITOR_IDS
-    items = db.query(FactoryItem).filter_by(run_id=run.id).all()
-    chosen = {editor_id(item): item for item in items
-              if (routes or {}).get(item.id, (item.brief or {}).get('distribution', {})).get('douyin_selected') is True}
-    for owner, slot_id in zip(EDITOR_IDS, (run.settings_snapshot or {}).get('release_slot_ids', [])):
-        slot = db.get(FactoryRelease, slot_id)
-        if slot is None:
+    if run.settings_snapshot.get('production_kind') == 'weekly_papers':
+        return
+    items = db.query(FactoryItem).filter_by(run_id=run.id).order_by(FactoryItem.position).all()
+    chosen = {item.id: item for item in items
+              if (routes or {}).get(item.id, item.brief.get('distribution', {})).get('douyin_selected') is True}
+    slots = [db.get(FactoryRelease, key) for key in run.settings_snapshot.get('release_slot_ids', [])]
+    slots = [slot for slot in slots if slot is not None and slot.status != 'cancelled']
+    mapped = {slot.item_id for slot in slots if slot.item_id in chosen}
+    remaining = [item for item in sorted(chosen.values(), key=lambda item: (
+        not item.brief.get('distribution', {}).get('owner_pinned', False), item.position)) if item.id not in mapped]
+    for slot in slots:
+        if slot.item_id in chosen or slot.status == 'submitted':
             continue
-        slot.run_id = run.id;slot.platforms = ['douyin']
-        if owner in chosen:
-            item = chosen[owner]
-            slot.item_id, slot.position = item.id, item.position
-    from services.factory_kuaishou_policy import authorized, content_score
-    if authorized(run):
-        from services.factory_distribution import reserves_quota
-        chosen_k = sorted([item for item in items if
-            (routes or {}).get(item.id, item.brief.get('distribution', {})).get('kuaishou_selected')], key=content_score, reverse=True)
-        pinned = {slot.item_id for slot in db.query(FactoryRelease).filter(
-            FactoryRelease.run_id == run.id).all() if slot.platforms == ['kuaishou'] and slot.item_id
-            and any(reserves_quota(job, True) for job in db.query(FactoryPublication).filter_by(
-                item_id=slot.item_id, platform='kuaishou').all())}
-        remaining = [item for item in chosen_k if item.id not in pinned]
-        for slot_id in run.settings_snapshot.get('kuaishou_release_slot_ids', []):
-            slot = db.get(FactoryRelease, slot_id)
-            if slot is None or slot.item_id in pinned or slot.status in {'submitted', 'cancelled'}:
+        if slot.item_id:
+            # Never replace an upload or an ambiguous submission with another
+            # file just because a new candidate scored better.
+            from services.factory_distribution import reserves_quota
+            if any(reserves_quota(job, True) for job in db.query(FactoryPublication).filter_by(item_id=slot.item_id)):
                 continue
-            slot.run_id = run.id; slot.platforms = ['kuaishou']
-            if remaining:
-                item = remaining.pop(0);slot.item_id, slot.position = item.id, item.position
-            else:
-                slot.item_id, slot.position = None, None
+        slot.run_id = run.id
+        slot.platforms = ['douyin']
+        if remaining:
+            item = remaining.pop(0)
+            slot.item_id, slot.position = item.id, item.position
+        else:
+            slot.item_id, slot.position = None, None
 
 
 def reconcile_editor_picks(db, run):
-    """Before an account command, choose a finished approved original per editor.
-
-    A queued, uploaded, submitted or uncertain job pins that editor's choice.
-    The same lock as begin_publication prevents a selection/command race.
-    """
+    """Only bind the persisted random sample. Polling never changes membership."""
+    if run.settings_snapshot.get('distribution_policy') != CURRENT_DISTRIBUTION_POLICY:
+        return
+    if run.settings_snapshot.get('production_kind') == 'weekly_papers':
+        return
     import fcntl
-    from sqlalchemy import update
-    from services.factory_team import editor_id
-    from services.factory_editorial_policy import EDITOR_IDS
-    from services.factory_distribution import reserves_quota
     lock_path = publishing.LOCK_DIRECTORY / 'publication-douyin.lock'
     lock_path.parent.mkdir(mode=0o700, exist_ok=True)
     with lock_path.open('a') as lock:
@@ -246,33 +206,6 @@ def reconcile_editor_picks(db, run):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        db.execute(update(FactoryRun).where(FactoryRun.id == run.id).values(heartbeat_at=FactoryRun.heartbeat_at))
-        items = db.query(FactoryItem).filter_by(run_id=run.id).all()
-        for owner in EDITOR_IDS:
-            group = [i for i in items if editor_id(i) == owner]
-            if not group:
-                continue
-            jobs = db.query(FactoryPublication).filter(FactoryPublication.item_id.in_([i.id for i in group]),
-                FactoryPublication.platform.in_(['douyin', 'kuaishou'])).all()
-            if any(reserves_quota(job, True) for job in jobs):
-                continue
-            ready = [i for i in group if i.status == 'completed' and (i.review or {}).get('approved') is True
-                     and any(p.get('platform') == 'douyin' for p in i.packages or [])]
-            if not ready:
-                continue
-            best = max(ready, key=lambda i: ((i.review or {}).get('score', 0), -i.position))
-            for item in group:
-                route = dict((item.brief or {}).get('distribution') or {})
-                if route.get('policy') != CURRENT_DISTRIBUTION_POLICY:
-                    continue
-                selected = item.id == best.id
-                if route.get('douyin_selected') != selected:
-                    route.update(douyin_selected=selected, platform='douyin' if selected else None,
-                        reason='同岗位两条作品中按已通过审核与完整交付结果择一；账号任务一旦预留即固定。其余作品完整保存供本人手动选用。')
-                    item.brief = {**item.brief, 'distribution': route}
-        from services.factory_kuaishou_policy import assign_kuaishou
-        for day in {i.brief.get('distribution', {}).get('day') for i in items} - {None}:
-            assign_kuaishou(db, run, day)
         bind_editor_releases(db, run)
         db.commit()
 
@@ -282,7 +215,7 @@ def plan_production(db, config, now):
     if not config.schedule_enabled or now.strftime('%H:%M') < config.schedule_time:
         return {'status': 'waiting'}
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
-    key = f'three-tracks-v2:{now.date().isoformat()}'
+    key = f'douyin-four-random-v1:{now.date().isoformat()}'
     run = db.query(FactoryRun).filter_by(schedule_key=key).first()
     today_slots = db.query(FactoryRelease).filter(nominal_time() >= start,
         nominal_time() < start + timedelta(days=1), FactoryRelease.status != 'cancelled').order_by(nominal_time()).all()
@@ -292,12 +225,13 @@ def plan_production(db, config, now):
         slots = [by_id[key] for key in run.settings_snapshot['release_slot_ids'] if key in by_id]
     if not slots:
         return {'status': 'no_slots'}
-    if len(slots) > 3:
-        return {'status': 'deferred', 'reason': '旧排期仍超过3个时段，请先替换旧规则'}
+    if len(slots) > 4:
+        return {'status': 'deferred', 'reason': '旧排期仍超过4个时段，请先替换旧规则'}
     if not run:
         same_day = [r for r in db.query(FactoryRun).filter(FactoryRun.created_at >= start,
                     FactoryRun.created_at < start + timedelta(days=1), FactoryRun.status != 'cancelled').all()
-                    if (r.settings_snapshot or {}).get('distribution_policy') == CURRENT_DISTRIBUTION_POLICY]
+                    if (r.settings_snapshot or {}).get('distribution_policy') == CURRENT_DISTRIBUTION_POLICY
+                    and r.settings_snapshot.get('production_kind', 'daily') == 'daily']
         if same_day:
             if len(same_day) == 1 and same_day[0].target_count == config.daily_target:
                 run = same_day[0]
@@ -306,7 +240,7 @@ def plan_production(db, config, now):
                 return {'status': 'deferred', 'reason': '今天已有新规则生产批次，保留原计划，需显式合并排期避免超过6条'}
     if not run:
         try:
-            # Six originals are independent of the THREE Douyin release slots.
+            # Six originals are independent of the FOUR Douyin release slots.
             run = start_run(db, target_count=config.daily_target, trigger='scheduled', schedule_key=key,
                             release_slot_ids=[slot.id for slot in slots])
         except (ValueError, RuntimeError) as exc:
@@ -455,7 +389,7 @@ def advance_slot(db, slot, config, now):
             slot.platforms = [route["platform"]]
         elif not slot.platforms:
             slot.status = "waiting_media"
-            slot.results = {"distribution": _result("waiting", "等待三位剪辑师各一条的抖音预选，六条人工素材分别保存")}
+            slot.results = {"distribution": _result("waiting", "等待日常非论文6条中持久随机抽4条；剩余2条人工交付")}
             db.commit()
             return
     if item is None or item.status != "completed":
@@ -500,6 +434,8 @@ def tick(db, config, now=None):
     if config.manual_delivery_enabled or config.publish_enabled:
         plan_slots(db, config, now)
         production = plan_production(db, config, now)
+        from services.factory_weekly_papers import plan_weekly_papers
+        plan_weekly_papers(db, config, now)
     else:
         production = {"status": "disabled"}
     slots = db.query(FactoryRelease).filter(FactoryRelease.status.notin_(FINAL),

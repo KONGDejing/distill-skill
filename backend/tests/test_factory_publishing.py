@@ -505,7 +505,7 @@ def test_new_operations_require_the_assigned_platform(distribution_publishing):
     env = distribution_publishing
     with env.sessions() as db:
         for action in ('prepare', 'publish'):
-            with pytest.raises(ValueError, match='未入选'):
+            with pytest.raises(ValueError, match='手动'):
                 factory_publishing.begin_publication(db, env.item_id, action, 'kuaishou')
         assert db.query(FactoryPublication).count() == 0
     env.creator_submit.assert_not_called()
@@ -578,6 +578,7 @@ def test_three_publish_reservations_block_new_upload_and_publish(distribution_pu
         _other_reserved(env, db, 1)
         _other_reserved(env, db, 2, status='failed', result={'submission_uncertain': True})
         _other_reserved(env, db, 3)
+        _other_reserved(env, db, 4)
         if action == 'publish':
             db.add(FactoryPublication(item_id=env.item_id, platform='douyin', action='prepare', status='prepared'))
             db.commit()
@@ -593,6 +594,7 @@ def test_prepare_also_has_bounded_daily_admission(distribution_publishing):
         _other_reserved(env, db, 1, action='prepare', status='prepared')
         _other_reserved(env, db, 2, action='prepare', status='prepared')
         _other_reserved(env, db, 3, action='prepare', status='prepared')
+        _other_reserved(env, db, 4, action='prepare', status='prepared')
         with pytest.raises(ValueError, match='当天已预留或提交'):
             factory_publishing.begin_publication(db, env.item_id, 'prepare', 'douyin')
     env.creator_submit.assert_not_called()
@@ -637,7 +639,7 @@ def test_legacy_multiplatform_item_cannot_create_another_operation(distribution_
         db.add(FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish', status='submitted'))
         db.commit()
         assert factory_publishing.begin_publication(db, item.id, 'publish', 'douyin').id == first.id
-        with pytest.raises(ValueError, match='旧发行规则'):
+        with pytest.raises(ValueError, match='手动'):
             factory_publishing.begin_publication(db, item.id, 'prepare', 'kuaishou')
     env.creator_submit.assert_not_called()
 
@@ -655,24 +657,11 @@ def test_new_route_wrong_day_never_creates_a_job(distribution_publishing):
     env.creator_submit.assert_not_called()
 
 
-def test_kuaishou_selected_original_uses_final_export_and_ai_disclosure(distribution_publishing,tmp_path):
-    from services.factory_kuaishou_policy import POLICY as K_POLICY
+def test_kuaishou_old_selected_original_cannot_create_new_account_operation(distribution_publishing, monkeypatch):
+    from services.factory_platform_policy import require_automation, AutomationDisabled
+    monkeypatch.setattr(factory_publishing,'require_automation',require_automation)
     env=distribution_publishing
     with env.sessions() as db:
-        run=db.get(FactoryRun,env.run_id);run.settings_snapshot={**run.settings_snapshot,'kuaishou_auto_policy':K_POLICY}
-        item=db.get(FactoryItem,env.item_id)
-        route={**item.brief['distribution'],'platform':'kuaishou','douyin_selected':False,
-               'kuaishou_selected':True,'kuaishou_auto_policy':K_POLICY}
-        item.brief={**item.brief,'distribution':route}
-        final,cover=tmp_path/'final-kuaishou.mp4',tmp_path/'cover-kuaishou.png'
-        final.write_bytes(b'approved final video');cover.write_bytes(b'approved first frame title')
-        item.packages=[{**p,'video_path':str(final),'cover_path':str(cover)} if p['platform']=='kuaishou' else p for p in item.packages]
-        db.commit()
-        job=factory_publishing.begin_publication(db,item.id,'prepare','kuaishou')
-        assert job.status=='queued'
-        args=env.creator_submit.call_args.args
-        assert args[:2]==('kuaishou','prepare')
-        payload=args[2]
-        assert payload['video_path']==str(final) and payload['cover_path']==str(cover)
-        assert payload['ai_generated'] is True and '内容由AI生成' in payload['caption']
-        assert payload['requested_publication_city']=='北京'
+        with pytest.raises(AutomationDisabled):
+            factory_publishing.begin_publication(db,env.item_id,'prepare','kuaishou')
+    env.creator_submit.assert_not_called()

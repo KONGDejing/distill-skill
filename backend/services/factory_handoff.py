@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 
-HANDOFF_VERSION = 5
+HANDOFF_VERSION = 6
 _PLATFORM_NAMES = {"douyin": "抖音", "xiaohongshu": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩"}
 _AI_DISCLOSURE = "AI辅助整理文案、配音和剪辑；参考来源见正文及随附资料"
 _REPLY_TEMPLATES = (
@@ -99,7 +99,7 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
     name = _PLATFORM_NAMES.get(platform, platform)
     steps = [
         f'使用本条完整MP4和{name}专用标题、正文，按需手动选用小红书或快手；两平台均不启用自动化。',
-        '全部6条原创均保存；每位剪辑师各1条预选抖音，抖音每天最多3条。查看工厂实际回执，避免对同一平台重复上传。',
+        '日常小影4条、小影3两条，非论文6条中持久随机抽4条抖音发布，剩余2条本人手动上传；论文每周独立2条，不上抖音。查看实际回执，避免重复。',
         '如本条有历史提交、审核或结果未明，请本人先在对应平台确认是否已存在；确认之前不要再次上传。',
         '本人使用官方应用或创作后台上传完整MP4；大标题已放中上部，口播与关注提醒已写入成片。',
         '填写本包发布标题和正文，正文已合并相关话题与真实AI制作说明。',

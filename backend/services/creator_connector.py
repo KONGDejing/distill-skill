@@ -36,7 +36,7 @@ PLATFORMS = {
     "bilibili": {"name": "哔哩哔哩", "hosts": {"member.bilibili.com", "passport.bilibili.com", "www.bilibili.com"}, "title_limit": 80, "caption_limit": 2000},
 }
 ACTIONS = {"login", "inspect", "prepare", "publish"}
-AUTOMATION_POLICY_VERSION = "douyin-three-tracks-v3"
+AUTOMATION_POLICY_VERSION = "douyin-four-random-v1"
 _STOP = False
 
 

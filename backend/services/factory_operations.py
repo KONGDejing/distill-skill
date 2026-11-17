@@ -22,10 +22,10 @@ ASSIGNMENTS = {
     "researcher3": "专门为小影3核对海外AI人物及公司重大新闻、公开言论和争议；按50人观察池及国内七家范围交接日期、证据与真实画面",
     "writer": "围绕一个问题写约150秒讲解；兑现开场承诺，结尾自然提醒关注",
     "producer": "讲解最新科技成果与AI真实落地、试验场景，以对应动态实拍为主配必要动画与AI示意，科技感强，口播与镜头对齐",
-    "producer2": "专门做真实论文PPT讲解，保留原PDF、方法与结果高亮，配沉稳男声，记录来源与返工",
+    "producer2": "每周单独2条真实论文PPT讲解，原PDF高亮、方法与实验结果、沉稳男声；人工交付，不上抖音，不占日常6条",
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
-    "publisher": "抖音每天3条、每位剪辑师各选1条，自动上传并声明AI生成；快手每天自动2条且不与抖音重复；全部6条保存中文MP4及完整发布包，小红书由本人按需上传，评论由本人回复",
+    "publisher": "小影4条加小影3两条组成日常6条，随机4条自动上传抖音并声明AI、署名和禁止下载；剩余2条本人手动上传快手、小红书；论文每周单独人工交付",
     "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
 }
 
@@ -66,16 +66,21 @@ def overview(db, now=None):
     day_runs = db.query(FactoryRun).filter(or_(
         (FactoryRun.created_at >= start) & (FactoryRun.created_at < start + timedelta(days=1)),
         FactoryRun.id.in_({i.run_id for i in items}))).all()
+    daily_ids = {r.id for r in day_runs if r.settings_snapshot.get('production_kind','daily') == 'daily'}
+    items = [i for i in items if i.run_id in daily_ids]
     current_runs = {r.id for r in day_runs if r.settings_snapshot.get('distribution_policy') == POLICY
-                    and r.target_count == DAILY_TARGET and r.status in {'partial', 'failed', 'completed'}}
+                    and r.settings_snapshot.get('production_kind','daily') == 'daily' and r.target_count == DAILY_TARGET and r.status in {'partial', 'failed', 'completed'}}
     if now.hour >= 6 and current_runs:
-        for owner in EDITOR_IDS:
+        from agents.registry import DAILY_EDITOR_QUOTAS
+        for owner, required in DAILY_EDITOR_QUOTAS.items():
+            if not required:
+                continue
             assigned = sum(i.run_id in current_runs and editor_id(i) == owner for i in items)
-            if assigned < 2:
+            if assigned < required:
                 name = next(a['name'] for a in AGENTS if a['id'] == owner)
                 alerts.append({'key': f'issue:coverage:{now.date()}:{owner}', 'owner_id': 'director',
                     'owner': f'老周 / {name}', 'editor_id': owner, 'day': str(now.date()),
-                    'message': f'{name}尚缺{2-assigned}条选题任务，不能以其他岗位产量代替',
+                    'message': f'{name}尚缺{required-assigned}条选题任务，不能以其他岗位产量代替',
                     'next_action': '老周安排对应研究员补齐原始来源与可用画面，再分派独立选题；不足须主动汇报，不能拿旧样片算今日原创'})
     for item in items:
         incident = db.get(FactoryWorkOrder, "issue:production:" + item.id)
@@ -112,7 +117,7 @@ def overview(db, now=None):
     completed = sum(i.status == "completed" for i in items)
     result = {"day": now.date().isoformat(), "assignments": assignments, "alerts": alerts, "resolved_issues": resolved_issues,
               "improvements": improvements, "report_time": "22:30", "timezone": "Asia/Shanghai",
-              "summary": {"completed": completed, "target": DAILY_TARGET, "publish_target": 3,
+              "summary": {"completed": completed, "target": DAILY_TARGET, "publish_target": 4,
                           "scheduled_slots": len(slots), "ready_150_seconds": long_ready,
                           "fully_submitted_slots": sum(s.status == "submitted" for s in slots),
                           "failed_items": sum(i.status == "failed" for i in items)},

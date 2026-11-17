@@ -72,12 +72,12 @@ test('schedule is visible for either Douyin publishing or manual delivery', () =
   const props = { target: 6, releases: [{ id: 'fixture', status: 'manual_ready', platforms: ['douyin'],
     due_at: '2026-11-11T00:00:00+08:00', nominal_at: '2026-11-11T00:00:00+08:00' }] }
   assert.equal(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: false } }), '')
-  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /自动发布：抖音3条＋快手2条/)
+  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /自动发布：抖音非论文随机4条/)
   const html = render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: true, publish_enabled: false } })
   assert.match(html, /发布与交付计划/)
   assert.match(html, /建议发布时间/)
-  assert.match(html, /全部6条成片/)
-  assert.match(html, /抖音3条/)
+  assert.match(html, /全部成片/)
+  assert.match(html, /抖音随机4条/)
 })
 
 test('connection effects cannot poll even with legacy enabled account data', () => {
@@ -140,8 +140,7 @@ test('Douyin and Kuaishou render authorized login controls while other platforms
   const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({ id, automation: { enabled: true } })) })
   assert.match(html, /抖音自动|自动发布/)
   assert.match(html, /\/platforms\/douyin\/login/)
-  assert.match(html, /\/platforms\/kuaishou\/login/)
-  for (const id of ['xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
+  for (const id of ['kuaishou', 'xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
   assert.match(html, /必须选择官方AI生成声明/)
 })
 
@@ -159,8 +158,7 @@ test('Kuaishou transport failure is visible and does not open a login poll', () 
   const html = render(ManualPlatformChannels, { platforms: [{ id: 'kuaishou',
     automation: { enabled: true }, publishing_enabled: false,
     transport: { ready: false, reason: '北京快手HTTPS连接中断' } }] })
-  assert.match(html, /北京快手HTTPS连接中断/)
-  assert.doesNotMatch(html, /仅支持手动发布|\/platforms\/kuaishou\/login/)
+  assert.match(html, /手动/); assert.doesNotMatch(html, /\/platforms\/kuaishou\/login/)
   for (const effect of effects) {
     const cleanup = effect()
     if (cleanup) cleanup()

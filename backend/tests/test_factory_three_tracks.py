@@ -33,130 +33,126 @@ def batch(db, key='daily'):
     run = FactoryRun(id=key, active_slot=None, settings_snapshot={'distribution_policy': POLICY, 'timezone': 'Asia/Shanghai'})
     db.add(run);db.flush();run.active_slot=None;db.flush()
     items=[]
-    for index, owner in enumerate(OWNERS*2):
+    for index, owner in enumerate(('producer',)*4+('producer3',)*2):
         i=FactoryItem(run_id=run.id,position=index,brief={'editor_id':owner},review={'approved':True,'score':90})
         db.add(i);items.append(i)
     db.flush();return run,items
 
 
-def test_saved_policy_covers_three_distinct_genres_and_exact_owner_watch_scope():
+def test_saved_policy_retains_watch_scope_and_replaces_daily_paper_plan():
     p=editorial_policy()
-    assert p['production']['daily_total']==6 and p['production']['douyin_daily_total']==3
+    assert p['production']['daily_total']==6 and p['production']['douyin_daily_total']==4
+    assert p['production']['editor_daily_quotas']=={'producer':4,'producer2':0,'producer3':2}
+    assert p['production']['weekly_papers']['total']==2
     assert len(p['people'])==50 and Counter(x['region'] for x in p['people'])=={'海外':40,'国内':10}
-    assert {x['background'] for x in p['people'] if x['region']=='国内'}==set(p['domestic_company_allowlist'])
-    assert {'Geoffrey Hinton','Mark Zuckerberg','Lisa Su','David Goeckeler','Sanjay Mehrotra'} <= {x['name'] for x in p['people']}
-    assert '真实落地' in editor_profile('producer')['direction']
+    assert {'Geoffrey Hinton','Mark Zuckerberg','Lisa Su'} <= {x['name'] for x in p['people']}
+    assert '新智元' in editor_profile('producer')['visual']
     assert '论文PPT' in editor_profile('producer2')['visual']
-    assert '新闻' in editor_profile('producer3')['direction']
-    p['people'].clear();assert len(editorial_policy()['people'])==50
-    assert automation_enabled('douyin') and automation_enabled('kuaishou')
+    assert automation_enabled('douyin') and not automation_enabled('kuaishou')
     assert not automation_enabled('xiaohongshu')
 
 
-def test_topic_ownership_follows_story_not_generic_hardware_or_paper_keywords():
-    for category in ['AI陪伴玩具','智能硬件','科技展会','端侧AI','无人船舶']:
-        assert candidate_editor({'category':category,'editor_track':'technology_scenes'},[])=='producer'
-    cited=[{'id':'paper','kind':'paper','url':'https://arxiv.org/abs/2601.12345'}]
-    assert candidate_editor({'editor_track':'technology_scenes','source_ids':['paper']},cited)=='producer'
-    assert candidate_editor({'category':'论文讲解','source_ids':['paper']},cited)=='producer2'
-    assert candidate_editor({'category':'海外公司新闻','editor_track':'people_news'},[])=='producer3'
+def test_uniform_sample_is_saved_and_polling_does_not_redraw(db,monkeypatch):
+    import secrets
+    sample=Mock(side_effect=lambda population,k:population[-k:] if k else [])
+    monkeypatch.setattr(secrets.SystemRandom,'sample',lambda self,population,k:sample(population,k))
+    run,items=batch(db)
+    routes=assign_distribution(db,run.id,DAY)
+    assert sum(r['douyin_selected'] for r in routes.values())==4
+    assert sum(not r['douyin_selected'] for r in routes.values())==2
+    assert all(r['manual_platforms']==['xiaohongshu','kuaishou'] and not r['kuaishou_selected'] for r in routes.values())
+    db.commit();assert assign_distribution(db,run.id,DAY)==routes
+    assert sample.call_count==1
+    for i in items:i.review={'approved':True,'score':100-i.position}
+    reconcile_editor_picks(db,run)
+    assert {i.id for i in items if i.brief['distribution']['douyin_selected']}=={k for k,v in routes.items() if v['douyin_selected']}
+    assert run.settings_snapshot['douyin_random_selections'][DAY]['method']=='system_random_sample_without_replacement'
 
 
-def test_all_six_saved_for_both_manual_platforms_but_only_one_per_editor_nominated(db):
-    r,items=batch(db);routes=assign_distribution(db,r.id,DAY)
-    assert len(routes)==6
-    chosen=[i for i in items if routes[i.id]['douyin_selected']]
-    assert Counter(i.brief['editor_id'] for i in chosen)==dict.fromkeys(OWNERS,1)
-    assert all(x['manual_platforms']==['xiaohongshu','kuaishou'] for x in routes.values())
-    db.commit();assert assign_distribution(db,r.id,DAY)==routes
+def test_owner_pins_two_and_remaining_two_are_random_without_replacement(db):
+    run,items=batch(db)
+    pin={items[0].id:'douyin',items[4].id:'douyin'}
+    routes=assign_distribution(db,run.id,DAY,proposal=pin)
+    assert all(routes[key]['douyin_selected'] and routes[key]['owner_pinned'] for key in pin)
+    selected={key for key,value in routes.items() if value['douyin_selected']}
+    assert len(selected)==4 and set(pin)<=selected
+    assert len(run.settings_snapshot['douyin_random_selections'][DAY]['drawn_ids'])==2
     with pytest.raises(ValueError,match='不可静默'):
-        assign_distribution(db,r.id,DAY,proposal={items[3].id:'douyin'})
+        assign_distribution(db,run.id,DAY,proposal={next(k for k in routes if k not in selected):'douyin'})
 
 
-def test_old_rules_and_manual_platforms_cannot_create_new_account_commands(db):
-    r,items=batch(db);assign_distribution(db,r.id,DAY)
-    with pytest.raises(ValueError,match='手动'):guard_publication(db,items[0],'xiaohongshu','prepare',now=NOW)
-    with pytest.raises(ValueError,match='未入选'):guard_publication(db,items[0],'kuaishou','prepare',now=NOW)
-    with pytest.raises(ValueError,match='未入选'):guard_publication(db,items[3],'douyin','prepare',now=NOW)
-    r.settings_snapshot={'distribution_policy':'single-platform-v1'}
-    with pytest.raises(ValueError,match='旧发行规则'):guard_publication(db,items[0],'douyin','prepare',now=NOW)
+def test_daily_planning_rejects_paper_but_weekly_papers_are_manual(db):
+    run,items=batch(db);items[0].brief={'editor_id':'producer2'}
+    with pytest.raises(ValueError,match='每周独立'):
+        assign_distribution(db,run.id,DAY)
+    db.rollback()
+    run=FactoryRun(id='weekly',active_slot=None,target_count=1,settings_snapshot={'distribution_policy':POLICY,'production_kind':'weekly_papers'})
+    db.add(run);db.flush()
+    paper=FactoryItem(run_id=run.id,position=0,brief={'editor_id':'producer2'},content={});db.add(paper);db.flush()
+    route=assign_distribution(db,run.id,DAY)[paper.id]
+    assert route['production_kind']=='weekly_papers' and not route['douyin_selected']
+    with pytest.raises(ValueError,match='论文视频'):
+        guard_publication(db,paper,'douyin','prepare',now=NOW)
 
 
-def test_upload_reserves_editor_quota_and_unknown_submissions_are_not_duplicated(db):
-    r,items=batch(db);assign_distribution(db,r.id,DAY)
-    guard_publication(db,items[0],'douyin','prepare',now=NOW)
-    db.add(FactoryPublication(item_id=items[0].id,platform='douyin',action='prepare',status='prepared',
-        created_at=NOW.replace(tzinfo=None)));db.flush()
-    # Tampering a second item into the nomination still cannot spend the first one's quota.
-    route=dict(items[3].brief['distribution']);route.update(platform='douyin',douyin_selected=True)
-    items[3].brief={**items[3].brief,'distribution':route}
-    with pytest.raises(ValueError,match='同岗'):guard_publication(db,items[3],'douyin','prepare',now=NOW)
-    for i in items[1:3]:
-        guard_publication(db,i,'douyin','prepare',now=NOW)
-        db.add(FactoryPublication(item_id=i.id,platform='douyin',action='publish',status='failed',
-            result={'submission_uncertain':True},created_at=NOW.replace(tzinfo=None)));db.flush()
-    items[4].brief={**items[4].brief,'distribution':{**items[4].brief['distribution'],'platform':'douyin','douyin_selected':True}}
-    with pytest.raises(ValueError,match='3条'):guard_publication(db,items[4],'douyin','prepare',now=NOW)
+def test_same_editor_can_fill_multiple_slots_but_four_reservations_stop_fifth(db):
+    run,items=batch(db)
+    routes=assign_distribution(db,run.id,DAY,proposal={item.id:'douyin' if item.position<4 else 'manual' for item in items})
+    for item in items[:4]:
+        guard_publication(db,item,'douyin','prepare',now=NOW)
+        db.add(FactoryPublication(item_id=item.id,platform='douyin',action='publish',status='failed',
+            result={'submission_uncertain':True},created_at=NOW.replace(tzinfo=None)))
+        db.flush()
+    fifth=items[4];fifth.brief={**fifth.brief,'distribution':{**routes[fifth.id],'douyin_selected':True,'platform':'douyin'}}
+    with pytest.raises(ValueError,match='4条'):
+        guard_publication(db,fifth,'douyin','prepare',now=NOW)
+    with pytest.raises(ValueError,match='手动'):
+        guard_publication(db,items[0],'kuaishou','prepare',now=NOW)
 
 
-def test_three_release_slots_bind_different_editors_without_reducing_six_originals(db):
-    r,items=batch(db);routes=assign_distribution(db,r.id,DAY);slots=[]
-    for index in range(3):
-        s=FactoryRelease(due_at=NOW.replace(tzinfo=None,hour=9+index));db.add(s);slots.append(s)
-    db.flush();r.settings_snapshot={**r.settings_snapshot,'release_slot_ids':[s.id for s in slots]}
-    bind_editor_releases(db,r,routes)
-    assert len(items)==6 and [db.get(FactoryItem,s.item_id).brief['editor_id'] for s in slots]==list(OWNERS)
-    assert all(s.platforms==['douyin'] for s in slots)
+def test_four_slots_bind_distinct_items_and_keep_user_pins_first(db):
+    run,items=batch(db);routes=assign_distribution(db,run.id,DAY,proposal={items[0].id:'douyin',items[4].id:'douyin'})
+    slots=[FactoryRelease(due_at=NOW.replace(tzinfo=None,hour=9+n)) for n in range(4)]
+    db.add_all(slots);db.flush();run.settings_snapshot={**run.settings_snapshot,'release_slot_ids':[s.id for s in slots]}
+    bind_editor_releases(db,run,routes)
+    assert slots[0].item_id==items[0].id and slots[1].item_id==items[4].id
+    assert len({s.item_id for s in slots})==4
+    before=[s.item_id for s in slots];bind_editor_releases(db,run)
+    assert [s.item_id for s in slots]==before
 
 
-def test_finished_backup_can_replace_failed_pick_but_account_reservation_pins_choice(db):
-    r,items=batch(db);assign_distribution(db,r.id,DAY)
-    items[0].status='failed';items[3].status='completed';items[3].packages=[{'platform':'douyin'}]
-    db.commit();reconcile_editor_picks(db,r)
-    assert items[3].brief['distribution']['douyin_selected'] and not items[0].brief['distribution']['douyin_selected']
-    db.add(FactoryPublication(item_id=items[3].id,platform='douyin',action='prepare',status='queued'))
-    items[0].status='completed';items[0].review={'approved':True,'score':99};items[0].packages=[{'platform':'douyin'}]
-    db.commit();reconcile_editor_picks(db,r)
-    assert items[3].brief['distribution']['douyin_selected']
+def test_daily_six_and_four_slots_are_independent_and_kuaishou_has_no_schedule(db,monkeypatch):
+    from services import factory_schedule as scheduler,factory_service
+    from zoneinfo import ZoneInfo
+    cfg=FactoryConfig(id=1,daily_target=6,schedule_enabled=True,schedule_time='00:30',publish_jitter_seconds=0)
+    db.add(cfg);db.commit();now=datetime(2026,11,16,0,30,tzinfo=ZoneInfo('Asia/Shanghai'))
+    def create(session,**kwargs):
+        run=FactoryRun(id='six',target_count=kwargs['target_count'],schedule_key=kwargs['schedule_key'],
+            active_slot=None,settings_snapshot={'distribution_policy':POLICY,'release_slot_ids':kwargs['release_slot_ids']})
+        session.add(run);session.commit();return run
+    start=Mock(side_effect=create);monkeypatch.setattr(factory_service,'start_run',start)
+    scheduler.plan_slots(db,cfg,now);scheduler.plan_slots(db,cfg,now)
+    assert db.query(FactoryRelease).count()==8
+    assert all(slot.platforms==['douyin'] for slot in db.query(FactoryRelease))
+    scheduler.plan_production(db,cfg,now);scheduler.plan_production(db,cfg,now)
+    start.assert_called_once();assert start.call_args.kwargs['target_count']==6
+    assert len(start.call_args.kwargs['release_slot_ids'])==4
 
 
-def test_ppt_is_allowed_for_paper_editor_and_rejected_for_scene_and_news_editors():
+def test_ppt_stays_only_with_paper_editor():
     assets=[{'kind':'paper_page'}]*3
-    validate_track_assets('producer2',assets);validate_track_picture_coverage('producer2',{'dynamic_coverage':0})
+    validate_track_assets('producer2',assets)
     for owner in ['producer','producer3']:
         with pytest.raises(ValueError,match='PPT'):validate_track_assets(owner,assets)
         with pytest.raises(ValueError,match='动态'):validate_track_picture_coverage(owner,{'dynamic_coverage':.2})
         validate_track_picture_coverage(owner,{'dynamic_coverage':.8})
-    assert matching_people({'title':'Geoffrey Hinton speaks; Mark Zuckerberg responds'})==['Mark Zuckerberg','Geoffrey Hinton']
 
 
-def test_daily_production_uses_six_even_though_calendar_has_three_slots(db, monkeypatch):
-    from services import factory_schedule as scheduler, factory_service
-    from zoneinfo import ZoneInfo
-    cfg=FactoryConfig(id=1,daily_target=6,schedule_enabled=True,schedule_time='00:30',
-                      publish_times=['17:00','20:00','22:00'],publish_jitter_seconds=0)
-    db.add(cfg);db.commit();now=datetime(2026,11,16,0,30,tzinfo=ZoneInfo('Asia/Shanghai'))
-    def create(session, **kwargs):
-        r=FactoryRun(id='actual-six',target_count=kwargs['target_count'],schedule_key=kwargs['schedule_key'],
-            settings_snapshot={'distribution_policy':POLICY,'release_slot_ids':kwargs['release_slot_ids']})
-        session.add(r);session.commit();return r
-    start=Mock(side_effect=create);monkeypatch.setattr(factory_service,'start_run',start)
-    scheduler.plan_slots(db,cfg,now);scheduler.plan_slots(db,cfg,now)
-    assert db.query(FactoryRelease).count()==10  # Douyin 3 + Kuaishou 2, today and tomorrow.
-    scheduler.plan_production(db,cfg,now);scheduler.plan_production(db,cfg,now)
-    start.assert_called_once();assert start.call_args.kwargs['target_count']==6
-    assert len(start.call_args.kwargs['release_slot_ids'])==3
-
-
-def test_old_release_is_cancelled_without_an_account_command(db, monkeypatch):
-    from services import factory_schedule as scheduler
-    r=FactoryRun(id='old',settings_snapshot={'distribution_policy':'single-platform-v1'});db.add(r);db.flush()
-    i=FactoryItem(run_id=r.id,position=0,status='completed');db.add(i);db.flush()
-    slot=FactoryRelease(run_id=r.id,item_id=i.id,due_at=NOW.replace(tzinfo=None),platforms=['kuaishou']);db.add(slot)
-    cfg=FactoryConfig(id=1);db.add(cfg);db.commit()
-    command=Mock();monkeypatch.setattr(scheduler.publishing,'begin_publication',command)
-    scheduler.advance_slot(db,slot,cfg,NOW.replace(tzinfo=None))
-    assert slot.status=='cancelled';command.assert_not_called()
+def test_old_rules_cannot_create_new_uploads(db):
+    run,items=batch(db);assign_distribution(db,run.id,DAY)
+    run.settings_snapshot={'distribution_policy':'douyin-three-tracks-v2'}
+    with pytest.raises(ValueError,match='旧发行规则'):
+        guard_publication(db,items[0],'douyin','prepare',now=NOW)
 
 
 def test_single_original_archive_contains_one_chinese_video_and_both_manual_copies(tmp_path):

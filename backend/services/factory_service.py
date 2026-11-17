@@ -4,13 +4,13 @@ import os
 import re
 import threading
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
 from config import settings
 from database import SessionLocal
-from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication, FactoryRelease
+from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication, FactoryRelease, FactoryWorkOrder
 from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailable
 from services.factory_resources import MemoryPressure, ensure_memory_available
@@ -37,9 +37,10 @@ def config_dict(config):
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
             "editor_quotas": editor_quotas(min(config.daily_target, 6)),
-            "distribution_policy": POLICY, "platform_daily_limit": 3,
-            "douyin_per_editor": 1, "manual_platforms": ["xiaohongshu"], "editorial_policy_version": 2,
-            "kuaishou_auto_policy": K_POLICY, "kuaishou_daily_limit": 2, "kuaishou_publish_times": list(PUBLISH_TIMES),
+            "distribution_policy": POLICY, "platform_daily_limit": 4,
+            "douyin_per_editor": None, "manual_platforms": ["xiaohongshu", "kuaishou"], "editorial_policy_version": 5,
+            "production_kind": "daily", "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5],
+            "kuaishou_auto_policy": None, "kuaishou_daily_limit": 0, "kuaishou_publish_times": [],
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
 
@@ -68,6 +69,7 @@ def storage_url(path):
 def run_dict(run):
     return {"id": run.id, "status": run.status, "stage": run.stage,
             "target_count": run.target_count, "completed_count": run.completed_count,
+            "production_kind": run.settings_snapshot.get("production_kind", "daily"),
             "trigger": run.trigger, "created_at": iso(run.created_at), "finished_at": iso(run.finished_at),
             "heartbeat_at": iso(run.heartbeat_at), "error": run.error,
             "cancel_requested": run.cancel_requested,
@@ -112,7 +114,7 @@ def run_detail(db, run):
             if package['platform'] == 'douyin' and not selected:
                 state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '历史或未入选的抖音文案，仅保留归档，不创建自动上传任务。'}
             if package['platform'] == 'kuaishou' and not route.get('kuaishou_selected'):
-                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '未入选快手当天2条自动发布作品；保留完整素材供本人按需选择。'}
+                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '快手改为本人手动上传；保留完整成片和文案，不创建账号自动化任务。'}
             packages.append({**package, 'download_url': f"/api/factory/items/{item.id}/packages/{package['platform']}",
                 'automation': state, 'publishing_enabled': bool(publishing_enabled and state['enabled']
                     and effective_automation_enabled(package['platform'])), 'copy_url': storage_url(package.get('copy_path'))})
@@ -198,19 +200,23 @@ def queue_available():
         return False
 
 
-def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None, editor_quota_override=None):
+def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None, editor_quota_override=None, production_kind="daily", enqueue=True):
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
     if config['visual_style'] != 'tech_montage':
         raise ValueError('新的三方向制作不使用统一文字卡片；请选择科技成果/论文/新闻对应的真实素材模式')
     if not 1 <= target <= 6:
         raise ValueError("每轮产量应为 1–6 条")
-    config["editor_quotas"] = editor_quotas(target)
+    if production_kind not in {'daily', 'weekly_papers'}:
+        raise ValueError('未知排产类型')
+    config['production_kind'] = production_kind
+    config["editor_quotas"] = editor_quotas(target, production_kind)
+    limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if production_kind == 'weekly_papers' else {'producer':4,'producer2':0,'producer3':2}
     if editor_quota_override is not None:
         if (set(editor_quota_override) != set(config["editor_quotas"])
-                or any(type(v) is not int or not 0 <= v <= 2 for v in editor_quota_override.values())
+                or any(type(v) is not int or not 0 <= v <= limits[k] for k,v in editor_quota_override.items())
                 or sum(editor_quota_override.values()) != target):
-            raise ValueError("剩余剪辑配额必须与本轮数量一致，且每人不超过2条")
+            raise ValueError("配额必须符合小影4条、小影3两条，或独立每周论文最多2条")
         config["editor_quotas"] = dict(editor_quota_override)
     config["auto_publish_xiaohongshu"] = False
     config["publish_enabled"] = False
@@ -229,18 +235,39 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     from services.factory_distribution import local_day
     production_day = local_day(timezone_name=config['timezone'])
     used_target = 0
+    weekly_target = 0
+    from datetime import date as calendar_date
+    current_date = calendar_date.fromisoformat(production_day)
+    week_start = current_date - timedelta(days=current_date.weekday())
     for previous in db.query(FactoryRun).all():
         snapshot = previous.settings_snapshot or {}
         if snapshot.get('distribution_policy') != POLICY:
             continue
         previous_day = snapshot.get('production_day') or local_day(previous.created_at, config['timezone'])
+        if snapshot.get('production_kind') == 'weekly_papers':
+            if week_start <= calendar_date.fromisoformat(previous_day) < week_start + timedelta(days=7):
+                weekly_target += (db.query(FactoryItem).filter_by(run_id=previous.id,status='completed').count()
+                                  if previous.status == 'cancelled' else previous.target_count)
+            continue
         if previous_day != production_day:
             continue
         if previous.status == 'cancelled':
             used_target += db.query(FactoryItem).filter_by(run_id=previous.id, status='completed').count()
         else:
             used_target += previous.target_count
-    if used_target + target > 6:
+    if production_kind == 'weekly_papers':
+        credited = set()
+        for order in db.query(FactoryWorkOrder).filter_by(kind='weekly_paper'):
+            scheduled_day = order.key.removeprefix('weekly-paper:')
+            if week_start.isoformat() <= scheduled_day < (week_start + timedelta(days=7)).isoformat():
+                identifier = (order.evidence or {}).get('preexisting_paper_item_id')
+                paper = db.get(FactoryItem, identifier) if identifier else None
+                if paper and paper.status == 'completed' and editor_id(paper) == 'producer2':
+                    credited.add(identifier)
+        weekly_target += len(credited)
+    if production_kind == 'weekly_papers' and weekly_target + target > 2:
+        raise ValueError('本周2条论文名额已预留，请恢复原论文批次，不能重复加产')
+    if production_kind == 'daily' and used_target + target > 6:
         raise ValueError('当天6条原创生产名额已预留；请恢复原批次或显式调整未开工计划，避免自动加产')
     config['production_day'] = production_day
     pressure = None
@@ -261,6 +288,8 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
         db.add(FactoryEvent(run_id=run.id, agent_id="director", stage="paused_memory", status="paused",
             message=f"内存保护未启动本轮：{pressure}。需手动恢复。", detail=pressure.snapshot))
         db.commit()
+        return run
+    if not enqueue:
         return run
     try:
         from tasks.factory_tasks import produce_run
@@ -338,7 +367,7 @@ def _eligible_candidates(candidates, sources, visual_style, *, with_diagnostics=
         if not reasons:
             referenced = set(refs) | set(visuals)
             verified = set().union(*(fingerprints[i] for i in referenced))
-            paper = is_paper_story(candidate, [s for s in sources if s["id"] in refs])
+            paper = candidate_editor(candidate, sources) == 'producer2'
             unsupported = [i for i in visuals if i not in ready and not fingerprints[i]]
             if unsupported:
                 reasons.append({"code": "visual_sources_unavailable", "ids": unsupported, "message": "所列画面来源尚无通过核验的视频"})
@@ -362,6 +391,17 @@ def _make_plan(run_id):
         visual_style = run.settings_snapshot.get("visual_style", "cards")
         quotas = run.settings_snapshot.get("editor_quotas")
         recent = [item.content.get("title", "") for item in db.query(FactoryItem).filter(FactoryItem.run_id != run_id).order_by(FactoryItem.created_at.desc()).limit(40)]
+        seeded_ids = set(run.settings_snapshot.get('owner_seeded_item_ids') or [])
+        seeded = db.query(FactoryItem).filter(FactoryItem.run_id == run_id, FactoryItem.id.in_(seeded_ids)).all() if seeded_ids else []
+        if seeded_ids and (len(seeded) != len(seeded_ids) or any(i.status != 'completed' for i in seeded)):
+            raise ValueError('用户指定的已完成作品种子无效，停止排产')
+        seed_counts = {owner: sum(editor_id(i) == owner for i in seeded) for owner in (quotas or {})}
+        if seeded:
+            target -= len(seeded)
+            quotas = {owner: count - seed_counts[owner] for owner,count in quotas.items()}
+            if any(value < 0 for value in quotas.values()):
+                raise ValueError('用户指定作品超过岗位日配额')
+
     if not sources:
         check_cancel(run_id)
         emit(run_id, "researcher", "researching", "正在采集 AI 官方资料，保存来源和发布时间")
@@ -422,7 +462,7 @@ def _make_plan(run_id):
             max_preflight = min(18, max(6, target * 3))
             visual_sources = visual_sources[:max_preflight]
             deadline = time.monotonic() + 360
-            emit(run_id, "researcher", "visual_preflight", "按岗位资料核查动态素材；每页最多取3条核验视频，完整成片仍需后续逐镜头质检", detail={
+            emit(run_id, "researcher", "visual_preflight", "按岗位资料核查动态素材；每页最多取16条核验视频（文件、总字节与网络时间上限保持不变），完整成片仍需后续逐镜头质检", detail={
                 "source_ids": [s["id"] for s in visual_sources], "max_sources": max_preflight, "start_budget_seconds": 360})
             for source in visual_sources:
                 check_cancel(run_id)
@@ -431,7 +471,7 @@ def _make_plan(run_id):
                     source["visual_preflight"]["reason"] = "preflight_time_budget_exhausted"
                     continue
                 try:
-                    visuals = collect_visuals([source], FACTORY_DIR / run_id / "source-intake" / source["id"], limit=3)
+                    visuals = collect_visuals([source], FACTORY_DIR / run_id / "source-intake" / source["id"], limit=16)
                 except (OSError, ValueError) as exc:
                     source["visual_preflight"].update(status="error", error_type=type(exc).__name__, reason=str(exc)[:300])
                     continue
@@ -531,7 +571,7 @@ def _make_plan(run_id):
         source_coverage = coverage_for([])
         emit(run_id, "researcher", "topic_coverage", "已检查七类题材的来源覆盖；缺口如实记录，大模型须主动检索", "completed", source_coverage)
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
-        assignment = {"target": target + 2, "sources": usable,
+        assignment = {"target": target + 2, "production_target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "sources": usable,
             "editor_quotas": quotas,
             "editor_specialties": "小影：前沿科技成果、AI落地与实验场景；小影2：真实论文PPT讲解；小影3：海外人物/公司新闻。候选需满足每岗配额，不能全为论文。",
             "recent_titles": recent, "strategy": STRATEGY,
@@ -572,7 +612,7 @@ def _make_plan(run_id):
                     raise ValueError(f"有效选题{len(candidates)}个，各岗位候选{counts}未满足配额{quotas}，保留资料等待补齐，不凑数生产")
                 # Keep the six-item target and original per-editor caps. Only
                 # admitted candidates proceed; the final report stays partial.
-                plan = {**plan, 'production_quotas': ready} if quotas else plan
+                plan = {**plan, 'production_quotas': {key: ready[key] + seed_counts.get(key,0) for key in ready}} if quotas else plan
                 if quotas:
                     plan['material_shortfall'] = {key: quotas[key] - ready[key] for key in quotas}
                 emit(run_id, 'director', 'material_shortfall', '已核验选题先制作，缺素材岗位继续保留缺口；不降低每日目标',
@@ -588,13 +628,16 @@ def _make_plan(run_id):
             db.commit()
         emit(run_id, "researcher", "researching", f"提交 {len(candidates)} 个有来源的候选选题", "completed")
     with SessionLocal() as db:
-        if db.query(FactoryItem).filter_by(run_id=run_id).count():
+        existing_items = db.query(FactoryItem).filter_by(run_id=run_id).all()
+        if existing_items and (not seeded_ids or any(i.id not in seeded_ids for i in existing_items)):
             return
         from services.factory_team import production_quotas
         quotas = production_quotas(db.get(FactoryRun, run_id))
+        if seeded and quotas:
+            quotas = {owner: count - seed_counts[owner] for owner,count in quotas.items()}
     target = min(target, sum(quotas.values()) if quotas else len(plan['candidates']))
     emit(run_id, "director", "planning", f"负责人正在选择 {target} 个选题并安排制作")
-    decision = call_agent(run_id, "director", {"target": target, "candidates": plan["candidates"], "recent_titles": recent,
+    decision = call_agent(run_id, "director", {"target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "candidates": plan["candidates"], "recent_titles": recent,
         "topic_coverage": plan.get("topic_coverage", {}),
         "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")}, "people_watchlist": people_context(),
         "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、人物/公司事件归小影3、前沿科技成果与AI场景归小影。"})
@@ -606,11 +649,13 @@ def _make_plan(run_id):
     owners = validate_editor_plan([plan["candidates"][idx] for idx in indices], sources, quotas) if quotas else None
     with SessionLocal() as db:
         db.get(FactoryRun, run_id).plan = plan
-        for position, idx in enumerate(indices):
-            brief = dict(plan["candidates"][idx])
+        occupied_positions = {i.position for i in db.query(FactoryItem).filter_by(run_id=run_id)}
+        positions = iter(position for position in range(db.get(FactoryRun,run_id).target_count) if position not in occupied_positions)
+        for offset, idx in enumerate(indices):
+            brief = dict(plan['candidates'][idx])
             if owners:
-                brief["editor_id"] = owners[position]
-            db.add(FactoryItem(run_id=run_id, position=position, brief=brief))
+                brief['editor_id'] = owners[offset]
+            db.add(FactoryItem(run_id=run_id, position=next(positions), brief=brief))
         db.flush()
         if db.get(FactoryRun, run_id).settings_snapshot.get("distribution_policy") == POLICY:
             from services.factory_distribution import assign_distribution, local_day
@@ -634,7 +679,7 @@ def _ensure_visual_support(run_id, item_id):
     from services.factory_papers import is_paper_story, collect_paper
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
-        if run.settings_snapshot.get("visual_style") != "tech_montage":
+        if run.settings_snapshot.get("visual_style") != "tech_montage" or editor_id(item) != "producer2":
             return
         facts = _sources_for(item.brief.get("source_ids", []), run.sources)
         brief = dict(item.brief)
@@ -1097,7 +1142,7 @@ def _render(run_id, item_id):
 def _package(run_id, item_id):
     from services.factory_filenames import safe_filename
     from services.factory_platform_style import platform_style
-    from services.factory_cover import COVER_DESIGN_VERSION, FRAME_TITLE_VERSION
+    from services.factory_cover import COVER_DESIGN_VERSION, FRAME_TITLE_VERSION, frame_title_layout
     from services.factory_branding import branding_for
     from services.factory_handoff import HANDOFF_VERSION, build_handoff, handoff_files
     with SessionLocal() as db:
@@ -1115,15 +1160,15 @@ def _package(run_id, item_id):
         new_distribution = run.settings_snapshot.get('distribution_policy') == POLICY
         if new_distribution:
             if route.get('policy') != POLICY:
-                raise ValueError('本条尚未确定三方向抖音预选与全量人工交付计划')
-            platforms = ['xiaohongshu', 'kuaishou', 'douyin']
+                raise ValueError('本条尚未确定非论文6选4与每周论文人工交付计划')
+            platforms = ['xiaohongshu', 'kuaishou'] if run.settings_snapshot.get('production_kind') == 'weekly_papers' else ['xiaohongshu', 'kuaishou', 'douyin']
             existing = [p for p in existing if p['platform'] in platforms]
         elif route:
             if route.get('platform') not in platforms:
                 raise ValueError('历史归档的分发平台无效')
             platforms = [route['platform']]
             existing = [p for p in existing if p['platform'] in platforms]
-        def current_package(p):
+        def current_finish(p):
             quality = p.get('delivery_quality') or {}
             design = p.get('cover_design') or {}
             brand = branding_for(p['platform'])
@@ -1132,17 +1177,23 @@ def _package(run_id, item_id):
                          or (design.get('frame_title_version') == FRAME_TITLE_VERSION
                              and design.get('platform') == p['platform']
                              and design.get('text_rendered') == content['title']
+                             and (p['platform'] != 'douyin' or design.get('lines') == frame_title_layout(content['title'], p['platform'])[1])
                              and quality.get('opening_mode') == 'first_frame_title'))
                     and (p['platform'] != 'douyin' or (quality.get('persistent_title') is (content.get('editor_id') != 'producer2')
                          and (not brand or (quality.get('branding_signature') == brand['signature']
                               and quality.get('source_attribution_integrated') is True))))
                     and p.get('source_media_fingerprint') == media.get('fingerprint')
-                    and p.get('delivery_layout') == 'platform-zip-v1'
+                    and all(p.get(key) and Path(p[key]).is_file() for key in ('cover_path','video_path')))
+        def current_package(p):
+            return (current_finish(p) and p.get('delivery_layout') == 'platform-zip-v1'
                     and p.get('handoff_version') == HANDOFF_VERSION
-                    and all(p.get(key) and Path(p[key]).is_file() for key in ('path', 'cover_path', 'video_path'))
+                    and p.get('path') and Path(p['path']).is_file()
                     and p.get('video_filename') == video_filename)
+        def current_handoff(p):
+            saved = (p.get('manual_handoff') or {}).get('distribution') or {}
+            return all(saved.get(key) == route.get(key) for key in ('policy', 'day', 'manual_platforms'))
         reuse_variants = len(existing) == len(platforms) and all(Path(p['path']).is_file() for p in existing)
-        if reuse_variants and all(current_package(p) for p in existing):
+        if reuse_variants and all(current_package(p) and current_handoff(p) for p in existing):
             if not new_distribution or (media.get('archive_path') and Path(media['archive_path']).is_file()):
                 _save_item(item_id, status='completed', error=None)
                 return
@@ -1168,7 +1219,7 @@ def _package(run_id, item_id):
         publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan", "platform_style") if k in content}
         adapted = call_agent(run_id, "publisher", {"content": publication_content, "platforms": platforms,
             "platform_styles": {p: platform_style(p) for p in platforms},
-            "delivery_mode": "douyin_auto_with_full_manual_archive" if new_distribution else "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=6000 if new_distribution else 3000,
+            "delivery_mode": ("weekly_paper_manual_only" if run.settings_snapshot.get("production_kind") == "weekly_papers" else "douyin_auto_with_full_manual_archive") if new_distribution else "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=6000 if new_distribution else 3000,
                              work_kind="rework" if existing else "initial")
         variants = adapted.get("platforms", [])
     if not isinstance(variants, list) or len(variants) != len(platforms) or {p.get("platform") for p in variants} != set(platforms):
@@ -1183,7 +1234,7 @@ def _package(run_id, item_id):
     for variant in variants:
         platform = variant["platform"]
         old = previous.get(platform)
-        if old and (platform in held_platforms or current_package(old)):
+        if old and (platform in held_platforms or (current_package(old) and current_handoff(old))):
             packages.append(old)
             continue
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
@@ -1196,7 +1247,10 @@ def _package(run_id, item_id):
         if platform == 'douyin':
             design_suffix += '-editorial2' + ('-owner' + brand['signature'][:10] if brand else '')
         cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
-        if frame_title:
+        reuse_finish = bool(old and current_finish(old))
+        if reuse_finish:
+            cover_path, cover_design = Path(old['cover_path']), old['cover_design']
+        elif frame_title:
             from services.factory_cover import render_frame_cover
             handoff["cover_text"] = content["title"]
             cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
@@ -1210,7 +1264,10 @@ def _package(run_id, item_id):
             paper_style = content.get('editor_id') == 'producer2'
             finish_options.update(persistent_title=not paper_style, branding=brand,
                                   attribution_y=1760 if paper_style else 700)
-        delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
+        if reuse_finish:
+            delivery_video, delivery_quality = Path(old['video_path']), old['delivery_quality']
+        else:
+            delivery_quality = render_delivery_video(media["video_path"], cover_path, delivery_video, **finish_options)
         manifest = {**{k: v for k, v in variant.items() if k not in {"path", "download_url", "copy_path", "copy_url", "publication_job_id", "cover_path", "video_path"}}, "status": "package_ready", "published": False,
                     "handoff_version": HANDOFF_VERSION, "manual_handoff": handoff, "video_filename": video_filename, "delivery_layout": "platform-zip-v1",
                     "delivery_quality": delivery_quality, "platform_style": style,
@@ -1403,7 +1460,15 @@ def execute_run(run_id):
         with SessionLocal() as db:
             run = db.get(FactoryRun, run_id)
             if run:
-                run.status = "cancelled" if cancelled else "failed"
+                completed = db.query(FactoryItem).filter_by(run_id=run_id, status='completed').count()
+                run.completed_count = completed
+                run.status = "cancelled" if cancelled else "partial" if completed else "failed"
+                if completed and not cancelled:
+                    production = {'completed':completed, 'target':run.target_count,
+                        'packages':sum(len(i.packages or []) for i in db.query(FactoryItem).filter_by(run_id=run_id,status='completed')),
+                        'submitted':sum(p.get('status') == 'submitted' for i in db.query(FactoryItem).filter_by(run_id=run_id) for p in i.packages or [])}
+                    run.report = {'production':production, 'summary':production_summary(production),
+                                  'blocker':str(exc)[:1000], 'platform_data_available':False}
                 run.error, run.finished_at, run.active_slot = str(exc)[:1000], datetime.utcnow(), None
                 db.commit()
                 emit(run_id, "director", "cancelled" if cancelled else "failed", str(exc)[:500], "cancelled" if cancelled else "failed")

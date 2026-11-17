@@ -76,28 +76,28 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     manager.sync_work_orders(db, state, analytics, now)
     daily = db.query(FactoryWorkOrder).filter_by(kind="daily").all()
     long = db.query(FactoryWorkOrder).filter_by(kind="bilibili").all()
-    assert len(daily) == 10 and len(long) == 8
+    assert len(daily) == 9 and len(long) == 8
     assert all(r.status != "completed" for r in daily)
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
     policy = db.get(FactoryGrowthPlan, 1).policy
-    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 5
-    assert policy["automated_platforms"] == ["douyin", "kuaishou"]
-    assert policy["platform_delivery_modes"]["kuaishou"] == "automated"
-    assert policy["editor_quotas"] == {"producer": 2, "producer2": 2, "producer3": 2}
-    assert all(order.evidence["required"] == 2 for order in daily if order.owner in policy["editor_quotas"])
+    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 4
+    assert policy["automated_platforms"] == ["douyin"]
+    assert policy["platform_delivery_modes"]["kuaishou"] == "manual"
+    assert policy["editor_quotas"] == {"producer": 4, "producer2": 0, "producer3": 2}
+    assert all(order.evidence["required"] == policy["editor_quotas"][order.owner] for order in daily if order.owner in policy["editor_quotas"])
 
 
 def test_existing_growth_plan_replaces_old_distribution_without_losing_baselines(db):
     plan = manager.initialize(db)
     baseline = dict(plan.baselines)
-    plan.policy = {**plan.policy, "automated_platforms": ["douyin", "kuaishou"],
+    plan.policy = {**plan.policy, "automated_platforms": ["douyin"],
                    "max_short_submissions_per_day": 6, "single_platform_per_original": True}
     db.commit()
     updated = manager.initialize(db)
     assert updated.baselines == baseline
-    assert updated.policy["automated_platforms"] == ["douyin", "kuaishou"]
-    assert updated.policy["max_short_submissions_per_day"] == 5
+    assert updated.policy["automated_platforms"] == ["douyin"]
+    assert updated.policy["max_short_submissions_per_day"] == 4
     assert updated.policy["single_platform_per_original"] is False
 
 
@@ -120,9 +120,8 @@ def test_editor_work_orders_keep_two_required_when_only_one_is_assigned(db):
     db.commit()
     manager.sync_work_orders(db, {"summary": {"target": 6, "fully_submitted_slots": 0}}, {"platforms": []}, now)
     editor_orders = db.query(FactoryWorkOrder).filter(FactoryWorkOrder.kind == "daily", FactoryWorkOrder.owner.in_(["producer", "producer2", "producer3"])).all()
-    assert len(editor_orders) == 3 and all(row.evidence["required"] == 2 for row in editor_orders)
-    paper = next(row for row in editor_orders if row.owner == "producer2")
-    assert paper.evidence["done"] == 1 and paper.status == "in_progress"
+    assert len(editor_orders) == 2
+    assert {row.owner: row.evidence['required'] for row in editor_orders} == {'producer':4,'producer3':2}
 
 
 def test_incident_disposition_never_converts_failed_job_or_video_into_published(db, monkeypatch):
@@ -192,7 +191,7 @@ def test_today_assignments_include_carried_delivery_and_exclude_cancelled_slots(
     monkeypatch.setattr(operations.factory_analytics,'overview',lambda _:analytics)
     state=operations.overview(db,now=now)
     assert state['summary']['completed']==1 and state['summary']['target']==6
-    assert state['summary']['publish_target']==3 and state['summary']['scheduled_slots']==1
+    assert state['summary']['publish_target']==4 and state['summary']['scheduled_slots']==1
     manager.sync_work_orders(db,{'summary':{'target':6,'fully_submitted_slots':0}},analytics,now)
     assert db.get(FactoryWorkOrder,'daily:2026-11-11:producer3').evidence['done']==1
 
@@ -237,7 +236,7 @@ def test_unassigned_editor_becomes_director_incident_and_is_not_counted_as_video
     run=FactoryRun(target_count=6,status='partial',active_slot=None,created_at=datetime(2026,11,16,16,30),
         settings_snapshot={'distribution_policy':POLICY,'target_duration_seconds':150})
     db.add(run);db.flush()
-    for index,owner in enumerate(['producer','producer','producer2','producer2']):
+    for index,owner in enumerate(['producer','producer','producer','producer']):
         db.add(FactoryItem(run_id=run.id,position=index,status='failed',created_at=datetime(2026,11,16,17),
             brief={'editor_id':owner,'distribution':{'day':'2026-11-17'}}))
     db.commit()

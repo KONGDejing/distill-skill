@@ -81,10 +81,11 @@ def test_quota_uses_actual_reservation_day_and_deduplicates_prepare_publish(db):
 
 
 def test_legacy_publish_jobs_reduce_assignment_capacity(db):
-    old_run, old_items = run_items(db, ['old', 'old'], policy=False)
+    old_run, old_items = run_items(db, ['old'] * 4, policy=False)
     for item in old_items:
         job(db, item, 'douyin', status='submitted')
     run, items = run_items(db, ['新品发布', '新品发布'])
+    for item in items: item.brief={**item.brief,'editor_id':'producer'}
     assigned = distribution.assign_distribution(db, run.id, DAY)
     assert all(r['platform'] != 'douyin' for r in assigned.values())
 

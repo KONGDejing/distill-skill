@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 import re
 
-POLICY = 'douyin-three-tracks-v2'
+POLICY = 'douyin-four-random-v1'
+DAILY_EDITORS = ('producer', 'producer3')
+WEEKLY_PAPER_DAYS = (2, 5)  # Wednesday and Saturday in Asia/Shanghai
+WEEKLY_PAPER_TARGET = 2
 EDITOR_IDS = ('producer', 'producer2', 'producer3')
 MANUAL_PLATFORMS = ('xiaohongshu', 'kuaishou')
 

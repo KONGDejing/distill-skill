@@ -15,15 +15,15 @@ from services.factory_editorial_policy import POLICY
 WEEKS = [
     {"week": 1, "focus": "建立基线、修复交付，验证150秒样片", "actions": ["同一主题只改变开场方式做对照", "每日核对原始资料、声音与画面", "根据用户提供的官方数据建立基线，保留统计日期"], "decision": "先保证真实完整的交付与数据；样片不过关就返工，不用重复视频凑6条"},
     {"week": 2, "focus": "优化开头和讲解结构", "actions": ["每个平台至少比较3组同系列内容", "单独比较问题式与结果式开场", "根据评论里的真实疑问补充下一条选题"], "decision": "样本不足就继续收集，不把一次高播放当规律"},
-    {"week": 3, "focus": "形成系列，验证持续关注理由", "actions": ["在每日6条、每位剪辑师2条内调整选题，不增加制作名额", "比较两种自然关注提醒，每次只变一个因素", "B站专题用多个来源解释一个完整问题"], "decision": "同时检查完播与净增粉丝，避免只追播放或堆砌热点"},
+    {"week": 3, "focus": "形成系列，验证持续关注理由", "actions": ["在每日小影4条、小影3两条内调整选题，不增加制作名额", "比较两种自然关注提醒，每次只变一个因素", "B站专题用多个来源解释一个完整问题"], "decision": "同时检查完播与净增粉丝，避免只追播放或堆砌热点"},
     {"week": 4, "focus": "复核可重复的内容方式", "actions": ["复测表现较好的结构，核对相同统计周期", "停止反复低效且没有明确改进依据的内容套路", "提交四平台月报、遗留问题和下月安排"], "decision": "报告未达标平台与原因，不承诺必然涨粉，不买粉、不互粉冲数"},
 ]
 RHYTHM = [
-    {"time": "00:30", "owner": "老周 / 小探", "task": "自动开工，筛选有出处的候选与素材，确定6条原创计划；小影、小影2、小影3各2条"},
+    {"time": "00:30", "owner": "老周 / 小探", "task": "自动开工，筛选有出处的候选与素材，确定6条原创计划；小影4条、小影3两条；论文由小影2每周单独2条"},
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "收到用户提供的数据后", "owner": "小数", "task": "整理本人提供的官方统计，保留日期、周期与缺失字段；不自动浏览账号后台"},
-    {"time": "抖音3个＋快手2个时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；抖音每天3条、三位剪辑师各1条，全部6条完整保存，快手每日自动2条，选择未上抖音的内容；小红书由本人手动上传；按发布开关与通道状态执行，受阻时交付素材包，小红书由用户本人上传；评论由本人回复"},
+    {"time": "抖音4个时段（±15分钟）", "owner": "小麦", "task": "每天交付6套成片与完整发布文案；抖音每天随机4条、排除论文，全部6条完整保存，剩余2条由本人手动上传快手或小红书；小红书由本人手动上传；按发布开关与通道状态执行，受阻时交付素材包，小红书由用户本人上传；评论由本人回复"},
     {"time": "每周三 / 周六 20:00（长视频规划）", "owner": "小麦 / 小影", "task": "B站保留每周2条6–10分钟专题规划；长视频制作流程就绪后也只交付人工发布包"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -43,14 +43,14 @@ UPGRADES["producer3"] = "为自己负责的视频打磨开场、转折和结尾�
 
 def _delivery_policy():
     return {"distribution_policy": POLICY, "shorts_per_day": DAILY_TARGET,
-        "editor_quotas": dict(DAILY_EDITOR_QUOTAS), "max_short_submissions_per_day": 5,
+        "editor_quotas": dict(DAILY_EDITOR_QUOTAS), "max_short_submissions_per_day": 4,
         "short_seconds": 150, "delivery_mode": "mixed",
-        "platform_delivery_modes": {"douyin": "automated", "kuaishou": "automated", "xiaohongshu": "manual", "bilibili": "manual"},
-        "single_platform_per_original": False, "max_per_platform_per_day": 3, "platform_daily_limit": 3,
+        "platform_delivery_modes": {"douyin": "automated", "kuaishou": "manual", "xiaohongshu": "manual", "bilibili": "manual"},
+        "single_platform_per_original": False, "max_per_platform_per_day": 4, "platform_daily_limit": 4,
         "delivery_format": "one-zip-per-original", "daily_zip_target": DAILY_TARGET,
-        "manual_platforms": ["xiaohongshu"], "kuaishou_daily_limit": 2,
-        "douyin_per_editor": 1, "manual_originals_per_day": DAILY_TARGET,
-        "account_automation_enabled": True, "automated_platforms": ["douyin", "kuaishou"],
+        "manual_platforms": ["xiaohongshu", "kuaishou"], "kuaishou_daily_limit": 0,
+        "douyin_per_editor": None, "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5], "manual_originals_per_day": DAILY_TARGET,
+        "account_automation_enabled": True, "automated_platforms": ["douyin"],
         "analytics_mode": "manual_or_historical"}
 
 
@@ -146,6 +146,7 @@ def sync_work_orders(db, state, analytics, now):
     target = min(state["summary"]["target"] or plan.policy["shorts_per_day"], DAILY_TARGET)
     quotas = editor_quotas(target)
     current_run_ids = {r.id for r in runs if r.settings_snapshot.get("target_duration_seconds") == 150}
+    items = [i for i in items if next((r.settings_snapshot.get('production_kind','daily') for r in runs if r.id == i.run_id), 'daily') == 'daily']
     approved = [i for i in items if i.run_id in current_run_ids and i.review.get("approved") is True and i.content]
     ready = [i for i in items if i.status == "completed" and 135 <= float(i.media.get("duration", 0)) <= 165]
     delivered = sum(_handoff_complete(i) for i in ready)
@@ -155,13 +156,20 @@ def sync_work_orders(db, state, analytics, now):
         ("researcher3", "05:15", "给小影3交接海外人物及公司事件素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
-        ("publisher", "22:15", "交付6套完整人工发布包", "抖音每天3条、三位剪辑师各1条；全部6条保留完整包；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，抖音每日3条、快手每日2条由服务自动上传并声明AI生成；小红书由用户本人上传，不以素材包冒充已发布", delivered, target),
+        ("publisher", "22:15", "交付6套完整人工发布包", "抖音每天随机4条、排除论文；全部6条保留完整包；成片、封面、标题正文、话题、钩子、AI说明和互动模板齐全，抖音从非论文6条随机选4条自动上传并声明AI生成；快手关闭自动化；小红书由用户本人上传，不以素材包冒充已发布", delivered, target),
         ("analyst", "22:25", "整理人工提供的经营数据", "只用用户提供的官方统计或留存历史数据，标明数据日期、周期和缺失；不自动读取账号，等待人工数据时不编造增长", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]
     for index, owner in enumerate(EDITOR_IDS):
         assigned = [i for i in items if i.run_id in current_run_ids and editor_id(i) == owner]
         required = quotas[owner]
+        if not required:
+            old = db.get(FactoryWorkOrder, f'daily:{local.date()}:{owner}')
+            if old:
+                old.status = 'completed'
+                old.title = '论文岗位改为每周独立2条，不参与日常排产'
+                old.evidence = {'resolution':'旧每日论文任务已替换，未计为成片交付','done':0,'required':0,'checked_at':now.isoformat()}
+            continue
         specs.insert(2 + index, (owner, "05:45", f"独立制作{required}条约150秒视频", "按本人配额交付，缺选题不能挪用其他岗位名额；成片实际135–165秒，保留脚本、配音、素材来源、分镜与审核记录",
                                sum(i in ready for i in assigned), required))
     for owner, clock, title, acceptance, count, required in specs:
@@ -284,7 +292,7 @@ def _handoff_complete(item):
     from services.factory_schedule import _manual_package_ready
     route = item.brief.get("distribution") or {}
     packages = item.packages or []
-    if route.get('policy') == 'douyin-three-tracks-v2':
+    if route.get('policy') in {POLICY, 'douyin-three-tracks-v2'}:
         from pathlib import Path
         return bool(item.media.get('archive_path') and Path(item.media['archive_path']).is_file()
             and all(_manual_package_ready(next((p for p in packages if p['platform'] == platform), None), platform, route)

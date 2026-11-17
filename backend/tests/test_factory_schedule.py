@@ -64,7 +64,7 @@ def test_manual_platform_never_opens_browser_or_submits_and_is_not_published(env
     copy = tmp_path / "manual-copy.txt"
     copy.write_text("fixture copy", encoding="utf-8")
     env.config.publish_enabled = False
-    item.brief = {"distribution": {"platform": None, "day": "2026-11-09", "policy": "douyin-three-tracks-v2", "manual_platforms": ["xiaohongshu", "kuaishou"], "douyin_selected": False}}
+    item.brief = {"distribution": {"platform": None, "day": "2026-11-09", "policy": "douyin-four-random-v1", "manual_platforms": ["xiaohongshu", "kuaishou"], "douyin_selected": False}}
     from services.factory_handoff import HANDOFF_VERSION, build_handoff
     handoff = build_handoff({"sources": [{"url": "https://example.invalid/source"}]},
         {"platform": platform, "title": "fixture", "caption": "fixture", "tags": ["fixture"]},
@@ -259,16 +259,16 @@ def test_random_release_time_is_persisted_across_restart_and_config_change(env, 
     now = datetime(2026,11,9,18,5,tzinfo=TZ)
     schedule.plan_slots(db, config, now)
     slots = db.query(FactoryRelease).order_by(FactoryRelease.nominal_at).all()
-    assert len(slots) == 5
+    assert len(slots) == 7
     assert all(s.due_at == s.nominal_at + timedelta(seconds=delta) and s.jitter_seconds == delta for s in slots)
     saved = [(s.id,s.nominal_at,s.due_at) for s in slots]
     random.assert_called_with(1801)
-    assert random.call_count == 5
+    assert random.call_count == 7
     db.expire_all()
     config.publish_jitter_seconds = 100
     schedule.plan_slots(db, config, now + timedelta(minutes=1))
     assert [(s.id,s.nominal_at,s.due_at) for s in db.query(FactoryRelease).order_by(FactoryRelease.nominal_at)] == saved
-    assert random.call_count == 5
+    assert random.call_count == 7
 
 
 def test_legacy_future_bound_slot_jitters_but_existing_upload_and_past_keep_time(env, monkeypatch):
