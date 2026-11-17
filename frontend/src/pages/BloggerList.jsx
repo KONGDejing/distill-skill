@@ -56,7 +56,7 @@ export default function BloggerList() {
     }
   }
 
-  const platformLabels = { douyin: '抖音', xiaohongshu: '小红书', kuaishou: '快手', other: '其他' }
+  const platformLabels = { douyin: '抖音', wechat_channels: '微信视频号', xiaohongshu: '小红书', kuaishou: '快手', other: '其他' }
   const statusColors = {
     pending: 'bg-gray-500/20 text-gray-400',
     analyzing: 'bg-blue-500/20 text-blue-400',
@@ -137,6 +137,8 @@ export default function BloggerList() {
                         </span>
                         {b.has_dna && <span className="text-xs text-green-400">· 内容基因已提取</span>}
                       </div>
+                      {b.watch?.enabled && <p className="mt-2 text-xs text-blue-300">自动跟踪已开启 · {b.watch.status === 'up_to_date' ? '最近检查完成' : ['checking', 'importing', 'analyzing'].includes(b.watch.status) ? '正在获取或分析新样本' : b.watch.error_message || '等待下次检查'}</p>}
+                      {b.platform === 'wechat_channels' && <p className="mt-2 text-xs text-amber-300">{b.watch?.status === 'awaiting_feed' ? '已核对单条预览 · 持续追踪待接通' : '视频号待接入'}</p>}
                     </div>
                   </div>
                 </Link>

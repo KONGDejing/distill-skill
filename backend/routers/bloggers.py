@@ -3,9 +3,10 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
-from models.blogger import Blogger, BloggerStatus, Platform
+from models.blogger import Blogger, BloggerStatus, Platform, BloggerWatch
 from models.blogger_content_dna import BloggerContentDNA
 from models.source_video import SourceVideo
+from services.reference_watch import watch_summary
 
 router = APIRouter()
 
@@ -24,6 +25,10 @@ class BloggerUpdate(BaseModel):
 class VideoLinkAdd(BaseModel):
     source_url: str
     title: Optional[str] = None
+
+
+class WatchUpdate(BaseModel):
+    enabled: bool
 
 
 def video_summary(video):
@@ -57,6 +62,7 @@ def list_bloggers(db: Session = Depends(get_db)):
             "error_message": b.error_message,
             "video_count": video_count,
             "has_dna": has_dna,
+            "watch": watch_summary(db.get(BloggerWatch, b.id)),
             "created_at": b.created_at.isoformat() if b.created_at else None,
             "updated_at": b.updated_at.isoformat() if b.updated_at else None,
         })
@@ -94,6 +100,7 @@ def get_blogger(blogger_id: str, db: Session = Depends(get_db)):
         "error_message": blogger.error_message,
         "created_at": blogger.created_at.isoformat() if blogger.created_at else None,
         "updated_at": blogger.updated_at.isoformat() if blogger.updated_at else None,
+        "watch": watch_summary(db.get(BloggerWatch, blogger_id)),
         "content_dna": {
             "value_positioning": dna.value_positioning,
             "viral_techniques": dna.viral_techniques,
@@ -111,9 +118,54 @@ def delete_blogger(blogger_id: str, db: Session = Depends(get_db)):
     blogger = db.query(Blogger).filter(Blogger.id == blogger_id).first()
     if not blogger:
         raise HTTPException(status_code=404, detail="博主不存在")
+    watch = db.get(BloggerWatch, blogger_id)
+    if watch:
+        db.delete(watch)
     db.delete(blogger)
     db.commit()
     return {"deleted": True}
+
+
+@router.put('/{blogger_id}/watch')
+def update_watch(blogger_id: str, data: WatchUpdate, db: Session = Depends(get_db)):
+    from datetime import datetime
+    from services.reference_watch import profile_link, watch_summary
+    blogger = db.get(Blogger, blogger_id)
+    if not blogger:
+        raise HTTPException(404, '博主不存在')
+    watch = db.get(BloggerWatch, blogger_id)
+    if data.enabled:
+        if blogger.platform != 'douyin':
+            raise HTTPException(422, '自动跟踪暂支持抖音公开主页')
+        try:
+            url = profile_link(blogger.profile_url)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+    if not watch:
+        watch = BloggerWatch(blogger_id=blogger_id)
+        db.add(watch)
+    watch.enabled = data.enabled
+    if data.enabled:
+        watch.profile_url = url
+        if watch.status not in {'checking', 'importing', 'analyzing'}:
+            watch.status, watch.next_check_at, watch.error_message = 'waiting', datetime.utcnow(), None
+    else:
+        watch.status = 'disabled'
+    db.commit()
+    return watch_summary(watch)
+
+
+@router.post('/{blogger_id}/watch/refresh')
+def refresh_watch(blogger_id: str, db: Session = Depends(get_db)):
+    from datetime import datetime
+    from services.reference_watch import watch_summary
+    watch = db.get(BloggerWatch, blogger_id)
+    if not watch or not watch.enabled:
+        raise HTTPException(409, '请先启用自动跟踪')
+    if watch.status not in {'checking', 'importing', 'analyzing'}:
+        watch.status, watch.next_check_at, watch.error_message = 'waiting', datetime.utcnow(), None
+        db.commit()
+    return watch_summary(watch)
 
 
 @router.post("/{blogger_id}/videos")

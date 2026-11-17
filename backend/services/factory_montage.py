@@ -475,13 +475,20 @@ def validate_publication_media(media):
 def _render_shot(asset: dict, shot: dict, target: Path):
     if asset["kind"] == "paper_page":
         return _render_paper_shot(asset, shot, target)
-    if shot.get('presentation_style') == 'science_editorial_v1':
+    if shot.get('presentation_style') in {'science_editorial_v1', 'science_editorial_focus_v2'}:
         # One complete source image is the hero. Avoid repeating it as both a
         # giant blurred background and a simultaneous detail panel. The top
         # band is reserved for the per-topic headline in the final export.
-        graph = ('[0:v]fps=' + str(FPS) + ',setpts=PTS-STARTPTS,'
-                 'scale=1024:1000:force_original_aspect_ratio=decrease,setsar=1,'
-                 'pad=1080:1920:(ow-iw)/2:650+(1000-ih)/2:color=0x080b10,'
+        focus_style = shot.get('presentation_style') == 'science_editorial_focus_v2'
+        region = shot.get('focus_region') if focus_style else None
+        crop = ''
+        if region:
+            x, y, w, h = region['rect']
+            crop = f'crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},'
+        box_height, top = (860, 760) if focus_style else (1000, 650)
+        graph = ('[0:v]fps=' + str(FPS) + ',setpts=PTS-STARTPTS,' + crop +
+                 f'scale=1024:{box_height}:force_original_aspect_ratio=decrease,setsar=1,'
+                 f'pad=1080:1920:(ow-iw)/2:{top}+({box_height}-ih)/2:color=0x080b10,'
                  'format=yuv420p[out]')
         _run(['ffmpeg', '-y', '-v', 'error', '-threads', '2', '-filter_complex_threads', '1',
               '-ss', str(shot['source_start']), '-i', asset['path'], '-filter_complex', graph,
@@ -709,7 +716,8 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
         add(2, start, end, "Credit", r"{\pos(54,112)}" + _ass_escape(source[:50]))
         add(2, start, end, "Credit", r"{\pos(54,155)\c&HCEF2A5&}" + _ass_escape(shot["display_label"]))
         if shot.get("focus_region"):
-            add(2, start, end, "Credit", r"{\pos(54,894)\fs24}" + _ass_escape("局部放大 · " + str(shot["focus_region"].get("label", "动作细节"))))
+            pos = r"{\pos(54,1640)\fs24}" if content.get('presentation_style') == 'science_editorial_focus_v2' else r"{\pos(54,894)\fs24}"
+            add(2, start, end, "Credit", pos + _ass_escape("局部放大 · " + str(shot["focus_region"].get("label", "动作细节"))))
         if shot["scene_index"] not in seen_scenes:
             seen_scenes.add(shot["scene_index"])
             until = end if shot["kind"] == "paper_page" else min(end, start + 1.3)
@@ -809,6 +817,10 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     target.mkdir(parents=True, exist_ok=True)
     presentation_style = content.get('presentation_style') or (
         'science_editorial_v1' if content.get('editorial_policy_version', 1) >= 2 else 'legacy')
+    cropped_source = presentation_style == 'science_editorial_focus_v2' and any(s.get('focus_region') for s in plan)
+    if cropped_source:
+        plan = [{**s, 'complete_source_frame_preserved': not bool(s.get('focus_region')),
+                 'presentation_style': presentation_style} for s in plan]
     quality['presentation_style'] = presentation_style
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
         "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "exact_cut_plan": plan if shot_plan is not None else None,
@@ -833,8 +845,13 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         if asset["kind"] == "paper_page":
             continue
         # Do not silently move a failed window into footage already used elsewhere.
-        region = (shot.get('focus_region') or {}).get('rect')
-        motion[key] = measure_motion(Path(asset["path"]), shot["source_start"], shot["duration"], region=region)
+        # The clean full-frame layout does not display its optional detail ROI.
+        # Measure the pixels actually presented, rather than an unused grid cell.
+        region = None if presentation_style == 'science_editorial_v1' else (shot.get('focus_region') or {}).get('rect')
+        try:
+            motion[key] = measure_motion(Path(asset["path"]), shot["source_start"], shot["duration"], region=region)
+        except ValueError as exc:
+            raise ValueError(f"镜头{shot['shot_index'] + 1}（素材{shot['asset_id']}，源{shot['source_start']:.2f}–{shot['source_end']:.2f}秒）：{exc}") from None
     quality["visual_repeat_check"] = check_visual_repeats(plan, sources)
     (target / "edit-decision-list.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2))
     (target / "visual-sources.json").write_text(json.dumps({"assets": [a for a in prepared if a["id"] in used_ids]}, ensure_ascii=False, indent=2))
@@ -879,7 +896,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
                     "self_made_animation_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "schematic_animation") / duration, 4),
                     "original_paper_ratio": round(sum(s["duration"] for s in plan if s["kind"] == "paper_page") / duration, 4),
                     "emphasis_annotation_ratio": round(sum(end - start for start, end in annotations) / duration, 4),
-                    "complete_source_frames_preserved": True, "source_audio_unchanged_sha256": _sha256(audio),
+                    "complete_source_frames_preserved": not cropped_source, "source_audio_unchanged_sha256": _sha256(audio),
                     "scene_timing": "exact_text_anchor_with_subtitle_time_interpolation; not_word_or_semantic_alignment",
                     "music": "original_synthesized_quiet_ambient_with_voice_sidechain_ducking",
                     "review_required": "Motion sampling does not verify scene semantics; inspect the edit list and preview."})

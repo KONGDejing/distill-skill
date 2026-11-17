@@ -36,5 +36,5 @@ def test_unused_unrelated_footage_cannot_fill_an_approved_scene_shortage():
     assets[1]['clips'] = [{'start': 0, 'end': 2}]
     extra = deepcopy(assets[0]); extra.update(id='unrelated', sha256='unrelated')
     assets.append(extra)
-    with pytest.raises(ValueError, match='无可行解'):
+    with pytest.raises(ValueError, match='第2段.*需5.00秒.*总共2.00秒'):
         allocate_cut_plan(content, cues, assets, 15)

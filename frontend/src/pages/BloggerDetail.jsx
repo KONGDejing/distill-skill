@@ -16,12 +16,13 @@ export default function BloggerDetail() {
   const [actionLoading, setActionLoading] = useState('')
 
   useEffect(() => { loadBlogger() }, [id])
-  const busy = importing || blogger?.status === 'analyzing'
+  const busy = importing || blogger?.status === 'analyzing' || ['waiting', 'checking', 'importing', 'analyzing'].includes(blogger?.watch?.status)
+  const watching = blogger?.watch?.enabled
   useEffect(() => {
-    if (!busy) return
-    const timer = setInterval(loadBlogger, 4000)
+    if (!busy && !watching) return
+    const timer = setInterval(loadBlogger, busy ? 4000 : 30000)
     return () => clearInterval(timer)
-  }, [id, busy])
+  }, [id, busy, watching])
 
   async function loadBlogger() {
     try {
@@ -78,6 +79,20 @@ export default function BloggerDetail() {
     }
   }
 
+  async function handleWatch(refresh = false) {
+    setActionLoading('watch'); setError('')
+    try {
+      if (refresh) await api.refreshBloggerWatch(id)
+      else await api.updateBloggerWatch(id, !blogger.watch?.enabled)
+      setNotice(refresh ? '已安排检查新作品，已有分析与成片会保留。' : blogger.watch?.enabled ? '已关闭自动跟踪。' : '已启用自动跟踪，每3小时检查，自动学习新样本。')
+      await loadBlogger()
+    } catch (e) { setError(e.message) }
+    finally { setActionLoading('') }
+  }
+
+  const watchStatus = { disabled: '未开启', waiting: '待检查', checking: '正在检查主页', importing: '正在导入新样本', analyzing: '正在更新风格分析', up_to_date: '检查完成', partial: '部分样本未完成', blocked: '检查受阻', paused_memory: '内存保护暂停' }
+  const watchDate = (value) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '尚无记录'
+
   const statusColors = {
     pending: 'bg-gray-500/20 text-gray-400',
     downloading: 'bg-yellow-500/20 text-yellow-400',
@@ -85,6 +100,7 @@ export default function BloggerDetail() {
     transcribing: 'bg-yellow-500/20 text-yellow-400',
     transcribed: 'bg-green-500/20 text-green-400',
     error: 'bg-red-500/20 text-red-400',
+    preview_only: 'bg-amber-500/20 text-amber-300',
   }
 
   if (loading) return <div className="text-gray-500 animate-pulse">加载中...</div>
@@ -125,6 +141,27 @@ export default function BloggerDetail() {
           </button>
         </div>
       </div>
+
+      {blogger.platform === 'douyin' && <section className="mb-6 rounded-xl border border-gray-800 bg-gray-900 p-4" aria-label="自动跟踪对标新作品">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h3 className="font-semibold">自动跟踪新作品</h3><p className="mt-1 text-sm text-gray-400">每3小时检查公开主页；每轮最多学习3条新作品，每日最多6条，自动去重。</p></div>
+          <div className="flex gap-2">
+            <button disabled={actionLoading === 'watch'} onClick={() => handleWatch()} className="rounded-lg bg-gray-800 px-3 py-2 text-sm disabled:opacity-50">{blogger.watch?.enabled ? '关闭跟踪' : '开启自动跟踪'}</button>
+            {blogger.watch?.enabled && <button disabled={actionLoading === 'watch' || ['checking', 'importing', 'analyzing'].includes(blogger.watch?.status)} onClick={() => handleWatch(true)} className="rounded-lg bg-blue-600 px-3 py-2 text-sm disabled:opacity-50">检查新作品</button>}
+          </div>
+        </div>
+        <p className="mt-3 text-sm">状态：{watchStatus[blogger.watch?.status] || '未开启'} · 本轮发现 {blogger.watch?.summary?.discovered_count ?? '—'} 条，新增 {blogger.watch?.summary?.new_count ?? '—'} 条</p>
+        <p className="mt-2 text-xs leading-6 text-gray-400">最近检查：{watchDate(blogger.watch?.last_checked_at)}　下次检查：{watchDate(blogger.watch?.next_check_at)}　分析更新：{watchDate(blogger.watch?.last_analyzed_at)}（北京时间）</p>
+        {blogger.watch?.error_message && <p role="alert" className="mt-2 text-sm text-amber-300">{blogger.watch.error_message}</p>}
+        <p className="mt-2 text-xs text-gray-500">学习开场、镜头、字幕和叙事方法，分析结果提供给小影、小影3和编导；样本仅供对标研究。验证受阻或没有完整视频时会保留上次分析，不计为已学习。</p>
+        {blogger.watch?.summary?.latest_posts?.length > 0 && <details className="mt-3 text-sm text-gray-300"><summary className="cursor-pointer">本轮核对到的最新作品</summary><ul className="mt-2 space-y-2">{blogger.watch.summary.latest_posts.slice(0, 6).map(post => <li key={post.post_id}><a className="text-blue-300 hover:underline" href={post.source_url} target="_blank" rel="noreferrer">{post.title?.slice(0, 70) || post.post_id}</a><span className="ml-2 text-xs text-gray-500">{watchDate(post.published_at)}</span></li>)}</ul></details>}
+      </section>}
+
+      {blogger.platform === 'wechat_channels' && <section className="mb-6 rounded-xl border border-amber-800/50 bg-gray-900 p-4" aria-label="微信视频号接入状态">
+        <h3 className="font-semibold">微信视频号 · {blogger.watch?.status === 'awaiting_feed' ? '已核对单条预览，持续追踪待接通' : '待接入'}</h3>
+        <p className="mt-2 text-sm text-amber-300">{blogger.watch?.error_message || '需要首次提供可打开的本账号视频号作品分享链接，用于核对账号及测试访问方式。'} </p>
+        <p className="mt-2 text-xs text-gray-400">单条预览文字与已下载音视频分别记录；抖音对标跟踪独立运行。</p>
+      </section>}
 
       {/* Add video dialog */}
       {showAdd && (

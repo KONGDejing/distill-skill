@@ -21,6 +21,8 @@ export const api = {
   addVideo: (bloggerId, data) => request(`/bloggers/${bloggerId}/videos`, { method: 'POST', body: JSON.stringify(data) }),
   listBloggerVideos: (bloggerId) => request(`/bloggers/${bloggerId}/videos`),
   analyzeBlogger: (bloggerId) => request(`/bloggers/${bloggerId}/analyze`, { method: 'POST' }),
+  updateBloggerWatch: (id, enabled) => request(`/bloggers/${id}/watch`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
+  refreshBloggerWatch: (id) => request(`/bloggers/${id}/watch/refresh`, { method: 'POST' }),
 
   // Videos
   getVideo: (id) => request(`/videos/${id}`),

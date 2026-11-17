@@ -65,7 +65,12 @@ def allocate_cut_plan(content, cues, assets, duration):
         options={'time_limit': 20, 'mip_rel_gap': .01},
     )
     if result.x is None:
-        raise ValueError('精确镜头预算无可行解：' + str(result.message))
+        budgets = []
+        for i, scene in enumerate(scenes):
+            available = sum(last - first for asset, _, first, last in windows if asset['id'] in scene['asset_ids'])
+            budgets.append(f"第{i+1}段[{scene['heading']}]口播需{(ends[i]-starts[i])/FPS:.2f}秒，所选源窗总共{available/FPS:.2f}秒")
+        raise ValueError('精确镜头预算无可行解：' + str(result.message) + '。' + '；'.join(budgets)
+                         + '。这些容量是未扣除其他段共享占用的上界；同一源窗全片只能消费一次，每次至少2秒。请按真实口播重拆段，选择有语义依据的更多已提供素材并保留后段预算，不得循环或使用无关画面。')
     amounts = np.rint(result.x[:count]).astype(int)
     used = {w: window[2] for w, window in enumerate(windows)}
     plan = []

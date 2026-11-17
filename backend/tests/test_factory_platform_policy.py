@@ -175,7 +175,8 @@ def test_factoryctl_never_starts_accounts_but_can_stop_or_report_legacy_units(mo
     args = command.call_args.args
     for unit in control.LEGACY_UNITS:
         assert (unit in args) is (action in {"stop", "status"})
-    assert len(control.UNITS) == len(control.LEGACY_UNITS) == 4
+    assert len(control.UNITS) == 5 and len(control.LEGACY_UNITS) == 4
+    assert 'short-video-ai-factory-references.service' in control.UNITS
     assert "short-video-ai-factory-api.service" in args
 
 

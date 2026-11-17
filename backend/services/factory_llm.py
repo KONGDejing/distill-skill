@@ -96,6 +96,11 @@ def compact_payload(payload):
 
 def call_agent(run_id, agent_id, payload, max_tokens=2400, *, _format_retry=False, work_kind="unclassified"):
     payload = compact_payload(payload)
+    if not _format_retry:
+        from services.reference_watch import reference_brief
+        references = reference_brief(agent_id, session_factory=SessionLocal)
+        if references:
+            payload = {**payload, 'style_references': references}
     instruction = EDIT_REVIEW_INSTRUCTION if agent_id == "reviewer" and payload.get("task_mode") == "edit_review" else INSTRUCTIONS[agent_id]
     if agent_id in EDITOR_IDS and payload.get("task_mode") == "visual_match":
         instruction = VISUAL_MATCH_INSTRUCTION

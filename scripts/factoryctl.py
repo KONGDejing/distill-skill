@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "short-video-ai-factory"
 CREATOR_PLATFORMS = ("douyin", "kuaishou", "bilibili")
 UNITS = [f"{PREFIX}-{role}.service" for role in
-         ("api", "worker", "scheduler", "operations")]
+         ("api", "worker", "scheduler", "operations", "references")]
 LEGACY_UNITS = [f"{PREFIX}-xiaohongshu.service",
                 *(f"{PREFIX}-creator-{platform}.service" for platform in CREATOR_PLATFORMS)]
 ALL_UNITS = [*UNITS, *LEGACY_UNITS]
@@ -40,6 +40,7 @@ def install(port):
         "worker": f"{python} -m celery -A tasks.celery_app worker -l info -c 1 -Q short_video_ai_factory --hostname=factory@%h",
         "scheduler": f"{python} -m services.factory_scheduler",
         "operations": f"{python} -m services.factory_operations",
+        "references": f"{python} -m services.reference_watch",
     }
     for role, command in commands.items():
         unit = directory / f"{PREFIX}-{role}.service"

@@ -160,7 +160,7 @@ def run_distill_analysis(blogger_id: str):
         videos = db.query(SourceVideo).filter(
             SourceVideo.blogger_id == blogger_id,
             SourceVideo.transcript.isnot(None),
-        ).all()
+        ).order_by(SourceVideo.created_at.desc()).limit(12).all()
 
         from services.video_downloader import normalize_video_url, valid_video
         unique = {}
