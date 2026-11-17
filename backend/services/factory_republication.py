@@ -95,3 +95,75 @@ def schedule_owner_confirmed_replacement(db, item_id, media, variant, due_at, *,
                          {**ledger, item_id: previous})
         db.commit()
         return slot
+
+
+def replace_unsubmitted_owner_voice(db, item_id, media, variant, *, owner_approved=False):
+    """Atomically swap a validated voice export before any canonical upload.
+
+    Preserve fallback files and withdrawn-work receipts. Revision authorization
+    is rebound only while its new ledger key has never been attempted.
+    """
+    if owner_approved is not True:
+        raise ValueError('需要本人确认新音色，未替换成片')
+    item = db.get(FactoryItem,item_id)
+    if not item or item.status != 'completed' or variant.get('platform') != 'douyin':
+        raise ValueError('只能替换已完成的待发布抖音成片')
+    if (media.get('voice_profile') != 'owner_clone'
+            or media.get('tts_engine') != 'cosyvoice2-owner-reference'
+            or not 135 <= float(media.get('duration',0)) <= 165):
+        raise ValueError('本人音色或约150秒时长未通过验收')
+    from services.factory_voice import selected_owner_voice
+    selected = selected_owner_voice(db)
+    if (not selected or selected['voice_name'] != media.get('voice_name')
+            or selected['voice_reference_sha256'] != media.get('voice_reference_sha256')):
+        raise ValueError('成片与本人当前确认的音色录音不一致')
+    require_owner_attribution(variant)
+    require_caption_safety(media,variant)
+    validate_publication_media(media)
+    publishing.require_automation('douyin')
+    publishing.LOCK_DIRECTORY.mkdir(mode=0o700,exist_ok=True)
+    with (publishing.LOCK_DIRECTORY/'publication-douyin.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        if db.query(FactoryPublication).filter(FactoryPublication.item_id==item_id,
+                FactoryPublication.platform=='douyin',FactoryPublication.action.in_(['prepare','publish'])).first():
+            raise ValueError('本条已有上传或提交任务，不能覆盖绑定成片')
+        if db.query(FactoryPublication).filter(FactoryPublication.platform=='douyin',
+                FactoryPublication.status.in_(['queued','running'])).first():
+            raise ValueError('平台仍在执行其他任务，待当前操作结束后再切换')
+        if connector.connection_state('douyin').get('prepared_item_id')==item_id:
+            raise ValueError('本条官方上传表单已绑定旧文件，未替换')
+        slot=db.query(FactoryRelease).filter_by(item_id=item_id).one()
+        if slot.status not in {'scheduled','waiting_media','blocked'}:
+            raise ValueError('本条没有有效的待发布排期，需先重新安排时间')
+        guard_publication(db,item,'douyin','prepare')
+        ledger=connector._ledger('douyin')
+        revision=item.media.get('submission_revision',0)
+        key=f'{item_id}:r{revision}' if revision else item_id
+        if key in ledger:
+            raise ValueError('当前版本已有提交尝试，禁止用换声覆盖记录')
+        old_media=deepcopy(item.media)
+        old_package=deepcopy(next(p for p in item.packages if p['platform']=='douyin'))
+        if revision:
+            original=ledger.get(item_id,{})
+            auth=original.get('replacement_authorization') or {}
+            if auth.get('owner_confirmed_withdrawn') is not True or auth.get('submission_revision')!=revision:
+                raise ValueError('撤下旧作的重发授权不完整，未替换')
+            auth={**auth,'previous_replacement_sha256':auth.get('replacement_sha256'),
+                  'replacement_sha256':variant['delivery_quality']['delivery_sha256'],
+                  'owner_voice_approved_at':datetime.now(timezone.utc).isoformat()}
+            connector._write(connector.platform_directory('douyin')/'submissions.json',
+                             {**ledger,item_id:{**original,'replacement_authorization':auth}})
+        history=list(old_media.get('voice_revisions') or [])
+        history.append({'previous_audio_path':old_media.get('audio_path'),
+                        'previous_video_path':old_media.get('video_path'),'previous_package':old_package})
+        updated={**old_media,**deepcopy(media),'publication_hold':None,
+                 'voice_revisions':history,'pending_owner_voice':{'status':'completed','owner_approved':True}}
+        if revision:
+            updated['caption_replacement']={**updated.get('caption_replacement',{}),**auth}
+        item.media=updated
+        item.packages=[deepcopy(variant) if p['platform']=='douyin' else p for p in item.packages]
+        db.add(FactoryEvent(run_id=item.run_id,agent_id='reviewer',stage='owner_voice_delivery',status='completed',
+            message='本人确认的音色版已完成配音、字幕和镜头同步验收，换入待发布成片；原版文件与历史回执保留。',
+            detail={'item_id':item_id,'duration':media['duration'],'voice_name':media['voice_name']}))
+        db.commit()
+        return item

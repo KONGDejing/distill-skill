@@ -1081,6 +1081,12 @@ def _render(run_id, item_id):
             emit(run_id, "director", "duration_revision", f"按实测配音时长修订一次，目标{target_duration}秒", "warning")
             _write_and_review(run_id, item_id)
             return _render(run_id, item_id)
+        if owner_voice:
+            from services.factory_speech_alignment import align_audio
+            alignment = align_audio(content['script'], voice['audio_path'], directory / item_id / 'voice-alignment')
+            voice.update(alignment)
+            emit(run_id, 'reviewer', 'voice_alignment', '本人音色已按实际音频回听核对，字幕保留审核原稿。',
+                 'completed', {'item_id':item_id, 'readback_similarity':alignment['speech_alignment']['readback_similarity']})
     timing_context = None
     if voice:
         from services.factory_montage import read_subtitle_cues
@@ -1124,6 +1130,8 @@ def _render(run_id, item_id):
                                    shot_plan=content.get('actual_cut_plan') if owner != 'producer2' else None)
         media.update(tts_engine=voice["tts_engine"], speech_timings_path=voice["speech_timings_path"], style="tech_montage")
         media.update({key: voice.get(key) for key in ("voice_profile", "voice_name", "voice_label", "voice_rate", "voice_pitch", "voice_reference_sha256")})
+        if voice.get('speech_alignment'):
+            media.update(speech_alignment=voice['speech_alignment'], voice_prosody=voice.get('voice_prosody'))
     else:
         from services.factory_media import render_factory_video
         media = render_factory_video(item_id, content, directory)

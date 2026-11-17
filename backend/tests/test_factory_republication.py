@@ -90,3 +90,44 @@ def test_original_receipt_cannot_be_reported_as_a_new_revision_success(case,monk
     result=replacement.publishing.refresh_job(db,job)
     assert result.status=='failed' and result.result['submission_uncertain'] is True
     assert item.media['caption_replacement']['status']=='failed'
+
+
+def test_owner_voice_swap_never_overwrites_an_uploaded_or_attempted_version(case,monkeypatch):
+    from services import factory_voice
+    db,item,due,evidence=case
+    monkeypatch.setattr(factory_voice,'selected_owner_voice',lambda db:{'voice_name':'clone:owner','voice_reference_sha256':'approved'})
+    media={'voice_profile':'owner_clone','tts_engine':'cosyvoice2-owner-reference','duration':150,
+           'voice_name':'clone:owner','voice_reference_sha256':'approved'}
+    variant={'platform':'douyin','video_path':'new.mp4','delivery_quality':{'delivery_sha256':'new-hash'}}
+    with pytest.raises(ValueError,match='本人确认新音色'):
+        replacement.replace_unsubmitted_owner_voice(db,item.id,media,variant)
+    with pytest.raises(ValueError,match='已有上传或提交任务'):
+        replacement.replace_unsubmitted_owner_voice(db,item.id,media,variant,owner_approved=True)
+    assert item.packages[0]['video_path']=='old.mp4'
+
+
+def test_voice_swap_rebinds_only_the_unattempted_revision_and_preserves_old_receipt(case,monkeypatch):
+    from services import factory_voice
+    db,item,due,evidence=case
+    monkeypatch.setattr(factory_voice,'selected_owner_voice',lambda db:{'voice_name':'clone:owner','voice_reference_sha256':'approved'})
+    for job in db.query(FactoryPublication):job.action+='_r0'
+    db.query(FactoryRelease).one().status='scheduled'
+    item.media={**item.media,'submission_revision':1,'publication_hold':'voice rebuild'};db.commit()
+    ledger=connector._ledger('douyin');ledger[item.id]['replacement_authorization']={
+        'owner_confirmed_withdrawn':True,'submission_revision':1,'replacement_sha256':'old-correction-hash'}
+    connector._write(connector.platform_directory('douyin')/'submissions.json',ledger)
+    media={'voice_profile':'owner_clone','tts_engine':'cosyvoice2-owner-reference','duration':150,
+           'voice_name':'clone:owner','voice_reference_sha256':'approved','audio_path':'owner.mp3'}
+    variant={'platform':'douyin','video_path':'new.mp4','delivery_quality':{'delivery_sha256':'new-hash'}}
+    replacement.replace_unsubmitted_owner_voice(db,item.id,media,variant,owner_approved=True)
+    assert item.media['publication_hold'] is None and item.media['submission_revision']==1
+    assert item.media['voice_revisions'][0]['previous_package']['video_path']=='old.mp4'
+    previous=connector._ledger('douyin')[item.id]
+    assert previous['evidence']==evidence
+    assert previous['replacement_authorization']['replacement_sha256']=='new-hash'
+    assert db.query(FactoryRelease).one().status=='scheduled'  # Swapping files never invents a new submit.
+    # Even an uncertain attempt on the new revision permanently forbids rebinding.
+    connector._write(connector.platform_directory('douyin')/'submissions.json',
+                     {**connector._ledger('douyin'),item.id+':r1':{'status':'attempting'}})
+    with pytest.raises(ValueError,match='已有提交尝试'):
+        replacement.replace_unsubmitted_owner_voice(db,item.id,media,variant,owner_approved=True)
