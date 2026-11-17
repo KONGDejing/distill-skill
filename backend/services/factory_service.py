@@ -1057,12 +1057,15 @@ def _render(run_id, item_id):
             require_footage_budget(assets, max(10, target_duration - 15))
     voice = None
     if visual_style == "tech_montage":
-        from services.factory_voice import synthesize_factory_audio
+        from services.factory_voice import synthesize_factory_audio, selected_owner_voice
         from services.factory_montage import render_tech_montage
         emit(run_id, owner, "voice_synthesis", "口播已审核，正在合成配音、测量时长并对齐字幕：" + content["title"],
              detail={"item_id": item_id})
-        voice = synthesize_factory_audio(item_id, content, directory)
-        if owner == "producer2" and voice.get("voice_profile") != "calm_male":
+        with SessionLocal() as db:
+            owner_voice = selected_owner_voice(db)
+        options = {'owner_voice':owner_voice} if owner_voice else {}
+        voice = synthesize_factory_audio(item_id, content, directory, **options)
+        if owner == "producer2" and voice.get("voice_profile") not in {"calm_male", "owner_clone"}:
             raise ValueError("论文配音未使用要求的沉稳男声，停止交付")
         check_cancel(run_id)
         if target_duration and abs(voice["duration"] - target_duration) > 15:
@@ -1120,7 +1123,7 @@ def _render(run_id, item_id):
         media = render_tech_montage(item_id, content, voice["audio_path"], voice["subtitle_path"], assets, directory,
                                    shot_plan=content.get('actual_cut_plan') if owner != 'producer2' else None)
         media.update(tts_engine=voice["tts_engine"], speech_timings_path=voice["speech_timings_path"], style="tech_montage")
-        media.update({key: voice.get(key) for key in ("voice_profile", "voice_name", "voice_label", "voice_rate", "voice_pitch")})
+        media.update({key: voice.get(key) for key in ("voice_profile", "voice_name", "voice_label", "voice_rate", "voice_pitch", "voice_reference_sha256")})
     else:
         from services.factory_media import render_factory_video
         media = render_factory_video(item_id, content, directory)

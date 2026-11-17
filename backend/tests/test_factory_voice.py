@@ -125,6 +125,69 @@ def test_voice_profile_rejects_unknown_config_and_keeps_other_explicit_voice():
     assert profile["voice_name"] == "zh-CN-XiaoyiNeural" and profile["voice_rate"] == "+0%"
 
 
+def test_owner_voice_uses_exact_reference_and_never_calls_stock_voice(tmp_path,monkeypatch,voice_backend):
+    calls,_=voice_backend
+    profile={'voice_profile':'owner_clone','voice_name':'clone:owner-sample','voice_label':'本人音色',
+        'voice_rate':'+0%','voice_pitch':'+0Hz','voice_reference_sha256':'reference-one',
+        '_reference_path':'owner-reference.wav','_reference_text':'这是参考录音的逐字文本。'}
+    def local(text,audio,work,display_text,**kwargs):
+        assert kwargs=={'reference_path':'owner-reference.wav','reference_text':'这是参考录音的逐字文本。'}
+        audio.write_bytes(b'cloned audio')
+        return [{'text':display_text,'start':0,'end':5}]
+    clone=Mock(side_effect=local)
+    monkeypatch.setattr(factory_voice.speech,'_cosyvoice_speech',clone)
+    content={'script':'机器人练习用的示范从哪里来？'}
+    first=factory_voice.synthesize_factory_audio('owner',content,tmp_path,owner_voice=profile)
+    second=factory_voice.synthesize_factory_audio('owner',content,tmp_path,owner_voice=profile)
+    assert first==second and first['tts_engine']=='cosyvoice2-owner-reference'
+    assert calls==[] and clone.call_count==1
+    assert '_reference_path' not in first and '_reference_text' not in first
+    changed={**profile,'voice_reference_sha256':'reference-two'}
+    factory_voice.synthesize_factory_audio('owner',content,tmp_path,owner_voice=changed)
+    assert clone.call_count==2
+
+
+def test_owner_clone_failure_does_not_fall_back_or_damage_previous_audio(tmp_path,monkeypatch,voice_backend):
+    calls,_=voice_backend
+    factory_voice.synthesize_factory_audio('preserve',{'script':'已完成的旧版。'},tmp_path)
+    directory=tmp_path/'preserve/voice';before={p.name:p.read_bytes() for p in directory.iterdir() if p.is_file()}
+    monkeypatch.setattr(factory_voice.speech,'_cosyvoice_speech',Mock(side_effect=RuntimeError('private diagnostic')))
+    profile={'voice_profile':'owner_clone','_reference_path':'ref.wav','_reference_text':'逐字参考文本。'}
+    with pytest.raises(RuntimeError,match='本人音色合成失败.*未回退普通音色') as error:
+        factory_voice.synthesize_factory_audio('preserve',{'script':'新版。'},tmp_path,owner_voice=profile)
+    assert 'private diagnostic' not in str(error.value)
+    assert len(calls)==1
+    assert before=={p.name:p.read_bytes() for p in directory.iterdir() if p.is_file()}
+
+
+def test_backend_owner_selection_requires_calibrated_unchanged_reference(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from database import Base
+    from models.user_profile import UserProfile
+    from services.factory_branding import file_sha256
+    engine=create_engine(f'sqlite:///{tmp_path / "voices.db"}')
+    Base.metadata.create_all(engine,tables=[UserProfile.__table__])
+    source=tmp_path/'upload.wav';source.write_bytes(b'original reference')
+    reference=tmp_path/'trimmed.wav';reference.write_bytes(b'calibrated reference')
+    with sessionmaker(bind=engine)() as db:
+        user=UserProfile(tts_voice='clone:owner',voice_clone_samples=[{'id':'owner','name':'本人音色','path':str(source)}])
+        db.add(user);db.commit()
+        with pytest.raises(ValueError,match='尚未校准'):
+            factory_voice.selected_owner_voice(db)
+        user.voice_clone_samples=[{**user.voice_clone_samples[0],'factory_reference':{
+            'path':str(reference),'prompt_text':'原录音中的逐字文本。','sha256':file_sha256(reference),
+            'source_sha256':file_sha256(source)}}];db.commit()
+        profile=factory_voice.selected_owner_voice(db)
+        assert profile['voice_profile']=='owner_clone' and profile['_reference_path']==str(reference)
+        source.write_bytes(b'changed recording')
+        with pytest.raises(ValueError,match='录音已变化'):
+            factory_voice.selected_owner_voice(db)
+        user.tts_voice='zh-CN-YunyangNeural';db.commit()
+        assert factory_voice.selected_owner_voice(db) is None
+    engine.dispose()
+
+
 @pytest.mark.parametrize("options,expected", [({}, ("+0%", "+0Hz")),
                                             ({"rate": "-8%", "pitch": "+0Hz"}, ("-8%", "+0Hz")),
                                             ({"rate": "-8%", "pitch": "-2Hz"}, ("-8%", "-2Hz"))])

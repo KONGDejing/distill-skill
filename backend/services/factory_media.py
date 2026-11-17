@@ -181,7 +181,8 @@ async def _edge_speech(text: str, voice: str, audio: Path, *,
     return grouped
 
 
-def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | None = None) -> list[dict]:
+def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | None = None,
+                     *, reference_path=None, reference_text=None) -> list[dict]:
     from services.factory_resources import ensure_memory_available
     ensure_memory_available()
     engine = Path(os.getenv("COSYVOICE_DIR", str(BACKEND / "engines" / "CosyVoice"))).resolve()
@@ -189,9 +190,11 @@ def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | No
     model = Path(os.getenv("COSYVOICE_MODEL_DIR", str(BACKEND / "storage" / "models" / "CosyVoice2-0.5B"))).resolve()
     if not python.exists() or not (model / "cosyvoice2.yaml").exists():
         raise RuntimeError("Edge-TTS 不可用，且未找到本地 CosyVoice Python 环境或模型")
-    reference = engine / "asset" / "zero_shot_prompt.wav"
+    reference = Path(reference_path) if reference_path else engine / "asset" / "zero_shot_prompt.wav"
     if not reference.exists():
-        raise RuntimeError("本地 CosyVoice 标准参考音色不存在")
+        raise RuntimeError("本地 CosyVoice 参考音色不存在")
+    if reference_path and not str(reference_text or '').strip():
+        raise ValueError('本人音色需要与参考录音匹配的文本，不能使用默认参考词')
     job = work / "speech_job.json"
     wav = work / "speech.wav"
     timing = work / "speech_timings.json"
@@ -199,6 +202,10 @@ def _cosyvoice_speech(text: str, audio: Path, work: Path, display_text: str | No
                                "engine": str(engine), "model": str(model),
                                "reference": str(reference), "wav": str(wav), "timing": str(timing)},
                               ensure_ascii=False), encoding="utf-8")
+    if reference_path:
+        value = json.loads(job.read_text())
+        value['reference_text'] = reference_text
+        job.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
     env = os.environ.copy()
     # The bundled environment may use a CUDA build newer than the host driver.
     env["CUDA_VISIBLE_DEVICES"] = os.getenv("FACTORY_COSYVOICE_CUDA_DEVICES", "")
@@ -246,7 +253,7 @@ def _cosyvoice_job(job_path: str) -> None:
 
     torch.set_num_threads(4)
     model = CosyVoice2(job["model"], load_jit=False, load_trt=False, load_vllm=False, fp16=False)
-    model.add_zero_shot_spk("希望你以后能够做的比我还好呦。", job["reference"], "factory_reference")
+    model.add_zero_shot_spk(job.get('reference_text', "希望你以后能够做的比我还好呦。"), job["reference"], "factory_reference")
     sentences = job.get("sentences") or [{"display": s, "spoken": s} for s in _sentences(job["text"])]
     audio_parts, timings, cursor = [], [], 0.0
     for sentence_index, entry in enumerate(sentences):

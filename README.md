@@ -106,6 +106,8 @@ npm --prefix frontend run build
 
 正文、AI说明和话题用空格连接为连续单段，不主动换行或添加空行；手机端的折叠行数、行距及“展开”由官方客户端决定。抖音画面中上部的标题逐行水平居中，其他平台保留各自首帧样式。账号本人明确确认旧作已经手动撤下后，才允许独立版本重新排期；原作品、发布任务及连接器回执保留，新版按独立账本键防重，不增加当天原创数量。
 
+内容工厂支持后台显式选择的本人音色：使用经校准的参考片段和匹配逐字文本，校验原录音及参考片段指纹，按真实句段音频时长对齐字幕。本人音色合成失败时暂停并保留已有音轨，不自动替换为普通声线；试听不会自动切换已完成的成片或发布排期。
+
 GitHub仓库为 [KONGDejing/short-video-ai-factory](https://github.com/KONGDejing/short-video-ai-factory)，SSH远端为 `git@github.com:KONGDejing/short-video-ai-factory.git`。工程只使用 `short-video-ai-factory` 目录，旧的兼容软链接已移除；历史素材的绝对路径已迁移到新目录。历史数据库文件 `backend/distill.db` 继续使用，新增 `factory_*` 表；部署前备份保存在 `.runtime/backups/`。
 
 ## 内存保护

@@ -199,7 +199,7 @@ def _begin_publication(db, item_id, action, platform):
     from services.factory_montage import validate_publication_media
     from services.factory_papers import require_paper_publication
     from services.factory_team import editor_id
-    if editor_id(item) == "producer2" and item.media.get("voice_profile") != "calm_male":
+    if editor_id(item) == "producer2" and item.media.get("voice_profile") not in {"calm_male", "owner_clone"}:
         raise ValueError("未发布论文必须先换成沉稳男声，旧女声版本不会提交")
     validate_publication_media(item.media)
     require_paper_publication(item.content, item.brief, item.media)
