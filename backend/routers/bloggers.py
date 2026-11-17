@@ -232,6 +232,7 @@ def trigger_analyze(blogger_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="没有可分析的转录文本，请先添加视频并完成转写")
 
     blogger.status = BloggerStatus.ANALYZING.value
+    blogger.error_message = None
     db.commit()
 
     # Trigger async task

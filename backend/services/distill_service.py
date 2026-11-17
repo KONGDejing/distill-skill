@@ -63,7 +63,8 @@ DISTILL_PROMPT = """你是一位顶级短视频内容策略专家。请深度分
 """
 
 
-def analyze_blogger_content(transcripts: list[str], *, image_paths=None, video_metadata=None) -> dict | None:
+def analyze_blogger_content(transcripts: list[str], *, image_paths=None, video_metadata=None,
+                           factory_image_paths=None, factory_metadata=None) -> dict | None:
     """
     Analyze actual reference transcripts and optional frame samples with the configured model.
     Returns the content DNA dict, or None on failure.
@@ -84,13 +85,24 @@ def analyze_blogger_content(transcripts: list[str], *, image_paths=None, video_m
 
     if video_metadata:
         prompt += "\n实际视频测量与抽帧范围：\n" + json.dumps(video_metadata, ensure_ascii=False)
+    if factory_metadata:
+        prompt += ("\n下面是我们工厂当前真实成片的口播与测量信息。图片附件按顺序排列：前"
+            + str(len(image_paths or [])) + "张为对标博主，后" + str(len(factory_image_paths or [])) + "张为我们自己的成片；同一工厂对照图可分上下两部分，按image_panel和标题对应两个栏目。不得混淆作者。\n"
+            + json.dumps(factory_metadata, ensure_ascii=False)
+            + '\n额外输出factory_comparison对象：scope字符串；observed_gaps数组最多5项，每项包含aspect、reference_observation、factory_observation、evidence、action字符串；priority_actions数组最多3项，每项包含owner、action、acceptance字符串。'
+            + '只比较实际提供的稿件、测量和可见抽帧，说明我们的成片哪里有差距，给出能验收的修改；用样本标题及采样秒数支持判断。'
+            + '禁止从抽帧推断精确切镜频率、完整动作匹配、音色、语气、音画逐字同步或涨粉因果。语音仅能从文本讨论句式，实测片长不等于有效口播时长。'
+            + '不能照搬对标的身份、脸、声线、固定署名和夸张判断。保留本工厂AI科技选题范围与三栏目职责。'
+            + 'owner只用director、writer、producer、producer3、publisher、reviewer；论文producer2不套该画风。'
+            + '具体优先比较开场是否有真实结果、素材主体面积与留白、短句及中段提问、字幕信息层级、解释是否连续推进；没有素材支持的改法标为后续试验。')
+    attachments = list(image_paths or []) + list(factory_image_paths or [])
     try:
         from services.factory_llm import model_runtime
         runtime = model_runtime()
         if runtime['provider'] == 'codex':
             from services.factory_codex import create_response
             message = create_response(model=runtime['model'], system='你是内容研究员。只根据提供的真实转写和抽帧提炼可操作表达方法，输出JSON。',
-                messages=[{'role':'user','content':prompt}], max_tokens=6000, image_paths=image_paths, reasoning_effort='high')
+                messages=[{'role':'user','content':prompt}], max_tokens=8000 if factory_metadata else 6000, image_paths=attachments or None, reasoning_effort='high')
         elif runtime['provider'] == 'openai':
             from services.factory_openai import create_response
             message = create_response(model=runtime['model'], system='只依据实际样本分析，输出JSON。',
@@ -120,9 +132,31 @@ def analyze_blogger_content(transcripts: list[str], *, image_paths=None, video_m
                 return None
             if isinstance(value.get('visual_style'), dict):
                 value['viral_techniques'] = {**value['viral_techniques'], 'visual_style': value['visual_style']}
+            if factory_metadata:
+                comparison = value.get('factory_comparison')
+                owners = {'director','writer','producer','producer3','publisher','reviewer'}
+                if (not isinstance(comparison, dict) or not isinstance(comparison.get('observed_gaps'), list)
+                        or not isinstance(comparison.get('priority_actions'), list)):
+                    return None
+                if any(not isinstance(gap, dict) or not all(isinstance(gap.get(key), str) for key in
+                       ('aspect','reference_observation','factory_observation','evidence','action'))
+                       for gap in comparison['observed_gaps']):
+                    return None
+                if any(not isinstance(action, dict) or action.get('owner') not in owners
+                       or not all(isinstance(action.get(key), str) for key in ('action','acceptance'))
+                       for action in comparison['priority_actions']):
+                    return None
+                comparison = value['factory_comparison']
+                comparison['actual_evidence_scope'] = ('真实转写和六点抽帧对照；没有完整动作或音频试听，不能证明留存、涨粉效果。'
+                    if runtime['provider'] == 'codex' and factory_image_paths else '仅文本对照；当前调用未附工厂真实画面，不能进行视觉或声音验收。')
+                comparison['application_scope'] = '用于下一批未发布作品及独立试验；已提交的成片、文件与回执保持原样。'
+                comparison['factory_samples'] = [{k: sample.get(k) for k in ('item_id','title','editor_id','sample_times_seconds')}
+                                                  for sample in factory_metadata]
+                value['viral_techniques'] = {**value['viral_techniques'], 'factory_comparison': comparison}
             value['_model_usage'] = {'provider':runtime['provider'],'model':runtime['model'],
                 'input_tokens':message.usage.input_tokens,'output_tokens':message.usage.output_tokens,
-                'actual_reference_images':len(image_paths or []) if runtime['provider']=='codex' else 0}
+                'actual_reference_images':len(image_paths or []) if runtime['provider']=='codex' else 0,
+                'actual_factory_images':len(factory_image_paths or []) if runtime['provider']=='codex' else 0}
             return value
         return None
     except Exception as e:

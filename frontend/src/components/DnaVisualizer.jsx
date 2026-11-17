@@ -1,7 +1,27 @@
 export default function DnaVisualizer({ dna }) {
   if (!dna) return null
+  const employeeNames = { director: '老周', writer: '小文', producer: '小影', producer3: '小影3', publisher: '小麦', reviewer: '小审' }
 
   const sections = [
+    {
+      title: '与我们成片的差距', color: 'orange', data: dna.viral_techniques?.factory_comparison,
+      render: (d) => <div className="space-y-3">
+        <DnaRow label="对照范围" value={d.actual_evidence_scope || d.scope} />
+        <DnaRow label="应用范围" value={d.application_scope} />
+        {(Array.isArray(d.observed_gaps) ? d.observed_gaps : []).map((gap, i) => <div key={i} className="rounded bg-gray-800 p-3 text-sm space-y-1">
+          <p className="font-medium text-orange-300">{gap.aspect}</p>
+          <DnaRow label="对标观察" value={gap.reference_observation} />
+          <DnaRow label="我们的成片" value={gap.factory_observation} />
+          <DnaRow label="对应证据" value={gap.evidence} />
+          <DnaRow label="修改方式" value={gap.action} />
+        </div>)}
+        {(Array.isArray(d.priority_actions) ? d.priority_actions : []).map((action, i) => <div key={i} className="rounded border border-orange-800/50 p-3">
+          <DnaRow label="优先优化" value={action.action} />
+          <DnaRow label="负责同事" value={employeeNames[action.owner] || action.owner} />
+          <DnaRow label="验收方式" value={action.acceptance} />
+        </div>)}
+      </div>,
+    },
     {
       title: '真实画面分析', color: 'blue', data: dna.viral_techniques?.visual_style,
       render: (d) => <div className="space-y-3">

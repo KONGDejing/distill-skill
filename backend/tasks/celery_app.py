@@ -177,9 +177,10 @@ def run_distill_analysis(blogger_id: str):
             return {"error": "No transcripts"}
 
         blogger.status = BloggerStatus.ANALYZING.value
+        blogger.error_message = None
         db.commit()
 
-        from services.reference_visuals import sample_reference
+        from services.reference_visuals import sample_reference, sample_factory_comparison
         pictures, measurements = [], []
         for video in videos[:3]:
             if video.video_path and valid_video(video.video_path):
@@ -187,7 +188,10 @@ def run_distill_analysis(blogger_id: str):
                 sampled = sample_reference(video.video_path, target)
                 pictures.append(sampled.pop('image_path'))
                 measurements.append({**sampled, 'source_url': video.source_url, 'title': video.title})
-        dna_data = analyze_blogger_content(transcripts, image_paths=pictures, video_metadata=measurements)
+        factory_pictures, factory_measurements = sample_factory_comparison(db,
+            settings.VIDEO_DIR / blogger_id / 'factory-comparison')
+        dna_data = analyze_blogger_content(transcripts, image_paths=pictures, video_metadata=measurements,
+            factory_image_paths=factory_pictures, factory_metadata=factory_measurements)
         if not dna_data:
             blogger.status = BloggerStatus.ERROR.value
             blogger.error_message = "当前模型服务未完成对标分析，请查看模型状态后重试"
