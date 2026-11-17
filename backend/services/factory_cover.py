@@ -9,8 +9,10 @@ COVER_DESIGN_VERSION = 2
 FRAME_TITLE_VERSION = 2
 
 
-def frame_title_layout(title, platform):
+def frame_title_layout(title, platform, *, caption_safe_area=False):
     maximum_size = {'douyin': 100, 'kuaishou': 78, 'xiaohongshu': 70}[platform]
+    if platform == 'douyin' and caption_safe_area:
+        maximum_size = 84
     for size in range(maximum_size, 47, -2):
         font = _font(size, bold=True)
         lines = _wrap(title, font, 800)
@@ -31,7 +33,7 @@ def frame_title_layout(title, platform):
     return size, lines
 
 
-def render_frame_cover(source, title, target, platform):
+def render_frame_cover(source, title, target, platform, *, caption_safe_area=False):
     """Letter the actual first frame; export the same transparent title for motion.
 
     The upper-middle headline avoids bottom captions and right-side controls.
@@ -56,9 +58,11 @@ def render_frame_cover(source, title, target, platform):
     title = str(title).strip()
     if not title:
         raise ValueError("首帧缺少视频标题")
-    size, lines = frame_title_layout(title, platform)
+    size, lines = frame_title_layout(title, platform, caption_safe_area=caption_safe_area)
     font = _font(size, bold=True)
     top, bottom = (330, 650) if platform == 'douyin' else (380, 650)
+    if platform == 'douyin' and caption_safe_area:
+        top, bottom = 220, 440
     if platform == "xiaohongshu":
         draw.rounded_rectangle((56, top, 944, bottom), radius=24, fill=(255, 252, 249, 244))
         draw.rounded_rectangle((78, top + 30, 86, bottom - 30), radius=4, fill="#d94d76")
@@ -69,11 +73,13 @@ def render_frame_cover(source, title, target, platform):
         if platform == 'douyin':
             # A restrained translucent backing keeps the real shot visible.
             # There is no common AI illustration or opaque full-screen card.
-            for y in range(248, bottom + 30):
-                alpha = round(145 * min(1, (y - 248) / 50, (bottom + 30 - y) / 70))
+            backdrop_top = top - 20 if caption_safe_area else 248
+            for y in range(backdrop_top, bottom + 20):
+                alpha = round(145 * min(1, (y - backdrop_top) / 50, (bottom + 20 - y) / 70))
                 draw.line((40, y, 960, y), fill=(0, 0, 0, max(0, alpha)))
-            draw.text((76, 270), '科技观察', font=_font(30, bold=True), fill='#ffffff',
-                      stroke_width=1, stroke_fill='#101010', anchor='lt')
+            if not caption_safe_area:
+                draw.text((76, 270), '科技观察', font=_font(30, bold=True), fill='#ffffff',
+                          stroke_width=1, stroke_fill='#101010', anchor='lt')
     line_height = size + 18
     y = top + (bottom - top - len(lines) * line_height) // 2
     for n, line in enumerate(lines):
@@ -90,6 +96,7 @@ def render_frame_cover(source, title, target, platform):
             "overlay_path": str(overlay_path), "source_frame_sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
             "text_rendered": title, "font_size": size, "lines": lines,
             "title_position": "upper_middle",
+            'caption_safe_area_version': 1 if caption_safe_area else 0,
             "title_bounds_normalized": [56 / WIDTH, top / HEIGHT, 944 / WIDTH, bottom / HEIGHT]}
 
 

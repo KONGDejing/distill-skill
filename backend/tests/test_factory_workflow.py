@@ -477,7 +477,8 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 handoff = metadata["manual_handoff"]
                 assert handoff == package["manual_handoff"]
                 assert handoff["platform"] == package["platform"]
-                assert handoff["title"] == package["title"] and handoff["caption"] == "平台简介"
+                assert handoff["title"] == package["title"]
+                assert handoff["caption"].splitlines()[0] == "平台简介"
                 if package["platform"] in {"douyin", "xiaohongshu", "kuaishou"}:
                     assert handoff["cover_text"] == content["title"]
                     assert package["delivery_quality"]["opening_mode"] == "first_frame_title"
@@ -489,7 +490,11 @@ def test_archives_contain_manual_handoff_and_only_target_assigned_platform(isola
                 assert handoff["pinned_comment"] == "一起对照所列原文。"
                 assert len(handoff["reply_templates"]) >= 3
                 assert "#AI" in archive.read("发布文案.txt").decode("utf-8")
-                assert "AI辅助整理文案、配音和剪辑" in archive.read("发布文案.txt").decode("utf-8")
+                if package["platform"] in {"douyin", "xiaohongshu", "kuaishou"}:
+                    assert "内容由AI生成" in archive.read("发布文案.txt").decode("utf-8")
+                    assert len(handoff["description"]) <= 50
+                else:
+                    assert "AI辅助整理文案、配音和剪辑" in archive.read("发布文案.txt").decode("utf-8")
                 assert "不表示已收到这些留言" in archive.read("互动回复模板.txt").decode("utf-8")
                 assert SOURCE["url"] in archive.read("资料来源.txt").decode("utf-8")
                 assert Path(package["copy_path"]).read_bytes() == archive.read("发布文案.txt")
@@ -537,7 +542,9 @@ def test_first_frame_upgrade_reuses_approved_copy_and_preserves_old_archive(isol
         item = db.get(FactoryItem, item_id)
         assert item.content == content and item.media == media
         package = item.packages[0]
-        assert package["title"] == "已定稿发布标题" and package["caption"] == "已定稿正文"
+        assert package["title"] == "已定稿发布标题"
+        assert package["caption"].splitlines()[0] == "已定稿正文"
+        assert len(package["manual_handoff"]["description"]) <= 50
         assert finisher.call_count == 1
         assert finisher.call_args.args[0] == media["video_path"]
         assert package["path"] != str(old_path)

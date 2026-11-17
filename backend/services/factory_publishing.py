@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal
-from models.factory import FactoryItem, FactoryPublication, FactoryEvent
+from models.factory import FactoryItem, FactoryPublication, FactoryEvent, FactoryRun
 from services.factory_resources import ensure_memory_available
 from services.factory_distribution import guard_publication, RESERVATION_KEY
 from services.factory_platform_policy import require_automation
@@ -176,6 +176,11 @@ def _begin_publication(db, item_id, action, platform):
             return existing
         reuse_job = True
     reservation = guard_publication(db, item, platform, action, timezone_name=config.timezone)
+    run = db.get(FactoryRun, item.run_id)
+    if platform == 'douyin' and (run.settings_snapshot.get('caption_safety_required')
+                                or (item.media.get('quality') or {}).get('caption_safe_area_version')):
+        from services.factory_caption_layout import require_caption_safety
+        require_caption_safety(item.media, variant)
     from services.factory_montage import validate_publication_media
     from services.factory_papers import require_paper_publication
     from services.factory_team import editor_id
@@ -218,11 +223,15 @@ def _begin_publication(db, item_id, action, platform):
         if platform in {"douyin", "kuaishou"} and not (variant.get("video_path") and variant.get("cover_path")):
             raise ValueError(f"{platform_name}必须上传最终交付成片与定稿封面，请先完成平台打包")
         caption = variant.get("caption", "")
-        if platform in {"douyin", "kuaishou"}:
+        tags = variant.get('tags', [])
+        if platform == 'douyin':
+            from services.factory_short_caption import compact_douyin_caption
+            caption, tags = compact_douyin_caption(variant)
+        elif platform == 'kuaishou':
             caption = caption.rstrip() + "\n\n内容由AI生成（AI辅助文案、配音与剪辑；原始资料与演示来源见正文）。"
         payload.update(video_path=variant.get("video_path") or item.media["video_path"],
                        cover_path=variant.get("cover_path") or item.media["cover_path"],
-                       title=variant["title"], caption=caption, tags=variant.get("tags", []), ai_generated=True)
+                       title=variant["title"], caption=caption, tags=tags, ai_generated=True)
         if platform in {"douyin", "kuaishou"}:
             payload["requested_publication_city"] = "北京"
         if platform == 'douyin':

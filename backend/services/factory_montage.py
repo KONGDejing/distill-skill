@@ -17,6 +17,7 @@ import tempfile
 import time
 from typing import Any
 from services.factory_resources import ensure_memory_available, MemoryPressure
+from services.factory_caption_layout import SAFE_STYLES, caption_safety, safe_caption_lines
 
 from services.factory_media import (
     FPS, HEIGHT, WIDTH, _ass_escape, _ass_time, _duration, _font, _probe, _run,
@@ -438,7 +439,7 @@ def check_visual_repeats(plan, sources):
     for shot in plan:
         if shot["kind"] == "paper_page":
             continue  # A held original document is not looping action footage.
-        ensure_memory_available()
+        _wait_for_render_memory()
         result = subprocess.run(["ffmpeg", "-v", "error", "-threads", "1", "-ss", str(shot["source_start"]),
             "-t", str(shot["duration"]), "-i", sources[shot["asset_id"]]["path"], "-an",
             "-vf", "fps=4,scale=96:54", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
@@ -475,17 +476,20 @@ def validate_publication_media(media):
 def _render_shot(asset: dict, shot: dict, target: Path):
     if asset["kind"] == "paper_page":
         return _render_paper_shot(asset, shot, target)
-    if shot.get('presentation_style') in {'science_editorial_v1', 'science_editorial_focus_v2'}:
+    if shot.get('presentation_style') in {'science_editorial_v1', 'science_editorial_focus_v2', *SAFE_STYLES}:
         # One complete source image is the hero. Avoid repeating it as both a
         # giant blurred background and a simultaneous detail panel. The top
         # band is reserved for the per-topic headline in the final export.
-        focus_style = shot.get('presentation_style') == 'science_editorial_focus_v2'
+        focus_style = shot.get('presentation_style') in {'science_editorial_focus_v2', 'science_editorial_focus_safe_v3'}
         region = shot.get('focus_region') if focus_style else None
         crop = ''
         if region:
             x, y, w, h = region['rect']
             crop = f'crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},'
         box_height, top = (860, 760) if focus_style else (1000, 650)
+        if shot.get('presentation_style') in SAFE_STYLES:
+            from services.factory_caption_layout import VIDEO_HEIGHT, VIDEO_TOP
+            box_height, top = VIDEO_HEIGHT, VIDEO_TOP
         graph = ('[0:v]fps=' + str(FPS) + ',setpts=PTS-STARTPTS,' + crop +
                  f'scale=1024:{box_height}:force_original_aspect_ratio=decrease,setsar=1,'
                  f'pad=1080:1920:(ow-iw)/2:{top}+({box_height}-ih)/2:color=0x080b10,'
@@ -692,6 +696,7 @@ def _retimed_subtitle_cues(cues: list[dict], plan: list[dict], content: dict) ->
 
 def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content: dict, target: Path):
     display_cues = _retimed_subtitle_cues(cues, plan, content)
+    safe = content.get('presentation_style') in SAFE_STYLES
     lines = ["[Script Info]", f"; SubtitleAlgorithmVersion: {SUBTITLE_ALGORITHM_VERSION}",
              f"; SubtitleTiming: {SUBTITLE_TIMING_METHOD}", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 2", "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
              "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -699,14 +704,21 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
              "Style: Credit,Noto Sans CJK SC,27,&H00F5F5F5,&H000000FF,&H00100B06,&H80000000,0,0,0,0,100,100,0,0,1,1,0,7,0,0,0,1",
              "Style: Accent,Noto Sans CJK SC,38,&H00D1F0A0,&H000000FF,&H00100B06,&H80000000,1,0,0,0,100,100,0,0,1,1,0,7,0,0,0,1",
              "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
+    if safe:
+        lines = [line.replace('Style: Narration,Noto Sans CJK SC,48,', 'Style: Narration,Noto Sans CJK SC,52,')
+                 .replace('1,2,0,2,90,90,225,1', '1,3,1,2,80,200,540,1') for line in lines]
 
     def add(layer, start, end, style, text):
         lines.append(f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,{text}")
 
     for cue in display_cues:
         clean = cue["text"].strip()
-        wrapped = _wrap(clean, _font(48, True), 880)
-        add(1, cue["start"], cue["end"], "Narration", r"\N".join(_ass_escape(s) for s in wrapped))
+        if safe:
+            size, wrapped = safe_caption_lines(clean)
+            prefix = r'{\fs' + str(size) + '}'
+        else:
+            wrapped, prefix = _wrap(clean, _font(48, True), 880), ''
+        add(1, cue["start"], cue["end"], "Narration", prefix + r"\N".join(_ass_escape(s) for s in wrapped))
     seen_scenes, annotation_intervals = set(), []
     for shot in plan:
         start, end = shot["timeline_start"], shot["timeline_end"]
@@ -715,7 +727,7 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
         source = source.removeprefix("画面来源：").replace("（官方演示）", "")
         add(2, start, end, "Credit", r"{\pos(54,112)}" + _ass_escape(source[:50]))
         add(2, start, end, "Credit", r"{\pos(54,155)\c&HCEF2A5&}" + _ass_escape(shot["display_label"]))
-        if shot.get("focus_region"):
+        if shot.get("focus_region") and not safe:
             pos = r"{\pos(54,1640)\fs24}" if content.get('presentation_style') == 'science_editorial_focus_v2' else r"{\pos(54,894)\fs24}"
             add(2, start, end, "Credit", pos + _ass_escape("局部放大 · " + str(shot["focus_region"].get("label", "动作细节"))))
         if shot["scene_index"] not in seen_scenes:
@@ -724,6 +736,8 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
             annotation_intervals.append((start, until))
             heading = f"{shot['scene_index'] + 1:02d}  /  {shot['heading']}"
             position = r"{\pos(280,350)\fs32}" if shot["kind"] == "paper_page" else r"{\move(40,205,54,205,0,260)\fad(120,180)}"
+            if safe:
+                position = r"{\pos(54,188)\fs24\fad(100,150)}"
             add(3, start, until, "Accent", position + _ass_escape(heading[:23]))
     channel = str(content.get("channel_name") or "AI 科技观察")
     add(2, 0, plan[-1]["timeline_end"], "Credit", r"{\pos(54,1824)\fs24\alpha&H45&}" + _ass_escape(channel))
@@ -735,6 +749,7 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
         "subtitle_original_cue_count": len(cues), "subtitle_display_cue_count": len(display_cues),
         "subtitle_text_preserved": True, "subtitle_scene_boundaries_enforced": True,
         "subtitle_segmentation": "approved_sentence_and_clause_punctuation; incomplete_negation_prefix_join; separate_follow_prompt",
+        **({'caption_safe_area_version': 1, 'caption_safe_area': caption_safety()} if safe else {}),
         "subtitle_timing_limit": "按原cue字符位置插值，继承原时标误差；不是逐字ASR或自动语义审核。"}}
 
 
@@ -816,15 +831,20 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
     target = Path(output_dir).resolve() / item_id
     target.mkdir(parents=True, exist_ok=True)
     presentation_style = content.get('presentation_style') or (
-        'science_editorial_v1' if content.get('editorial_policy_version', 1) >= 2 else 'legacy')
-    cropped_source = presentation_style == 'science_editorial_focus_v2' and any(s.get('focus_region') for s in plan)
+        'science_editorial_safe_v3' if content.get('editorial_policy_version', 1) >= 2 and content.get('editor_id') != 'producer2'
+        else 'science_editorial_v1' if content.get('editorial_policy_version', 1) >= 2 else 'legacy')
+    if content.get('editorial_policy_version', 1) >= 2 and content.get('editor_id') != 'producer2':
+        presentation_style = {'science_editorial_v1': 'science_editorial_safe_v3',
+                              'science_editorial_focus_v2': 'science_editorial_focus_safe_v3'}.get(presentation_style, presentation_style)
+    content = {**content, 'presentation_style': presentation_style}
+    cropped_source = presentation_style in {'science_editorial_focus_v2','science_editorial_focus_safe_v3'} and any(s.get('focus_region') for s in plan)
     if cropped_source:
         plan = [{**s, 'complete_source_frame_preserved': not bool(s.get('focus_region')),
                  'presentation_style': presentation_style} for s in plan]
     quality['presentation_style'] = presentation_style
     fingerprint = hashlib.sha256(json.dumps({"content": content, "audio_sha": _sha256(audio_path),
         "subtitles_sha": _sha256(subtitle_path), "assets": prepared, "exact_cut_plan": plan if shot_plan is not None else None,
-        "renderer": "tech_montage_v6_adaptive_source_windows", 'presentation_style': presentation_style},
+        "renderer": "tech_montage_v7_caption_safe_area", 'presentation_style': presentation_style},
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     if (target / "media.json").exists():
         old = json.loads((target / "media.json").read_text())
@@ -847,7 +867,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         # Do not silently move a failed window into footage already used elsewhere.
         # The clean full-frame layout does not display its optional detail ROI.
         # Measure the pixels actually presented, rather than an unused grid cell.
-        region = None if presentation_style == 'science_editorial_v1' else (shot.get('focus_region') or {}).get('rect')
+        region = None if presentation_style in {'science_editorial_v1','science_editorial_safe_v3'} else (shot.get('focus_region') or {}).get('rect')
         try:
             motion[key] = measure_motion(Path(asset["path"]), shot["source_start"], shot["duration"], region=region)
         except ValueError as exc:

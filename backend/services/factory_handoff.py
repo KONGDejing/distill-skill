@@ -97,6 +97,11 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
             replies.append(dict(fallback))
 
     name = _PLATFORM_NAMES.get(platform, platform)
+    description = caption + "\n\n" + " ".join("#" + tag for tag in tags) + "\n\n" + (_text(extra.get("ai_disclosure")) or _AI_DISCLOSURE)
+    if platform in {'douyin', 'kuaishou', 'xiaohongshu'}:
+        from services.factory_short_caption import compact_douyin_caption, caption_text
+        short_caption, short_tags = compact_douyin_caption(variant)
+        description = caption_text(short_caption, short_tags)
     steps = [
         f'使用本条完整MP4和{name}专用标题、正文，按需手动选用小红书或快手；两平台均不启用自动化。',
         '日常小影4条、小影3两条，非论文6条中持久随机抽4条抖音发布，剩余2条本人手动上传；论文每周独立2条，不上抖音。查看实际回执，避免重复。',
@@ -109,7 +114,7 @@ def build_handoff(content, variant, distribution=None, publication_warning=None)
     ]
     return {
         "version": HANDOFF_VERSION, "platform": platform, "title": title, "caption": caption, "tags": tags,
-        "description": caption + "\n\n" + " ".join("#" + tag for tag in tags) + "\n\n" + (_text(extra.get("ai_disclosure")) or _AI_DISCLOSURE),
+        "description": description,
         "cover_text": _text(extra.get("cover_text")) or title,
         "alternate_titles": _texts(extra.get("alternate_titles"))[:3], "hooks": hooks[:3],
         "follow_prompt": follow, "ai_disclosure": _text(extra.get("ai_disclosure")) or _AI_DISCLOSURE,

@@ -40,6 +40,7 @@ def config_dict(config):
             "distribution_policy": POLICY, "platform_daily_limit": 4,
             "douyin_per_editor": None, "manual_platforms": ["xiaohongshu", "kuaishou"], "editorial_policy_version": 5,
             "production_kind": "daily", "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5],
+            'caption_safety_required': True,
             "kuaishou_auto_policy": None, "kuaishou_daily_limit": 0, "kuaishou_publish_times": [],
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
@@ -108,6 +109,8 @@ def run_detail(db, run):
         from services.factory_platform_policy import automation_state, effective_automation_enabled
         route = (item.brief or {}).get('distribution') or {}
         selected = route.get('policy') == POLICY and route.get('douyin_selected') is True
+        from services.factory_caption_layout import preferred_douyin_variant
+        display_variant = preferred_douyin_variant(item) or {}
         packages = []
         for package in item.packages or []:
             state = automation_state(package['platform'])
@@ -139,13 +142,13 @@ def run_detail(db, run):
             "review": item.review or {}, "media_quality": media.get("quality", {}),
             "realistic_revision": revision_view,
             "archive_download_url": f"/api/factory/items/{item.id}/archive" if media.get("archive_path") else None,
-            "video_url": storage_url(media.get("manual_master_path") or next((p["video_path"] for p in item.packages or [] if p.get("video_path")), media.get("video_path"))),
+            "video_url": storage_url(display_variant.get('video_path') or media.get("manual_master_path") or next((p["video_path"] for p in item.packages or [] if p.get("video_path")), media.get("video_path"))),
             "webm_url": None if any(p.get("video_path") for p in item.packages or []) else storage_url(media.get("webm_path")),
             "video_download_url": f"/api/factory/items/{item.id}/video" if media.get("video_path") and content.get("title") else None,
             "video_filename": safe_filename(content["title"], ".mp4") if content.get("title") else None,
             "visual_style": media.get("style") or media.get("renderer_kind", "cards"),
             "audio_url": storage_url(media.get("audio_path")),
-            "cover_url": storage_url(next((p["cover_path"] for p in item.packages or [] if p.get("cover_path")), media.get("cover_path"))),
+            "cover_url": storage_url(display_variant.get('cover_path') or next((p["cover_path"] for p in item.packages or [] if p.get("cover_path")), media.get("cover_path"))),
             "cover_download_url": f"/api/factory/items/{item.id}/cover", "duration": media.get("duration"),
             "tts_engine": media.get("tts_engine"), "packages": packages, "error": item.error,
             "voice_profile": media.get("voice_profile"), "voice_label": media.get("voice_label"),
@@ -1148,6 +1151,7 @@ def _package(run_id, item_id):
     with SessionLocal() as db:
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
         content, media, existing = item.content, item.media, item.packages or []
+        caption_safe_version = (media.get('quality') or {}).get('caption_safe_area_version', 0)
         video_filename = safe_filename(content["title"], ".mp4")
         platforms = run.settings_snapshot["platforms"]
         route = item.brief.get("distribution") or {}
@@ -1173,11 +1177,12 @@ def _package(run_id, item_id):
             design = p.get('cover_design') or {}
             brand = branding_for(p['platform'])
             return (design.get('version') == COVER_DESIGN_VERSION
+                    and quality.get('caption_safe_area_version', 0) == caption_safe_version
                     and (platform_style(p['platform']).get('opening_mode') != 'first_frame_title'
                          or (design.get('frame_title_version') == FRAME_TITLE_VERSION
                              and design.get('platform') == p['platform']
                              and design.get('text_rendered') == content['title']
-                             and (p['platform'] != 'douyin' or design.get('lines') == frame_title_layout(content['title'], p['platform'])[1])
+                             and (p['platform'] != 'douyin' or design.get('lines') == frame_title_layout(content['title'], p['platform'], caption_safe_area=bool(caption_safe_version))[1])
                              and quality.get('opening_mode') == 'first_frame_title'))
                     and (p['platform'] != 'douyin' or (quality.get('persistent_title') is (content.get('editor_id') != 'producer2')
                          and (not brand or (quality.get('branding_signature') == brand['signature']
@@ -1190,6 +1195,15 @@ def _package(run_id, item_id):
                     and p.get('path') and Path(p['path']).is_file()
                     and p.get('video_filename') == video_filename)
         def current_handoff(p):
+            if p['platform'] in {'douyin','kuaishou','xiaohongshu'}:
+                description = (p.get('manual_handoff') or {}).get('description') or ''
+                if not description or len(description)>50:
+                    return False
+            if p['platform']=='douyin':
+                from services.factory_short_caption import compact_douyin_caption
+                caption,tags=compact_douyin_caption(p)
+                if p.get('caption')!=caption or p.get('tags')!=tags:
+                    return False
             saved = (p.get('manual_handoff') or {}).get('distribution') or {}
             return all(saved.get(key) == route.get(key) for key in ('policy', 'day', 'manual_platforms'))
         reuse_variants = len(existing) == len(platforms) and all(Path(p['path']).is_file() for p in existing)
@@ -1239,6 +1253,10 @@ def _package(run_id, item_id):
             continue
         if not isinstance(variant.get("title"), str) or not variant["title"].strip():
             raise ValueError("平台版本缺少标题")
+        if platform=='douyin':
+            from services.factory_short_caption import compact_douyin_caption
+            caption,tags=compact_douyin_caption(variant)
+            variant={**variant,'caption':caption,'tags':tags}
         handoff = build_handoff(content, variant, route, warnings.get(platform))
         style = platform_style(platform)
         frame_title = style.get("opening_mode") == "first_frame_title"
@@ -1246,6 +1264,8 @@ def _package(run_id, item_id):
         brand = branding_for(platform)
         if platform == 'douyin':
             design_suffix += '-editorial2' + ('-owner' + brand['signature'][:10] if brand else '')
+        if caption_safe_version:
+            design_suffix += f'-caption-safe{caption_safe_version}'
         cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
         reuse_finish = bool(old and current_finish(old))
         if reuse_finish:
@@ -1253,17 +1273,20 @@ def _package(run_id, item_id):
         elif frame_title:
             from services.factory_cover import render_frame_cover
             handoff["cover_text"] = content["title"]
-            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform)
+            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform,
+                                             **({'caption_safe_area': True} if caption_safe_version else {}))
         else:
             from services.factory_cover import render_cover
             cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
         from services.factory_delivery_video import render_delivery_video
         delivery_video = directory / f"{platform}-complete-v{HANDOFF_VERSION}-{design_suffix}.mp4"
         finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
+        if caption_safe_version:
+            finish_options['caption_safe_area_version'] = caption_safe_version
         if platform == 'douyin':
             paper_style = content.get('editor_id') == 'producer2'
             finish_options.update(persistent_title=not paper_style, branding=brand,
-                                  attribution_y=1760 if paper_style else 700)
+                                  attribution_y=1760 if paper_style else 1420 if caption_safe_version else 700)
         if reuse_finish:
             delivery_video, delivery_quality = Path(old['video_path']), old['delivery_quality']
         else:

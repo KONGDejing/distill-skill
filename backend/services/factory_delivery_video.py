@@ -7,7 +7,7 @@ from services.factory_resources import ensure_memory_available
 
 
 def render_delivery_video(source, cover, target, *, opening_mode="brand_card", title_overlay=None,
-                          persistent_title=False, branding=None, attribution_y=700):
+                          persistent_title=False, branding=None, attribution_y=700, caption_safe_area_version=0):
     ensure_memory_available()
     source, cover, target = Path(source), Path(cover), Path(target)
     info = _probe(source)
@@ -68,5 +68,6 @@ def render_delivery_video(source, cover, target, *, opening_mode="brand_card", t
             'cover_integrated': True, 'opening_mode': opening_mode,
             'source_motion_preserved': opening_mode == 'first_frame_title',
             'persistent_title': persistent_title, 'title_seconds': title_seconds,
+            'caption_safe_area_version': caption_safe_area_version,
             'opening_seconds': opening_seconds, 'audio_preserved': True,
             'duration': float(output['format']['duration'])}
