@@ -17,7 +17,7 @@ import tempfile
 import time
 from typing import Any
 from services.factory_resources import ensure_memory_available, MemoryPressure
-from services.factory_caption_layout import SAFE_STYLES, caption_safety, safe_caption_lines
+from services.factory_caption_layout import CYBERPUNK_STYLES, SAFE_STYLES, caption_safety, safe_caption_lines
 
 from services.factory_media import (
     FPS, HEIGHT, WIDTH, _ass_escape, _ass_time, _duration, _font, _probe, _run,
@@ -476,11 +476,12 @@ def validate_publication_media(media):
 def _render_shot(asset: dict, shot: dict, target: Path):
     if asset["kind"] == "paper_page":
         return _render_paper_shot(asset, shot, target)
-    if shot.get('presentation_style') in {'science_editorial_v1', 'science_editorial_focus_v2', *SAFE_STYLES}:
+    if shot.get('presentation_style') in {'science_editorial_v1', 'science_editorial_focus_v2', 'cyberpunk_paper', *SAFE_STYLES}:
         # One complete source image is the hero. Avoid repeating it as both a
         # giant blurred background and a simultaneous detail panel. The top
         # band is reserved for the per-topic headline in the final export.
-        focus_style = shot.get('presentation_style') in {'science_editorial_focus_v2', 'science_editorial_focus_safe_v3'}
+        style = shot.get('presentation_style')
+        focus_style = style in {'science_editorial_focus_v2', 'science_editorial_focus_safe_v3', 'cyberpunk_news_focus'}
         region = shot.get('focus_region') if focus_style else None
         crop = ''
         if region:
@@ -490,10 +491,18 @@ def _render_shot(asset: dict, shot: dict, target: Path):
         if shot.get('presentation_style') in SAFE_STYLES:
             from services.factory_caption_layout import VIDEO_HEIGHT, VIDEO_TOP
             box_height, top = VIDEO_HEIGHT, VIDEO_TOP
+        finish = 'format=yuv420p[out]'
+        background = '0x080b10'
+        if style in CYBERPUNK_STYLES:
+            background = '0x0b0c1b'
+            # Keep both accent lines outside the actual footage.
+            finish = (f'drawbox=x=54:y={top-9}:w=166:h=4:color=0x40e7f2:t=fill,'
+                      f'drawbox=x=908:y={top-9}:w=118:h=4:color=0xe458ca:t=fill,'
+                      f'drawbox=x=54:y={top+box_height+4}:w=72:h=3:color=0xe458ca:t=fill,'
+                      f'drawbox=x=131:y={top+box_height+4}:w=751:h=2:color=0x2e3554:t=fill,' + finish)
         graph = ('[0:v]fps=' + str(FPS) + ',setpts=PTS-STARTPTS,' + crop +
                  f'scale=1024:{box_height}:force_original_aspect_ratio=decrease,setsar=1,'
-                 f'pad=1080:1920:(ow-iw)/2:{top}+({box_height}-ih)/2:color=0x080b10,'
-                 'format=yuv420p[out]')
+                 f'pad=1080:1920:(ow-iw)/2:{top}+({box_height}-ih)/2:color={background},' + finish)
         _run(['ffmpeg', '-y', '-v', 'error', '-threads', '2', '-filter_complex_threads', '1',
               '-ss', str(shot['source_start']), '-i', asset['path'], '-filter_complex', graph,
               '-map', '[out]', '-an', '-t', f"{shot['duration']:.6f}", '-r', str(FPS),
@@ -528,12 +537,16 @@ def _render_paper_shot(asset, shot, target):
     x, y, w, h = shot["paper_focus"]
     crop = page.crop((round(x * page.width), round(y * page.height),
                       round((x + w) * page.width), round((y + h) * page.height)))
-    canvas = Image.new("RGB", (WIDTH, HEIGHT), (13, 23, 36))
+    cyberpunk = shot.get('presentation_style') in CYBERPUNK_STYLES
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), (11, 12, 27) if cyberpunk else (13, 23, 36))
     detail = ImageOps.contain(crop, (1008, 1070))
     canvas.paste(detail, ((WIDTH - detail.width) // 2, 450 + (1070 - detail.height) // 2))
     context = ImageOps.contain(page, (190, 260))
     canvas.paste(context, (56, 175))
     draw = ImageDraw.Draw(canvas)
+    if cyberpunk:
+        draw.rectangle((54, 137, 223, 141), fill='#40e7f2')
+        draw.rectangle((908, 137, 1026, 141), fill='#e458ca')
     draw.rectangle((56 + x * context.width, 175 + y * context.height,
                     56 + (x + w) * context.width, 175 + (y + h) * context.height), outline=(80, 220, 180), width=4)
     draw.text((280, 205), "原文定位", font=_font(33, True), fill=(110, 230, 190))
@@ -696,7 +709,8 @@ def _retimed_subtitle_cues(cues: list[dict], plan: list[dict], content: dict) ->
 
 def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content: dict, target: Path):
     display_cues = _retimed_subtitle_cues(cues, plan, content)
-    safe = content.get('presentation_style') in SAFE_STYLES
+    style = content.get('presentation_style')
+    safe = style in SAFE_STYLES
     lines = ["[Script Info]", f"; SubtitleAlgorithmVersion: {SUBTITLE_ALGORITHM_VERSION}",
              f"; SubtitleTiming: {SUBTITLE_TIMING_METHOD}", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 2", "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
              "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -707,6 +721,8 @@ def _montage_subtitles(cues: list[dict], plan: list[dict], assets: dict, content
     if safe:
         lines = [line.replace('Style: Narration,Noto Sans CJK SC,48,', 'Style: Narration,Noto Sans CJK SC,52,')
                  .replace('1,2,0,2,90,90,225,1', '1,3,1,2,80,200,540,1') for line in lines]
+    if style in CYBERPUNK_STYLES:
+        lines = [line.replace('&H00D1F0A0', '&H00F2E740') for line in lines]
 
     def add(layer, start, end, style, text):
         lines.append(f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,{text}")
@@ -837,7 +853,15 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         presentation_style = {'science_editorial_v1': 'science_editorial_safe_v3',
                               'science_editorial_focus_v2': 'science_editorial_focus_safe_v3'}.get(presentation_style, presentation_style)
     content = {**content, 'presentation_style': presentation_style}
-    cropped_source = presentation_style in {'science_editorial_focus_v2','science_editorial_focus_safe_v3'} and any(s.get('focus_region') for s in plan)
+    if content.get('cyberpunk_style'):
+        if content.get('editor_id') == 'producer2':
+            presentation_style = 'cyberpunk_paper'
+        elif presentation_style in {'science_editorial_focus_v2', 'science_editorial_focus_safe_v3', 'cyberpunk_news_focus'}:
+            presentation_style = 'cyberpunk_news_focus'
+        else:
+            presentation_style = 'cyberpunk_news'
+        content = {**content, 'presentation_style': presentation_style}
+    cropped_source = presentation_style in {'science_editorial_focus_v2','science_editorial_focus_safe_v3','cyberpunk_news_focus'} and any(s.get('focus_region') for s in plan)
     if cropped_source:
         plan = [{**s, 'complete_source_frame_preserved': not bool(s.get('focus_region')),
                  'presentation_style': presentation_style} for s in plan]
@@ -867,7 +891,7 @@ def render_tech_montage(item_id: str, content: dict, audio_path: Path, subtitle_
         # Do not silently move a failed window into footage already used elsewhere.
         # The clean full-frame layout does not display its optional detail ROI.
         # Measure the pixels actually presented, rather than an unused grid cell.
-        region = None if presentation_style in {'science_editorial_v1','science_editorial_safe_v3'} else (shot.get('focus_region') or {}).get('rect')
+        region = None if presentation_style in {'science_editorial_v1','science_editorial_safe_v3','cyberpunk_news','cyberpunk_paper'} else (shot.get('focus_region') or {}).get('rect')
         try:
             motion[key] = measure_motion(Path(asset["path"]), shot["source_start"], shot["duration"], region=region)
         except ValueError as exc:

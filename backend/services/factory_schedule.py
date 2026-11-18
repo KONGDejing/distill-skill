@@ -389,7 +389,7 @@ def advance_slot(db, slot, config, now):
             slot.platforms = [route["platform"]]
         elif not slot.platforms:
             slot.status = "waiting_media"
-            slot.results = {"distribution": _result("waiting", "等待日常非论文6条中持久随机抽4条；剩余2条人工交付")}
+            slot.results = {"distribution": _result("waiting", "等待日常6条中按新闻优先选4条。同优先级随机，剩余2条人工交付")}
             db.commit()
             return
     if item is None or item.status != "completed":

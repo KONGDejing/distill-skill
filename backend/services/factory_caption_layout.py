@@ -4,7 +4,8 @@ Coordinates are our rendering policy, not a claim of a platform-certified mask.
 Expanded descriptions and comments can cover additional pixels in any player.
 """
 CAPTION_SAFE_AREA_VERSION = 1
-SAFE_STYLES = {'science_editorial_safe_v3', 'science_editorial_focus_safe_v3'}
+CYBERPUNK_STYLES = {'cyberpunk_news', 'cyberpunk_news_focus', 'cyberpunk_paper'}
+SAFE_STYLES = {'science_editorial_safe_v3', 'science_editorial_focus_safe_v3', 'cyberpunk_news', 'cyberpunk_news_focus'}
 CAPTION_LEFT = 80
 CAPTION_RIGHT = 880
 CAPTION_BOTTOM = 1380

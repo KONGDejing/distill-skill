@@ -79,7 +79,7 @@ def overview(db: Session = Depends(get_db)):
                         transport=transport,
                         status="paused" if state["enabled"] and not publishing_enabled else state["mode"], login_status=state["mode"],
                         account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
-                        description=(("抖音自动发布：每天3条、小影和小影3非论文6条中随机选择，必须声明AI生成。" if state["enabled"]
+                        description=(("抖音每天从日常6条中优先选4条新闻自动发布，同级随机，必须声明AI生成。" if state["enabled"]
                                       else "全部6条成片和文案均保留，由本人按需手动上传。") if platform["enabled"]
                                      else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases
@@ -109,7 +109,7 @@ def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
         raise HTTPException(409, "小红书由本人手动发布，不能启用自动上传或自动发布")
     merged = {**config_dict(config), **updates}
     if len(merged['publish_times']) != 4:
-        raise HTTPException(422, '抖音每天四个时段，从小影和小影3的非论文6条中随机选4条；论文每周单独人工交付')
+        raise HTTPException(422, '抖音每天四个时段，从日常6条中新闻优先选4条。每周研究突破单独人工交付')
     if merged["manual_delivery_enabled"]:
         if not config.manual_delivery_enabled:
             config.publish_start_at = datetime.utcnow()

@@ -5,7 +5,7 @@ No connector, model, scheduler, or production database is invoked by this module
 Callers commit the assignment in the same transaction as their release records.
 """
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import update
@@ -16,6 +16,7 @@ CURRENT_DISTRIBUTION_POLICY = "douyin-four-random-v1"
 DISTRIBUTION_PLATFORMS = ("douyin", "xiaohongshu", "kuaishou")
 DAILY_PLATFORM_LIMIT = 4
 RESERVATION_KEY = "quota_reservation"
+NEWS_PRIORITY_DAYS = 3
 
 
 def _day(value):
@@ -33,6 +34,31 @@ def local_day(now=None, timezone_name="Asia/Shanghai"):
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     return now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+
+
+def recent_news_sources(brief, sources, day, timezone_name='Asia/Shanghai'):
+    """Only dated reporting sources cited for facts can give a story priority."""
+    if brief.get('freshness') != 'news':
+        return []
+    day = date.fromisoformat(day)
+    cutoff = day - timedelta(days=NEWS_PRIORITY_DAYS - 1)
+    cited = set(brief.get('source_ids') or [])
+    verified = []
+    for source in sources:
+        if source.get('id') not in cited or source.get('kind') != 'news':
+            continue
+        try:
+            published = source['published_at']
+            if len(published) == 10:
+                source_day = date.fromisoformat(published)
+            else:
+                timestamp = datetime.fromisoformat(published.replace('Z', '+00:00'))
+                source_day = date.fromisoformat(local_day(timestamp, timezone_name))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if cutoff <= source_day <= day:
+            verified.append(source['id'])
+    return verified
 
 
 def _no_submit_proven(job):
@@ -119,7 +145,7 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
 
 
 def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
-    """Persist a uniform sample without replacement. Reads never redraw picks.
+    """Persist the selection, drawing within each priority group without replacement.
 
     Explicit owner choices and any account reservation pin membership. Paper
     batches always remain manual. Call under the caller's write transaction.
@@ -142,6 +168,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
             or any(value not in ('douyin', 'manual') for value in proposal.values())):
         raise ValueError('仅可提议入选抖音或保留人工素材')
     weekly = run.settings_snapshot.get('production_kind') == 'weekly_papers'
+    news_first = run.settings_snapshot.get('news_first') is True
     output = {}
     for key, planned in requested.items():
         route = (by_id[key].brief or {}).get('distribution')
@@ -181,11 +208,19 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 raise ValueError('固定选择与已有任务超过每日4条，保留历史记录等待核对')
             candidates = [i.id for i in group if i.id not in output and i.id not in pinned and proposal.get(i.id) != 'manual']
             draw_count = min(len(candidates), capacity-len(pinned))
-            drawn = SystemRandom().sample(candidates, draw_count) if draw_count else []
+            recent = [key for key in candidates if news_first and recent_news_sources(
+                by_id[key].brief, run.sources or [], planned, run.settings_snapshot.get('timezone', 'Asia/Shanghai'))]
+            random = SystemRandom()
+            news_count = min(len(recent), draw_count)
+            news_draw = random.sample(recent, news_count) if news_count else []
+            remaining = [key for key in candidates if key not in recent]
+            remaining_count = draw_count - news_count
+            drawn = news_draw + (random.sample(remaining, remaining_count) if remaining_count else [])
             nominations = pinned | set(drawn)
             if drawn or planned not in selections:
-                selections[planned] = {'method': 'system_random_sample_without_replacement',
+                selections[planned] = {'method': 'recent_news_then_random' if news_first else 'system_random_sample_without_replacement',
                     'candidate_ids': candidates, 'drawn_ids': drawn,
+                    'recent_news_candidate_ids': recent,
                     'selected_ids': sorted(nominations), 'owner_pinned_ids': sorted({k for k,v in proposal.items() if v == 'douyin'} | {i.id for i in group if output.get(i.id,{}).get('owner_pinned')}),
                     'recorded_at': datetime.now(timezone.utc).isoformat()}
         for item in group:
@@ -200,6 +235,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 'manual_platforms': list(MANUAL_PLATFORMS),
                 'reason': ('每周论文独立人工交付，不上抖音。' if weekly else
                     '用户明确指定今天上传抖音；保留官方核验、AI声明、署名与禁止下载。' if proposal.get(item.id) == 'douyin' else
+                    '日常6条中优先选取近期有原文的新闻，同优先级随机补齐4条；排期保存。' if chosen and news_first else
                     '日常非论文6条中持久随机抽4条上传抖音，刷新不重抽；保留完整下载包。' if chosen else
                     '未入选抖音，完整成片与文案保留，由本人手动上传快手或小红书。')}
     for key, route in output.items():

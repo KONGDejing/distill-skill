@@ -66,7 +66,7 @@ def test_reviewed_overrides_and_partial_replies_are_preserved_and_completed():
     assert "2026-11-12" in text and "本包提供抖音专用文案" in text
     assert "历史提交结果未明" in text and "确认之前不要再次上传" in text
     assert "本人按需手动上传" in text and "不代表已提交" in text
-    assert "随机抽4条抖音发布" in text
+    assert "优先选近期新闻进抖音，同优先级随机补齐4条" in text
 
 
 def test_absent_approved_hook_and_follow_prompt_use_generic_nonfactual_prompts():

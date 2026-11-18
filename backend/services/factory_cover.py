@@ -33,7 +33,7 @@ def frame_title_layout(title, platform, *, caption_safe_area=False):
     return size, lines
 
 
-def render_frame_cover(source, title, target, platform, *, caption_safe_area=False):
+def render_frame_cover(source, title, target, platform, *, caption_safe_area=False, cyberpunk=False):
     """Letter the actual first frame; export the same transparent title for motion.
 
     The upper-middle headline avoids bottom captions and right-side controls.
@@ -64,9 +64,11 @@ def render_frame_cover(source, title, target, platform, *, caption_safe_area=Fal
     if platform == 'douyin' and caption_safe_area:
         top, bottom = 220, 440
     if platform == "xiaohongshu":
-        draw.rounded_rectangle((56, top, 944, bottom), radius=24, fill=(255, 252, 249, 244))
-        draw.rounded_rectangle((78, top + 30, 86, bottom - 30), radius=4, fill="#d94d76")
-        x, fill, stroke = 114, "#202736", 0
+        backdrop = (19, 19, 41, 242) if cyberpunk else (255, 252, 249, 244)
+        draw.rounded_rectangle((56, top, 944, bottom), radius=24, fill=backdrop)
+        draw.rounded_rectangle((78, top + 30, 86, bottom - 30), radius=4,
+                               fill='#e458ca' if cyberpunk else '#d94d76')
+        x, fill, stroke = 114, '#e9fbff' if cyberpunk else '#202736', 0
     else:
         # Plain, outlined headline: the original footage remains the background.
         x, fill, stroke = 72, "#ffffff", 6 if platform == 'douyin' else 4
@@ -84,6 +86,8 @@ def render_frame_cover(source, title, target, platform, *, caption_safe_area=Fal
     y = top + (bottom - top - len(lines) * line_height) // 2
     for n, line in enumerate(lines):
         color = "#ffd45a" if platform in {'douyin', 'kuaishou'} and n == len(lines) - 1 else fill
+        if cyberpunk and n == len(lines) - 1:
+            color = '#66edff'
         if platform == 'douyin':
             # Center visible glyphs, including outlines. Font advance alone
             # leaves a line ending in punctuation visibly off-center.
@@ -106,6 +110,7 @@ def render_frame_cover(source, title, target, platform, *, caption_safe_area=Fal
             "text_rendered": title, "font_size": size, "lines": lines,
             "title_position": "upper_middle",
             "title_alignment": "center" if platform == 'douyin' else "left",
+            "headline_palette": "cyberpunk" if cyberpunk else "standard",
             'caption_safe_area_version': 1 if caption_safe_area else 0,
             "title_bounds_normalized": [56 / WIDTH, top / HEIGHT, 944 / WIDTH, bottom / HEIGHT]}
 

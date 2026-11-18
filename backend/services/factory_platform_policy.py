@@ -49,7 +49,7 @@ def automation_state(platform):
         "platform": platform,
         "mode": "automated" if enabled else "manual",
         "enabled": enabled,
-        "reason": ('抖音每天从小影和小影3的非论文6条中持久随机抽4条自动发布；必须声明AI生成、署名并禁止下载，官方核验时暂停提示。'
+        "reason": ('抖音每天从6条日常原创中优先选近期新闻发布4条，同优先级随机并保存结果；必须声明AI生成、署名并禁止下载，官方核验时暂停提示。'
                    if enabled else '账号自动化已停用；剩余2条由本人手动上传快手或小红书，全部成片与文案保留。'),
     }
 

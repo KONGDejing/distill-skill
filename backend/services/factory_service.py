@@ -41,6 +41,8 @@ def config_dict(config):
             "douyin_per_editor": None, "manual_platforms": ["xiaohongshu", "kuaishou"], "editorial_policy_version": 5,
             "production_kind": "daily", "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5],
             'caption_safety_required': True,
+            'news_first': True,
+            'cyberpunk_style': True,
             "kuaishou_auto_policy": None, "kuaishou_daily_limit": 0, "kuaishou_publish_times": [],
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
@@ -429,6 +431,11 @@ def _make_plan(run_id):
     if major_events:
         emit(run_id, 'researcher3', 'major_event_watch', '已发现重大事件原始公告；事实核查与画面制作分开跟进',
              'warning', {'events': major_events, 'instruction': '必须逐项交代选用、待核查或待补画面原因，不能因没有视频而静默漏报'})
+    from services.factory_distribution import local_day, recent_news_sources
+    news_first = run.settings_snapshot.get('news_first') and run.settings_snapshot.get('production_kind') != 'weekly_papers'
+    zone = run.settings_snapshot.get('timezone', 'Asia/Shanghai')
+    day = run.settings_snapshot.get('production_day') or local_day(run.created_at, zone)
+    recent_ids = set(recent_news_sources({'freshness': 'news', 'source_ids': [s['id'] for s in sources]}, sources, day, zone)) if news_first else set()
     if not plan.get("candidates"):
         if visual_style == "tech_montage":
             from services.factory_visuals import collect_visuals
@@ -452,16 +459,16 @@ def _make_plan(run_id):
                 elif quotas and not quotas.get(owner, 0):
                     source["visual_preflight"]["reason"] = "editor_has_no_quota"
                 else:
-                    buckets[owner].append((0 if hint else 1, source["url"].rstrip("/") not in catalog_urls, source))
+                    buckets[owner].append((source['id'] not in recent_ids, not hint, source["url"].rstrip("/") not in catalog_urls, source))
             for owner in owners:
-                buckets[owner].sort(key=lambda row: row[:2])
+                buckets[owner].sort(key=lambda row: row[:3])
             visual_sources = []
             # A late newsroom handoff gets its turn before any role exhausts the
             # bounded preflight. No broad crawl or enlarged video budget.
             while any(buckets.values()):
                 for owner in owners:
                     if buckets[owner]:
-                        visual_sources.append(buckets[owner].pop(0)[2])
+                        visual_sources.append(buckets[owner].pop(0)[3])
             max_preflight = min(18, max(6, target * 3))
             visual_sources = visual_sources[:max_preflight]
             deadline = time.monotonic() + 360
@@ -576,7 +583,8 @@ def _make_plan(run_id):
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
         assignment = {"target": target + 2, "production_target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "sources": usable,
             "editor_quotas": quotas,
-            "editor_specialties": "小影：前沿科技成果、AI落地与实验场景；小影2：真实论文PPT讲解；小影3：海外人物/公司新闻。候选需满足每岗配额，不能全为论文。",
+            "editor_specialties": "小影：新产品、前沿科技成果和真实场景；小影2：每周研究突破快讯，用论文原文和结果给出证据；小影3：海外人物和公司新闻。",
+            "recent_news_source_ids": sorted(recent_ids),
             "recent_titles": recent, "strategy": STRATEGY,
             "topic_coverage": source_coverage,
             "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")},
@@ -640,7 +648,13 @@ def _make_plan(run_id):
             quotas = {owner: count - seed_counts[owner] for owner,count in quotas.items()}
     target = min(target, sum(quotas.values()) if quotas else len(plan['candidates']))
     emit(run_id, "director", "planning", f"负责人正在选择 {target} 个选题并安排制作")
+    news_candidates = {}
+    if news_first:
+        news_candidates = {index: refs for index, brief in enumerate(plan['candidates'])
+                           if (refs := recent_news_sources(brief, sources, day, zone))}
     decision = call_agent(run_id, "director", {"target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "candidates": plan["candidates"], "recent_titles": recent,
+        "recent_news_sources_by_candidate": news_candidates,
+        "news_priority_instruction": "列出的候选有近期新闻原文。日常优先选择核实过的新事件，再在同岗用常青选题补足。素材不足、重复报道或缺少独立角度时，说明跳过原因。不要用旧论文或常青讲解挤掉素材完整的新闻。",
         "topic_coverage": plan.get("topic_coverage", {}),
         "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")}, "people_watchlist": people_context(),
         "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、人物/公司事件归小影3、前沿科技成果与AI场景归小影。"})
@@ -984,9 +998,12 @@ def _render(run_id, item_id):
         content, media = item.content, item.media or {}
         content = {**content, "script_review": dict(item.review or {})}
         brief = item.brief
-        run_sources = db.get(FactoryRun, run_id).sources
-        visual_style = db.get(FactoryRun, run_id).settings_snapshot.get("visual_style", "cards")
-        target_duration = db.get(FactoryRun, run_id).settings_snapshot.get("target_duration_seconds")
+        run = db.get(FactoryRun, run_id)
+        run_sources = run.sources
+        visual_style = run.settings_snapshot.get("visual_style", "cards")
+        target_duration = run.settings_snapshot.get("target_duration_seconds")
+        if visual_style == 'tech_montage' and run.settings_snapshot.get('cyberpunk_style'):
+            content['cyberpunk_style'] = True
         if media.get("video_path") and Path(media["video_path"]).is_file():
             if owner == "producer2" and media.get("voice_profile") != "calm_male":
                 raise ValueError("这份未发布论文仍是旧声线，需要按沉稳男声重制后交付")
@@ -1154,6 +1171,7 @@ def _render(run_id, item_id):
 
 @item_usage("platform_adaptation")
 def _package(run_id, item_id):
+    from services.factory_caption_layout import CYBERPUNK_STYLES
     from services.factory_filenames import safe_filename
     from services.factory_platform_style import platform_style
     from services.factory_cover import COVER_DESIGN_VERSION, FRAME_TITLE_VERSION, frame_title_layout
@@ -1163,6 +1181,7 @@ def _package(run_id, item_id):
         item, run = db.get(FactoryItem, item_id), db.get(FactoryRun, run_id)
         content, media, existing = item.content, item.media, item.packages or []
         caption_safe_version = (media.get('quality') or {}).get('caption_safe_area_version', 0)
+        cyberpunk = (media.get('quality') or {}).get('presentation_style') in CYBERPUNK_STYLES
         video_filename = safe_filename(content["title"], ".mp4")
         platforms = run.settings_snapshot["platforms"]
         route = item.brief.get("distribution") or {}
@@ -1191,6 +1210,7 @@ def _package(run_id, item_id):
                     and quality.get('caption_safe_area_version', 0) == caption_safe_version
                     and (platform_style(p['platform']).get('opening_mode') != 'first_frame_title'
                          or (design.get('frame_title_version') == FRAME_TITLE_VERSION
+                             and design.get('headline_palette', 'standard') == ('cyberpunk' if cyberpunk else 'standard')
                              and design.get('platform') == p['platform']
                              and design.get('text_rendered') == content['title']
                              and (p['platform'] != 'douyin' or design.get('lines') == frame_title_layout(content['title'], p['platform'], caption_safe_area=bool(caption_safe_version))[1])
@@ -1277,6 +1297,8 @@ def _package(run_id, item_id):
             design_suffix += '-editorial2' + ('-owner' + brand['signature'][:10] if brand else '')
         if caption_safe_version:
             design_suffix += f'-caption-safe{caption_safe_version}'
+        if cyberpunk:
+            design_suffix += '-cyberpunk'
         cover_path = directory / f"{platform}-cover-v{HANDOFF_VERSION}-{design_suffix}.png"
         reuse_finish = bool(old and current_finish(old))
         if reuse_finish:
@@ -1284,8 +1306,11 @@ def _package(run_id, item_id):
         elif frame_title:
             from services.factory_cover import render_frame_cover
             handoff["cover_text"] = content["title"]
+            cover_options = {'caption_safe_area': True} if caption_safe_version else {}
+            if cyberpunk:
+                cover_options['cyberpunk'] = True
             cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform,
-                                             **({'caption_safe_area': True} if caption_safe_version else {}))
+                                             **cover_options)
         else:
             from services.factory_cover import render_cover
             cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)

@@ -72,12 +72,12 @@ test('schedule is visible for either Douyin publishing or manual delivery', () =
   const props = { target: 6, releases: [{ id: 'fixture', status: 'manual_ready', platforms: ['douyin'],
     due_at: '2026-11-11T00:00:00+08:00', nominal_at: '2026-11-11T00:00:00+08:00' }] }
   assert.equal(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: false } }), '')
-  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /自动发布：抖音非论文随机4条/)
+  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /自动发布：抖音新闻优先选4条/)
   const html = render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: true, publish_enabled: false } })
   assert.match(html, /发布与交付计划/)
   assert.match(html, /建议发布时间/)
   assert.match(html, /全部成片/)
-  assert.match(html, /抖音随机4条/)
+  assert.match(html, /抖音新闻优先选4条/)
 })
 
 test('connection effects cannot poll even with legacy enabled account data', () => {

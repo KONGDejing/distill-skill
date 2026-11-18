@@ -69,6 +69,34 @@ def test_uniform_sample_is_saved_and_polling_does_not_redraw(db,monkeypatch):
     assert run.settings_snapshot['douyin_random_selections'][DAY]['method']=='system_random_sample_without_replacement'
 
 
+def test_news_first_prefers_recent_reporting_and_keeps_saved_selection(db, monkeypatch):
+    import secrets
+    sample = Mock(side_effect=lambda population, k: population[-k:])
+    monkeypatch.setattr(secrets.SystemRandom, 'sample', lambda self, population, k: sample(population, k))
+    run, items = batch(db)
+    run.settings_snapshot = {**run.settings_snapshot, 'news_first': True}
+    run.sources = [
+        {'id': 'launch', 'kind': 'news', 'published_at': '2026-11-13T17:00:00Z'},
+        {'id': 'old', 'kind': 'news', 'published_at': '2026-11-13'},
+        {'id': 'new-paper', 'kind': 'paper', 'published_at': DAY},
+        {'id': 'future', 'kind': 'news', 'published_at': '2026-11-17'},
+    ]
+    for item, refs in zip(items, [['launch'], ['old'], ['new-paper'], ['future'], [], []]):
+        item.brief = {**item.brief, 'freshness': 'news', 'source_ids': refs, 'visual_source_ids': ['launch']}
+    routes = assign_distribution(db, run.id, DAY)
+    assert routes[items[0].id]['douyin_selected']
+    assert not routes[items[1].id]['douyin_selected']
+    assert not routes[items[2].id]['douyin_selected']
+    assert sum(r['douyin_selected'] for r in routes.values()) == 4
+    selection = run.settings_snapshot['douyin_random_selections'][DAY]
+    assert selection['method'] == 'recent_news_then_random'
+    assert selection['recent_news_candidate_ids'] == [items[0].id]
+    assert sample.call_count == 2
+    db.commit()
+    assert assign_distribution(db, run.id, DAY) == routes
+    assert sample.call_count == 2
+
+
 def test_owner_pins_two_and_remaining_two_are_random_without_replacement(db):
     run,items=batch(db)
     pin={items[0].id:'douyin',items[4].id:'douyin'}

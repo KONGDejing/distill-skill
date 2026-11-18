@@ -27,7 +27,7 @@ def save_original_archive(content, packages, media, directory, route):
             for filename, text in handoff_files(handoff).items():
                 archive.writestr(name + '/' + filename, text)
         selected = route.get('douyin_selected') is True
-        archive.writestr('抖音排期说明.txt', ('交付时本条入选非论文每日4条抖音计划；随机结果持久保存，实际状态以官方回执为准，勿重复上传。' if selected
+        archive.writestr('抖音排期说明.txt', ('交付时本条入选每日4条抖音计划；排期已保存，实际状态以官方回执为准，勿重复上传。' if selected
                                               else '交付时本条未预选抖音；最终选择以工厂为准，完整保存供本人手动选用。') + '\n')
         archive.writestr('快手排期说明.txt', '快手改为本人手动上传。未入选抖音的两条可按需使用本平台文案和完整成片，先核对发布记录避免重复。\n')
         archive.writestr('交付记录.json', json.dumps({'policy': route['policy'], 'editor_id': route['editor_id'],
