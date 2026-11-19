@@ -186,6 +186,35 @@ def test_material_only_rejection_is_saved_without_model_retry(sessions, monkeypa
         assert db.query(FactoryItem).count() == 0
 
 
+def test_saved_material_shortfall_plans_ready_editors_without_second_selection(sessions, monkeypatch):
+    day = "2026-11-19"
+    records = [source("demo"), source("launch"), source("paper")]
+    records[1].update(kind="news", published_at=day)
+    briefs = [
+        {"title": "Demo", "editor_track": "technology_scenes", "source_ids": ["demo"]},
+        {"title": "Launch", "editor_track": "technology_scenes", "source_ids": ["launch"], "freshness": "news"},
+        {"title": "Paper", "editor_track": "paper_explainer", "source_ids": ["paper"]},
+    ]
+    run_id = seed(sessions, records, target=6)
+    with sessions() as db:
+        run = db.get(FactoryRun, run_id)
+        run.settings_snapshot = {**run.settings_snapshot, "production_day": day, "news_first": True,
+                                 "editor_quotas": {"producer": 4, "producer2": 0, "producer3": 2}}
+        run.plan = {"candidates": briefs, "production_quotas": {"producer": 2, "producer2": 0, "producer3": 0},
+                    "material_shortfall": {"producer": 2, "producer2": 0, "producer3": 2}}
+        db.commit()
+    director = Mock()
+    monkeypatch.setattr(service, "call_agent", director)
+    service._make_plan(run_id)
+    director.assert_not_called()
+    with sessions() as db:
+        run = db.get(FactoryRun, run_id)
+        assert run.target_count == 6
+        items = db.query(FactoryItem).filter_by(run_id=run_id).order_by(FactoryItem.position).all()
+        assert [item.brief["title"] for item in items] == ["Launch", "Demo"]
+        assert all(item.brief["editor_id"] == "producer" for item in items)
+
+
 def test_id_format_retry_has_exact_feedback_and_stops_after_two_attempts(sessions, monkeypatch):
     run_id = seed(sessions, [source("page", visual_assets=[asset(1)])], style="cards")
     candidate = {"title": "Mislabelled reference", "source_ids": ["asset-1"]}

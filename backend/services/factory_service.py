@@ -652,12 +652,22 @@ def _make_plan(run_id):
     if news_first:
         news_candidates = {index: refs for index, brief in enumerate(plan['candidates'])
                            if (refs := recent_news_sources(brief, sources, day, zone))}
-    decision = call_agent(run_id, "director", {"target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "candidates": plan["candidates"], "recent_titles": recent,
-        "recent_news_sources_by_candidate": news_candidates,
-        "news_priority_instruction": "列出的候选有近期新闻原文。日常优先选择核实过的新事件，再在同岗用常青选题补足。素材不足、重复报道或缺少独立角度时，说明跳过原因。不要用旧论文或常青讲解挤掉素材完整的新闻。",
-        "topic_coverage": plan.get("topic_coverage", {}),
-        "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")}, "people_watchlist": people_context(),
-        "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、人物/公司事件归小影3、前沿科技成果与AI场景归小影。"})
+    candidates = plan['candidates']
+    available = [index for index, brief in enumerate(candidates)
+                 if quotas and quotas.get(candidate_editor(brief, sources), 0) > 0]
+    if plan.get('material_shortfall') and available and len(available) == target:
+        # Every eligible candidate is required to fill this reduced plan.
+        # The script and media reviews still run for each selected candidate.
+        decision = {"selected": [{"candidate_index": i} for i in sorted(
+            available, key=lambda i: (i not in news_candidates, i))],
+            "reason": "已安排当前素材可支持且符合岗位配额的选题，其他岗位保留缺口。"}
+    else:
+        decision = call_agent(run_id, "director", {"target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "candidates": candidates, "recent_titles": recent,
+            "recent_news_sources_by_candidate": news_candidates,
+            "news_priority_instruction": "列出的候选有近期新闻原文。日常优先选择核实过的新事件，再在同岗用常青选题补足。素材不足、重复报道或缺少独立角度时，说明跳过原因。不要用旧论文或常青讲解挤掉素材完整的新闻。",
+            "topic_coverage": plan.get("topic_coverage", {}),
+            "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")}, "people_watchlist": people_context(),
+            "editor_quotas": quotas, "quota_instruction": "选中条目必须满足各剪辑师配额，论文归小影2、人物/公司事件归小影3、前沿科技成果与AI场景归小影。配额为0的岗位不得选入，必须返回精确target个不同的候选索引。"})
     selected = decision.get("selected", [])
     indices = [entry.get("candidate_index") for entry in selected if isinstance(entry, dict)]
     if len(indices) != target or len(set(indices)) != target or any(type(i) is not int or i < 0 or i >= len(plan["candidates"]) for i in indices):
