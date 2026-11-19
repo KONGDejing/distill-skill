@@ -167,6 +167,50 @@ def test_daily_six_and_four_slots_are_independent_and_kuaishou_has_no_schedule(d
     assert len(start.call_args.kwargs['release_slot_ids'])==4
 
 
+def test_earlier_batch_keeps_one_release_without_using_new_production_quota(db, monkeypatch):
+    from services import factory_schedule as scheduler, factory_service
+    from zoneinfo import ZoneInfo
+    cfg = FactoryConfig(id=1, daily_target=6, schedule_enabled=True, schedule_time='00:30',
+                        publish_times=['05:00', '05:30', '06:00', '06:30'], publish_jitter_seconds=0)
+    db.add(cfg)
+    zone = ZoneInfo('Asia/Shanghai')
+    now = datetime(2026, 11, 16, 0, 30, tzinfo=zone)
+    previous = FactoryRun(id='earlier', active_slot=None, status='completed',
+                          created_at=datetime(2026, 11, 15, 0),
+                          settings_snapshot={'distribution_policy': POLICY})
+    db.add(previous)
+    db.flush()
+    previous.active_slot = None
+    carried = FactoryItem(run_id=previous.id, position=0, status='completed', brief={
+        'editor_id': 'producer', 'distribution': {'policy': POLICY, 'day': DAY, 'carried_from': '2026-11-15',
+        'production_kind': 'daily', 'platform': 'douyin', 'douyin_selected': True}})
+    db.add(carried)
+    db.commit()
+    scheduler.plan_slots(db, cfg, now)
+    release = db.query(FactoryRelease).order_by(FactoryRelease.due_at).first()
+    release.run_id, release.item_id, release.position = previous.id, carried.id, 0
+    db.commit()
+
+    def create(session, **kwargs):
+        run, _ = batch(session, key='new')
+        run.target_count = kwargs['target_count']
+        run.schedule_key = kwargs['schedule_key']
+        run.settings_snapshot = {**run.settings_snapshot, 'release_slot_ids': kwargs['release_slot_ids']}
+        session.commit()
+        return run
+
+    monkeypatch.setattr(factory_service, 'start_run', create)
+    scheduler.plan_production(db, cfg, now)
+    run = db.get(FactoryRun, 'new')
+    assert run.target_count == 6
+    assert len(run.settings_snapshot['release_slot_ids']) == 3
+    assert release.id not in run.settings_snapshot['release_slot_ids']
+    routes = assign_distribution(db, run.id, DAY)
+    assert len(routes) == 6 and sum(route['douyin_selected'] for route in routes.values()) == 3
+    bind_editor_releases(db, run, routes)
+    assert (release.run_id, release.item_id) == (previous.id, carried.id)
+
+
 def test_ppt_stays_only_with_paper_editor():
     assets=[{'kind':'paper_page'}]*3
     validate_track_assets('producer2',assets)

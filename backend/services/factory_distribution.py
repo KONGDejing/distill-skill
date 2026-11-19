@@ -194,7 +194,8 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 and i.brief.get('distribution', {}).get('policy') == CURRENT_DISTRIBUTION_POLICY
                 and i.brief.get('distribution', {}).get('day') == planned
                 and i.brief.get('distribution', {}).get('production_kind') != 'weekly_papers'] + group
-            if len(daily) > 6 or sum(editor_id(i) == 'producer' for i in daily) > 4 or sum(editor_id(i) == 'producer3' for i in daily) > 2:
+            originals = [i for i in daily if not i.brief.get('distribution', {}).get('carried_from')]
+            if len(originals) > 6 or sum(editor_id(i) == 'producer' for i in originals) > 4 or sum(editor_id(i) == 'producer3' for i in originals) > 2:
                 raise ValueError('每天小影最多4条、小影3最多2条，日常总量最多6条')
             group_ids = {i.id for i in group}
             reserved = reserved_item_ids(db, 'douyin', planned, include_prepares=True,

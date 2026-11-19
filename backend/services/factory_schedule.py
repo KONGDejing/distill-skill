@@ -170,7 +170,8 @@ def bind_editor_releases(db, run, routes=None):
     chosen = {item.id: item for item in items
               if (routes or {}).get(item.id, item.brief.get('distribution', {})).get('douyin_selected') is True}
     slots = [db.get(FactoryRelease, key) for key in run.settings_snapshot.get('release_slot_ids', [])]
-    slots = [slot for slot in slots if slot is not None and slot.status != 'cancelled']
+    slots = [slot for slot in slots if slot is not None and slot.status != 'cancelled'
+             and slot.run_id in {None, run.id}]
     mapped = {slot.item_id for slot in slots if slot.item_id in chosen}
     remaining = [item for item in sorted(chosen.values(), key=lambda item: (
         not item.brief.get('distribution', {}).get('owner_pinned', False), item.position)) if item.id not in mapped]
@@ -219,7 +220,15 @@ def plan_production(db, config, now):
     run = db.query(FactoryRun).filter_by(schedule_key=key).first()
     today_slots = db.query(FactoryRelease).filter(nominal_time() >= start,
         nominal_time() < start + timedelta(days=1), FactoryRelease.status != 'cancelled').order_by(nominal_time()).all()
-    slots = [slot for slot in today_slots if slot.platforms != ['kuaishou']]
+    slots = []
+    for slot in today_slots:
+        if slot.platforms == ['kuaishou']:
+            continue
+        item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
+        route = (item.brief or {}).get('distribution', {}) if item else {}
+        if route.get('carried_from') and route.get('day') == now.date().isoformat():
+            continue  # The earlier batch owns this day's explicitly reserved slot.
+        slots.append(slot)
     if run and (run.settings_snapshot or {}).get('release_slot_ids'):
         by_id = {slot.id: slot for slot in slots}
         slots = [by_id[key] for key in run.settings_snapshot['release_slot_ids'] if key in by_id]
