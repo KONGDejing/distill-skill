@@ -31,6 +31,7 @@ class SettingsUpdate(BaseModel):
     daily_target: int | None = Field(default=None, ge=1, le=DAILY_TARGET)
     target_duration_seconds: int | None = Field(default=None, ge=60, le=180)
     schedule_enabled: bool | None = None
+    production_on_release_clock: bool | None = None
     schedule_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     auto_publish_xiaohongshu: bool | None = None
     platforms: list[Literal["douyin", "xiaohongshu", "kuaishou"]] | None = Field(default=None, min_length=1, max_length=3)
@@ -79,7 +80,9 @@ def overview(db: Session = Depends(get_db)):
                         transport=transport,
                         status="paused" if state["enabled"] and not publishing_enabled else state["mode"], login_status=state["mode"],
                         account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
-                        description=(("抖音每天从日常6条中优先选4条新闻自动发布，同级随机，必须声明AI生成。" if state["enabled"]
+                        description=((("每个时段到点制作一条，成片过检后自动提交抖音，必须声明AI生成。"
+                                       if config["production_on_release_clock"] else
+                                       "抖音每天从日常6条中优先选4条新闻自动发布，同级随机，必须声明AI生成。") if state["enabled"]
                                       else "全部6条成片和文案均保留，由本人按需手动上传。") if platform["enabled"]
                                      else "当前不参与每日短视频分发。") + state["reason"])
     from services.factory_schedule import upcoming_releases

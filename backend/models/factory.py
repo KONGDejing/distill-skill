@@ -17,6 +17,7 @@ class FactoryConfig(Base):
     target_duration_seconds = Column(Integer, nullable=False, default=150)
     sector = Column(String(100), nullable=False, default="AI 科技")
     schedule_enabled = Column(Boolean, nullable=False, default=True)
+    production_on_release_clock = Column(Boolean, nullable=False, default=False)
     schedule_time = Column(String(5), nullable=False, default="00:30")
     timezone = Column(String(50), nullable=False, default="Asia/Shanghai")
     platforms = Column(JSON, nullable=False, default=lambda: ["douyin", "xiaohongshu", "kuaishou"])

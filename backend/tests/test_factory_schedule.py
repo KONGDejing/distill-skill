@@ -103,6 +103,67 @@ def test_new_production_never_exceeds_six_even_with_old_unbound_slots(env, monke
     create.assert_not_called()
 
 
+def test_clock_mode_starts_one_task_at_saved_time_and_queues_when_busy(env, monkeypatch):
+    db, config = env.db, env.config
+    config.production_on_release_clock = True
+    config.publish_times = ["05:00", "05:30", "06:00", "06:30"]
+    now = datetime(2026, 11, 10, 4, 51, 2, tzinfo=TZ)
+    nominal = schedule.utc(now.replace(hour=5, minute=0, second=0))
+    first = FactoryRelease(nominal_at=nominal, due_at=schedule.utc(now), platforms=["douyin"])
+    second = FactoryRelease(nominal_at=nominal + timedelta(minutes=30),
+                            due_at=schedule.utc(now) + timedelta(minutes=30), platforms=["douyin"])
+    db.add_all([first, second]); db.commit()
+
+    def create(session, **options):
+        run = FactoryRun(trigger=options["trigger"], schedule_key=options["schedule_key"],
+                         settings_snapshot={"release_slot_ids": options["release_slot_ids"]})
+        session.add(run); session.commit()
+        return run
+
+    start = Mock(side_effect=create)
+    monkeypatch.setattr(factory_service, "start_run", start)
+    assert schedule.plan_production(db, config, now - timedelta(seconds=1))["status"] == "waiting"
+    start.assert_not_called()
+    schedule.plan_production(db, config, now)
+    assert first.run_id and start.call_args.kwargs["release_slot_ids"] == [first.id]
+    assert start.call_args.kwargs["target_count"] == 1
+    assert schedule.plan_production(db, config, now)["status"] == "waiting"
+    start.assert_called_once()
+    start.side_effect = ValueError("已有生产任务在运行")
+    second_now = now + timedelta(minutes=30)
+    assert schedule.plan_production(db, config, second_now)["status"] == "deferred"
+    assert second.status == "queued" and second.run_id is None
+    db.get(FactoryRun, first.run_id).active_slot = None
+    db.commit()
+    start.side_effect = create
+    schedule.plan_production(db, config, second_now + timedelta(minutes=24))
+    assert second.run_id and second.run_id != first.run_id
+    assert start.call_args.kwargs["editor_quota_override"]["producer3"] == 1
+
+
+def test_clock_production_uploads_as_soon_as_media_is_ready_even_after_fifteen_minutes(env):
+    slot, db = env.slot, env.db
+    slot.run_id = "run"
+    run = db.get(FactoryRun, "run")
+    run.trigger = schedule.CLOCK_TRIGGER
+    run.settings_snapshot = {"timezone": "Asia/Shanghai", "distribution_policy": "douyin-four-random-v1"}
+    slot.platforms = ["douyin"]
+    item = db.get(FactoryItem, "item")
+    item.status = "rendering"
+    db.commit()
+    finish_time = slot.due_at + timedelta(hours=2)
+    schedule.advance_slot(db, slot, env.config, finish_time)
+    assert slot.status == "waiting_media"
+    env.begin.assert_not_called()
+    item.status = "completed"; db.commit()
+    schedule.advance_slot(db, slot, env.config, finish_time)
+    env.begin.assert_called_once_with(db, "item", "prepare", "douyin")
+    prepared = FactoryPublication(item_id="item", platform="douyin", action="prepare", status="prepared")
+    db.add(prepared); db.commit()
+    assert schedule.step_platform(db, slot, item, "douyin", finish_time, True)["status"] == "publishing"
+    assert env.begin.call_args.args[-2:] == ("publish", "douyin")
+
+
 
 
 def test_prepared_video_waits_until_due_and_submits_once(env):

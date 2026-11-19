@@ -5,6 +5,9 @@ from agents.registry import AGENT_MAP, EDITOR_IDS, DAILY_EDITOR_QUOTAS, DAILY_TA
 from models.factory import FactoryEvent, FactoryItem, FactoryRun
 
 
+DAILY_EDITOR_ORDER = ('producer', 'producer3', 'producer', 'producer', 'producer3', 'producer')
+
+
 def editor_id(item):
     value = (item.brief or {}).get("editor_id")
     # Historical work belongs to its actual original editor.
@@ -18,8 +21,7 @@ def editor_quotas(target_count=DAILY_TARGET, production_kind='daily'):
         return {'producer': 0, 'producer2': target_count, 'producer3': 0}
     if type(target_count) is not int or not 1 <= target_count <= DAILY_TARGET:
         raise ValueError('每轮日常产量应为1–6条')
-    order = ('producer', 'producer3', 'producer', 'producer', 'producer3', 'producer')
-    counts = Counter(order[:target_count])
+    counts = Counter(DAILY_EDITOR_ORDER[:target_count])
     return {owner: counts[owner] for owner in EDITOR_IDS}
 
 

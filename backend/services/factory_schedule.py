@@ -15,6 +15,7 @@ from services.factory_resources import MemoryPressure, ensure_memory_available
 PREPARE_LEAD = timedelta(minutes=20)
 LATE_WINDOW = timedelta(minutes=15)
 FINAL = {"submitted", "missed", "partial", "cancelled", "manual_ready"}
+CLOCK_TRIGGER = "release_clock"
 
 
 def nominal_time():
@@ -38,7 +39,13 @@ def catch_up_until(db, slot):
 
 
 def deadline(db, slot):
-    return max(slot.due_at + LATE_WINDOW, catch_up_until(db, slot) or slot.due_at)
+    run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
+    end = slot.due_at + LATE_WINDOW
+    if run and run.trigger == CLOCK_TRIGGER:
+        zone = ZoneInfo(run.settings_snapshot.get("timezone", "Asia/Shanghai"))
+        nominal = (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).astimezone(zone)
+        end = utc((nominal + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
+    return max(end, catch_up_until(db, slot) or slot.due_at)
 
 
 def authorize_catch_up(db, run, config, now=None):
@@ -69,6 +76,7 @@ def authorize_catch_up(db, run, config, now=None):
 
 
 def release_dict(db, slot):
+    run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
     item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
     if item is None and slot.run_id:
         item = db.query(FactoryItem).filter_by(run_id=slot.run_id, position=slot.position).first()
@@ -77,6 +85,7 @@ def release_dict(db, slot):
             "nominal_at": (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).isoformat(),
             "jitter_seconds": slot.jitter_seconds,
             "item_id": slot.item_id, "run_id": slot.run_id, "status": slot.status,
+            "production_trigger": bool(run and run.trigger == CLOCK_TRIGGER),
             "title": ((item.content or {}).get("title") or (item.brief or {}).get("title")) if item else None,
             "platforms": slot.platforms, "results": slot.results or {},
             "catch_up_until": until.replace(tzinfo=timezone.utc).isoformat() if until else None}
@@ -213,7 +222,11 @@ def reconcile_editor_picks(db, run):
 
 def plan_production(db, config, now):
     from services.factory_service import start_run
-    if not config.schedule_enabled or now.strftime('%H:%M') < config.schedule_time:
+    if not config.schedule_enabled:
+        return {'status': 'waiting'}
+    if config.production_on_release_clock:
+        return plan_clock_production(db, config, now)
+    if now.strftime('%H:%M') < config.schedule_time:
         return {'status': 'waiting'}
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
     key = f'douyin-four-random-v1:{now.date().isoformat()}'
@@ -268,6 +281,42 @@ def plan_production(db, config, now):
     db.commit()
     reconcile_editor_picks(db, run)
     return {'run_id': run.id, 'status': run.status}
+
+
+def plan_clock_production(db, config, now):
+    from services.factory_service import start_run
+    from services.factory_team import DAILY_EDITOR_ORDER, editor_quotas
+
+    start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
+    slots = db.query(FactoryRelease).filter(nominal_time() >= start,
+        nominal_time() < start + timedelta(days=1)).order_by(nominal_time()).all()
+    clocks = sorted(config.publish_times)[:config.daily_target]
+    by_clock = {utc(now.replace(hour=int(clock[:2]), minute=int(clock[3:]), second=0, microsecond=0)): index
+                for index, clock in enumerate(clocks)}
+    for slot in slots:
+        index = by_clock.get(slot.nominal_at or slot.due_at)
+        if (index is None or slot.platforms != ['douyin'] or slot.status in FINAL
+                or slot.run_id or slot.due_at > utc(now)):
+            continue
+        key = f'clock:{slot.id}'
+        run = db.query(FactoryRun).filter_by(schedule_key=key).first()
+        if not run:
+            quotas = {editor: int(editor == DAILY_EDITOR_ORDER[index]) for editor in editor_quotas(1)}
+            try:
+                ensure_memory_available()
+                run = start_run(db, target_count=1, trigger=CLOCK_TRIGGER, schedule_key=key,
+                                release_slot_ids=[slot.id], editor_quota_override=quotas)
+            except (ValueError, RuntimeError, MemoryPressure) as exc:
+                result = {'douyin': _result('queued', f'已到开工时间，等待生产：{exc}')}
+                if slot.status != 'queued' or slot.results != result:
+                    slot.status, slot.results = 'queued', result
+                    db.commit()
+                return {'status': 'deferred', 'reason': str(exc)}
+        if slot.item_id is None:
+            slot.run_id, slot.position = run.id, 0
+        db.commit()
+        return {'run_id': run.id, 'status': run.status}
+    return {'status': 'waiting'}
 
 
 def _result(status, message, job=None):
@@ -344,7 +393,9 @@ def step_platform(db, slot, item, platform, now, enabled, timezone_name="Asia/Sh
     if not enabled:
         return _result("paused", "当前发行计划已暂停此平台")
     if now >= deadline(db, slot):
-        message = ("今日补发授权已到期，保留作品，未跨日自动补发" if catch_up_until(db, slot)
+        run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
+        message = ("今日制作发布窗口已结束，保留作品" if run and run.trigger == CLOCK_TRIGGER else
+                   "今日补发授权已到期，保留作品，未跨日自动补发" if catch_up_until(db, slot)
                    else "已超过发布时间 15 分钟，保留作品，不集中补发")
         return _result("missed", message)
     if prepared and prepared.status == "failed":
@@ -440,7 +491,7 @@ def tick(db, config, now=None):
             import logging
             logging.getLogger(__name__).warning('Kuaishou connectivity check failed; continuing other scheduled releases')
     now = now or datetime.now(ZoneInfo(config.timezone))
-    if config.manual_delivery_enabled or config.publish_enabled:
+    if config.manual_delivery_enabled or config.publish_enabled or (config.production_on_release_clock and config.schedule_enabled):
         plan_slots(db, config, now)
         production = plan_production(db, config, now)
         from services.factory_weekly_papers import plan_weekly_papers
@@ -450,5 +501,11 @@ def tick(db, config, now=None):
     slots = db.query(FactoryRelease).filter(FactoryRelease.status.notin_(FINAL),
         FactoryRelease.due_at <= utc(now) + PREPARE_LEAD).order_by(FactoryRelease.due_at).all()
     for slot in slots:
+        if config.production_on_release_clock and not slot.run_id and slot.platforms == ['douyin']:
+            if local_day(slot.nominal_at or slot.due_at, config.timezone) < now.date().isoformat():
+                slot.status = 'missed'
+                slot.results = {'douyin': _result('missed', '开工时段已过，未启动制作')}
+                db.commit()
+            continue
         advance_slot(db, slot, config, utc(now))
     return {"production": production, "slots_checked": len(slots)}

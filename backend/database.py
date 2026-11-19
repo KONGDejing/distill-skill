@@ -54,6 +54,8 @@ def _ensure_factory_columns():
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_start_at DATETIME")
         if "publish_jitter_seconds" not in existing:
             conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN publish_jitter_seconds INTEGER NOT NULL DEFAULT 900")
+        if "production_on_release_clock" not in existing:
+            conn.exec_driver_sql("ALTER TABLE factory_config ADD COLUMN production_on_release_clock BOOLEAN NOT NULL DEFAULT 0")
         releases = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(factory_releases)").fetchall()}
         if "nominal_at" not in releases:
             conn.exec_driver_sql("ALTER TABLE factory_releases ADD COLUMN nominal_at DATETIME")

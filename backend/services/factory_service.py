@@ -34,7 +34,7 @@ def iso(value):
 def config_dict(config):
     from services.factory_platform_policy import automation_state
     from services.factory_kuaishou_policy import POLICY as K_POLICY, PUBLISH_TIMES
-    keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled")
+    keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled", "production_on_release_clock")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
             "editor_quotas": editor_quotas(min(config.daily_target, 6)),
             "distribution_policy": POLICY, "platform_daily_limit": 4,
@@ -600,6 +600,8 @@ def _make_plan(run_id):
                 "asset_ids_for_editing_only": [a["id"] for a in s.get("visual_assets", []) if a.get("id")]}
                 for s in usable],
             "visual_constraint": "先写完整口播再匹配画面。论文选题必须有对应论文原文，制作会提取真实PDF页面及图表，不能用其他研究的背景演示代替。其他选题需有本题可核验画面线索。素材不足不凑数。"}
+        if run.trigger == 'release_clock':
+            assignment["coverage_instruction"] += " 本次是按时段制作一条，优先从北京时间开工当天及近期的原始消息选题，按这次的岗位配额给候选，结合已有作品去重。"
         for attempt in range(2):
             research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
             raw_candidates = research.get("candidates") if isinstance(research, dict) else None
