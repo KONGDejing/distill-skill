@@ -18,6 +18,21 @@ from services import factory_llm, factory_service, factory_resources
 PLATFORMS = ["douyin", "xiaohongshu", "kuaishou", "bilibili"]
 
 
+def test_queue_check_rejects_redis_that_responds_but_cannot_write(monkeypatch):
+    import redis
+
+    client = Mock()
+    client.set.side_effect = [redis.ResponseError("MISCONF"), True]
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=client)
+    connection.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(redis.Redis, "from_url", Mock(return_value=connection))
+
+    assert factory_service.queue_available() is False
+    assert factory_service.queue_available() is True
+    assert client.set.call_args.kwargs["ex"] == 5
+
+
 def test_long_paper_editing_keeps_cited_pages_and_original_text_without_full_pdf_prompt():
     assets = [{'id': f'paper-{n}', 'kind': 'paper_page', 'paper_page': n,
                'description': f'Original page {n} text ' * 200} for n in range(1, 41)]

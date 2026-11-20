@@ -198,10 +198,12 @@ def check_cancel(run_id):
 
 
 def queue_available():
+    import redis
     try:
-        import redis
-        return bool(redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=1, socket_timeout=1).ping())
-    except Exception:
+        with redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=1, socket_timeout=1) as client:
+            # PING succeeds even when a failed Redis snapshot blocks writes.
+            return bool(client.set("short-video-ai-factory:queue-write-check", "1", ex=5))
+    except (redis.RedisError, ValueError):
         return False
 
 
@@ -232,7 +234,7 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     if release_slot_ids is not None:
         config["release_slot_ids"] = list(release_slot_ids)
     if not queue_available():
-        raise RuntimeError("任务队列未连接，请检查 Redis")
+        raise RuntimeError("Redis 任务队列暂不可写，等待服务恢复")
     if db.query(FactoryRun).filter_by(status="paused_memory").first():
         raise ValueError("存在因内存暂停的批次，请先恢复或取消该批次")
     if db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None)).first():
@@ -440,6 +442,7 @@ def _make_plan(run_id):
         if visual_style == "tech_montage":
             from services.factory_visuals import collect_visuals
             from services.factory_research import VISUAL_SOURCE_URLS
+            from services.factory_news_intake import EVENT_LEAD
             from services.factory_papers import is_paper_story
             import time
             catalog_urls = {url.rstrip("/") for _, url in VISUAL_SOURCE_URLS}
@@ -450,8 +453,9 @@ def _make_plan(run_id):
                 hint = source.get("editor_id")
                 if hint not in owners:
                     hint = {"researcher2": "producer2", "researcher3": "producer3"}.get(source.get("researcher_id"))
+                company_event = is_major_event(source) or EVENT_LEAD.search(source.get("title") or "")
                 owner = hint or ("producer2" if is_paper_story({}, [source]) else
-                    "producer3" if source.get("kind") in {"news", "official_reference"} else "producer")
+                    "producer3" if company_event else "producer")
                 source["visual_ready"], source["visual_assets"] = False, []
                 source["visual_preflight"] = {"status": "not_checked", "editor_id": owner}
                 if source.get("kind") == "reference_index":
@@ -469,7 +473,7 @@ def _make_plan(run_id):
                 for owner in owners:
                     if buckets[owner]:
                         visual_sources.append(buckets[owner].pop(0)[3])
-            max_preflight = min(18, max(6, target * 3))
+            max_preflight = min(18, max(10 if run.trigger == "release_clock" else 6, target * 3))
             visual_sources = visual_sources[:max_preflight]
             deadline = time.monotonic() + 360
             emit(run_id, "researcher", "visual_preflight", "按岗位资料核查动态素材；每页最多取16条核验视频（文件、总字节与网络时间上限保持不变），完整成片仍需后续逐镜头质检", detail={
@@ -619,7 +623,12 @@ def _make_plan(run_id):
                 break
             rejection_codes = {reason["code"] for row in diagnostics for reason in row["reasons"]}
             material_only = bool(rejection_codes) and rejection_codes <= {"visual_sources_unavailable", "insufficient_verified_visuals"}
-            if attempt or material_only:
+            has_alternative = False
+            if material_only and run.trigger == "release_clock":
+                cited = {ref for candidate in raw_candidates
+                         for ref in candidate.get("source_ids", []) + candidate.get("visual_source_ids", [])}
+                has_alternative = any(s.get("visual_ready") and s["id"] not in cited for s in usable)
+            if attempt or (material_only and not has_alternative):
                 ready = {key: min(counts[key], count) for key, count in (quotas or {}).items()}
                 if not candidates or (quotas and not sum(ready.values())):
                     raise ValueError(f"有效选题{len(candidates)}个，各岗位候选{counts}未满足配额{quotas}，保留资料等待补齐，不凑数生产")
@@ -632,7 +641,7 @@ def _make_plan(run_id):
                      'warning', {'requested_target': target, 'ready_quotas': ready,
                                  'missing_quotas': plan.get('material_shortfall', {}), 'major_events': major_events})
                 break
-            emit(run_id, "researcher", "candidate_revision", "仅再修正一次候选格式、来源ID或岗位配额；不会重试下载素材", "warning")
+            emit(run_id, "researcher", "candidate_revision", "再从已核验素材中修正或换题一次，沿用本轮下载结果", "warning")
             assignment = {**assignment, "previous_candidates": raw_candidates, "candidate_feedback": diagnostics,
                 "format_feedback": "上次有效" + str(len(candidates)) + "条，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。按逐条拒因修正，source_ids填正文source_id而非视频asset_id。只用当前已核验且对应本题的来源；素材不足则明确交回，禁止编造或拿无关画面补数。"}
         plan = {**plan, "candidates": candidates, "topic_coverage": candidate_coverage}

@@ -186,6 +186,36 @@ def test_material_only_rejection_is_saved_without_model_retry(sessions, monkeypa
         assert db.query(FactoryItem).count() == 0
 
 
+def test_clock_tech_editor_checks_dated_product_news_and_can_choose_ready_alternative(sessions, monkeypatch):
+    day = "2026-11-20"
+    records = [source("text-only-launch", kind="news", published_at=day),
+               source("product-demo", kind="news", published_at=day),
+               source("financing", kind="news", published_at=day, title="Company prices initial public offering")]
+    run_id = seed(sessions, records)
+    with sessions() as db:
+        run = db.get(FactoryRun, run_id)
+        run.trigger = "release_clock"
+        run.settings_snapshot = {**run.settings_snapshot, "production_day": day, "news_first": True,
+                                 "editor_quotas": {"producer": 1, "producer2": 0, "producer3": 0}}
+        db.commit()
+    collect = Mock(side_effect=lambda rows, path, limit: {"status": "ready", "assets": [asset(1), asset(2), asset(3)]}
+                   if rows[0]["id"] == "product-demo" else {"status": "insufficient", "assets": []})
+    monkeypatch.setattr(visuals, "collect_visuals", collect)
+    text_only = {"title": "Product launch", "freshness": "news", "source_ids": ["text-only-launch"]}
+    demo = {"title": "Product demo", "freshness": "news", "source_ids": ["product-demo"]}
+    calls = Mock(side_effect=[{"candidates": [text_only]}, {"candidates": [demo]},
+                              {"selected": [{"candidate_index": 0}]}])
+    monkeypatch.setattr(service, "call_agent", calls)
+
+    service._make_plan(run_id)
+
+    assert [call.args[0][0]["id"] for call in collect.call_args_list] == ["text-only-launch", "product-demo"]
+    assert [call.args[1] for call in calls.call_args_list] == ["researcher", "researcher", "director"]
+    with sessions() as db:
+        item = db.query(FactoryItem).filter_by(run_id=run_id).one()
+        assert item.brief["source_ids"] == ["product-demo"]
+
+
 def test_saved_material_shortfall_plans_ready_editors_without_second_selection(sessions, monkeypatch):
     day = "2026-11-19"
     records = [source("demo"), source("launch"), source("paper")]
